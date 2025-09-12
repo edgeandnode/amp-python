@@ -1,5 +1,11 @@
 # Python Amp Client
 
+[![Unit tests status](https://github.com/edgeandnode/amp-python/actions/workflows/unit-tests.yml/badge.svg?event=push)](https://github.com/edgeandnode/amp-python/actions/workflows/unit-tests.yml)
+[![Formatting status](https://github.com/edgeandnode/amp-python/actions/workflows/ruff.yml/badge.svg?event=push)](https://github.com/edgeandnode/amp-python/actions/workflows/ruff.yml)
+
+
+## Overview 
+
 Client for issuing queries to an Amp server and working with the returned data.
 
 ## Installation
