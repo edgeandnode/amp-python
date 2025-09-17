@@ -1,0 +1,54 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**/*.py'
+      - 'tests/**/*.py'
+      - 'pyproject.toml'
+      - '.github/workflows/integration-tests.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**/*.py'
+      - 'tests/**/*.py'
+      - 'pyproject.toml'
+      - '.github/workflows/integration-tests.yml'
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        enable-cache: true
+        cache-dependency-glob: "**/pyproject.toml"
+    
+    - name: Set up Python 3.12
+      run: uv python install 3.12
+    
+    - name: Install all dependencies
+      run: uv sync --group all_loaders --group test --group dev
+    
+    - name: Run integration tests with coverage
+      env:
+        USE_TESTCONTAINERS: "true"
+        TESTCONTAINERS_RYUK_DISABLED: "true"
+      run: |
+        uv run pytest tests/integration/ -v --tb=short -m "integration" \
+          -k "not snowflake" \
+          --cov=src/amp/loaders --cov-report=xml --cov-report=term-missing
+    
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v4
+      if: always()
+      with:
+        file: ./coverage.xml
+        flags: integration
+        name: codecov-integration
+        fail_ci_if_error: false
