@@ -16,6 +16,26 @@ import pytest
 
 logging.basicConfig(level=logging.INFO)
 
+# Control whether to use testcontainers
+USE_TESTCONTAINERS = os.getenv('USE_TESTCONTAINERS', 'true').lower() == 'true'
+
+# Disable Ryuk if not explicitly enabled (solves Docker connectivity issues)
+if 'TESTCONTAINERS_RYUK_DISABLED' not in os.environ:
+    os.environ['TESTCONTAINERS_RYUK_DISABLED'] = 'true'
+
+# Import testcontainers conditionally
+if USE_TESTCONTAINERS:
+    try:
+        from testcontainers.postgres import PostgresContainer
+        from testcontainers.redis import RedisContainer
+
+        TESTCONTAINERS_AVAILABLE = True
+    except ImportError:
+        TESTCONTAINERS_AVAILABLE = False
+        logging.warning('Testcontainers not available. Falling back to manual configuration.')
+else:
+    TESTCONTAINERS_AVAILABLE = False
+
 
 # Shared configuration fixtures
 @pytest.fixture(scope='session')
@@ -89,6 +109,75 @@ def test_config():
             'base_path': os.getenv('TEST_DELTA_BASE_PATH', None),  # Will use temp if None
         },
     }
+
+
+# Testcontainers fixtures
+@pytest.fixture(scope='session')
+def postgres_container():
+    """PostgreSQL container for integration tests"""
+    if not TESTCONTAINERS_AVAILABLE:
+        pytest.skip('Testcontainers not available')
+
+    container = PostgresContainer(image='postgres:13', username='test_user', password='test_pass', dbname='test_db')
+    container.start()
+
+    yield container
+
+    container.stop()
+
+
+@pytest.fixture(scope='session')
+def redis_container():
+    """Redis container for integration tests"""
+    if not TESTCONTAINERS_AVAILABLE:
+        pytest.skip('Testcontainers not available')
+
+    container = RedisContainer(image='redis:7-alpine')
+    container.start()
+
+    yield container
+
+    container.stop()
+
+
+@pytest.fixture(scope='session')
+def postgresql_test_config(request):
+    """PostgreSQL configuration from testcontainer or environment"""
+    if TESTCONTAINERS_AVAILABLE and USE_TESTCONTAINERS:
+        # Get the postgres_container fixture
+        postgres_container = request.getfixturevalue('postgres_container')
+        return {
+            'host': postgres_container.get_container_host_ip(),
+            'port': postgres_container.get_exposed_port(5432),
+            'database': 'test_db',
+            'user': 'test_user',
+            'password': 'test_pass',
+            'max_connections': 10,
+            'batch_size': 10000,
+        }
+    else:
+        # Fall back to manual config from environment
+        return request.getfixturevalue('postgresql_config')
+
+
+@pytest.fixture(scope='session')
+def redis_test_config(request):
+    """Redis configuration from testcontainer or environment"""
+    if TESTCONTAINERS_AVAILABLE and USE_TESTCONTAINERS:
+        # Get the redis_container fixture
+        redis_container = request.getfixturevalue('redis_container')
+        return {
+            'host': redis_container.get_container_host_ip(),
+            'port': redis_container.get_exposed_port(6379),
+            'db': 0,
+            'password': None,  # Default Redis container has no password
+            'max_connections': 10,
+            'batch_size': 100,
+            'pipeline_size': 500,
+        }
+    else:
+        # Fall back to manual config from environment
+        return request.getfixturevalue('redis_config')
 
 
 @pytest.fixture(scope='session')

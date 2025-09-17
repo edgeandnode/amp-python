@@ -37,14 +37,14 @@ def postgresql_type_test_data():
 
 
 @pytest.fixture
-def cleanup_tables(postgresql_config):
+def cleanup_tables(postgresql_test_config):
     """Cleanup test tables after tests"""
     tables_to_clean = []
 
     yield tables_to_clean
 
     # Cleanup
-    loader = PostgreSQLLoader(postgresql_config)
+    loader = PostgreSQLLoader(postgresql_test_config)
     try:
         loader.connect()
         conn = loader.pool.getconn()
@@ -68,9 +68,9 @@ def cleanup_tables(postgresql_config):
 class TestPostgreSQLLoaderIntegration:
     """Integration tests for PostgreSQL loader"""
 
-    def test_loader_connection(self, postgresql_config):
+    def test_loader_connection(self, postgresql_test_config):
         """Test basic connection to PostgreSQL"""
-        loader = PostgreSQLLoader(postgresql_config)
+        loader = PostgreSQLLoader(postgresql_test_config)
 
         # Test connection
         loader.connect()
@@ -82,11 +82,11 @@ class TestPostgreSQLLoaderIntegration:
         assert loader._is_connected == False
         assert loader.pool is None
 
-    def test_context_manager(self, postgresql_config, small_test_data, test_table_name, cleanup_tables):
+    def test_context_manager(self, postgresql_test_config, small_test_data, test_table_name, cleanup_tables):
         """Test context manager functionality"""
         cleanup_tables.append(test_table_name)
 
-        loader = PostgreSQLLoader(postgresql_config)
+        loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             assert loader._is_connected == True
@@ -97,11 +97,11 @@ class TestPostgreSQLLoaderIntegration:
         # Should be disconnected after context
         assert loader._is_connected == False
 
-    def test_basic_table_operations(self, postgresql_config, small_test_data, test_table_name, cleanup_tables):
+    def test_basic_table_operations(self, postgresql_test_config, small_test_data, test_table_name, cleanup_tables):
         """Test basic table creation and data loading"""
         cleanup_tables.append(test_table_name)
 
-        loader = PostgreSQLLoader(postgresql_config)
+        loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             # Test initial table creation
@@ -114,11 +114,11 @@ class TestPostgreSQLLoaderIntegration:
             assert 'columns' in result.metadata
             assert result.metadata['columns'] == 7
 
-    def test_append_mode(self, postgresql_config, small_test_data, test_table_name, cleanup_tables):
+    def test_append_mode(self, postgresql_test_config, small_test_data, test_table_name, cleanup_tables):
         """Test append mode functionality"""
         cleanup_tables.append(test_table_name)
 
-        loader = PostgreSQLLoader(postgresql_config)
+        loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             # Initial load
@@ -141,11 +141,11 @@ class TestPostgreSQLLoaderIntegration:
             finally:
                 loader.pool.putconn(conn)
 
-    def test_overwrite_mode(self, postgresql_config, small_test_data, test_table_name, cleanup_tables):
+    def test_overwrite_mode(self, postgresql_test_config, small_test_data, test_table_name, cleanup_tables):
         """Test overwrite mode functionality"""
         cleanup_tables.append(test_table_name)
 
-        loader = PostgreSQLLoader(postgresql_config)
+        loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             # Initial load
@@ -169,11 +169,11 @@ class TestPostgreSQLLoaderIntegration:
             finally:
                 loader.pool.putconn(conn)
 
-    def test_batch_loading(self, postgresql_config, medium_test_table, test_table_name, cleanup_tables):
+    def test_batch_loading(self, postgresql_test_config, medium_test_table, test_table_name, cleanup_tables):
         """Test batch loading functionality"""
         cleanup_tables.append(test_table_name)
 
-        loader = PostgreSQLLoader(postgresql_config)
+        loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             # Test loading individual batches
@@ -197,11 +197,11 @@ class TestPostgreSQLLoaderIntegration:
             finally:
                 loader.pool.putconn(conn)
 
-    def test_data_types(self, postgresql_config, postgresql_type_test_data, test_table_name, cleanup_tables):
+    def test_data_types(self, postgresql_test_config, postgresql_type_test_data, test_table_name, cleanup_tables):
         """Test various data types are handled correctly"""
         cleanup_tables.append(test_table_name)
 
-        loader = PostgreSQLLoader(postgresql_config)
+        loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             result = loader.load_table(postgresql_type_test_data, test_table_name)
@@ -222,11 +222,11 @@ class TestPostgreSQLLoaderIntegration:
             finally:
                 loader.pool.putconn(conn)
 
-    def test_null_value_handling(self, postgresql_config, null_test_data, test_table_name, cleanup_tables):
+    def test_null_value_handling(self, postgresql_test_config, null_test_data, test_table_name, cleanup_tables):
         """Test comprehensive null value handling across all data types"""
         cleanup_tables.append(test_table_name)
 
-        loader = PostgreSQLLoader(postgresql_config)
+        loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             result = loader.load_table(null_test_data, test_table_name)
@@ -286,7 +286,7 @@ class TestPostgreSQLLoaderIntegration:
             finally:
                 loader.pool.putconn(conn)
 
-    def test_binary_data_handling(self, postgresql_config, test_table_name, cleanup_tables):
+    def test_binary_data_handling(self, postgresql_test_config, test_table_name, cleanup_tables):
         """Test binary data handling with INSERT fallback"""
         cleanup_tables.append(test_table_name)
 
@@ -294,7 +294,7 @@ class TestPostgreSQLLoaderIntegration:
         data = {'id': [1, 2, 3], 'binary_data': [b'hello', b'world', b'test'], 'text_data': ['a', 'b', 'c']}
         table = pa.Table.from_pydict(data)
 
-        loader = PostgreSQLLoader(postgresql_config)
+        loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             result = loader.load_table(table, test_table_name)
@@ -313,11 +313,11 @@ class TestPostgreSQLLoaderIntegration:
             finally:
                 loader.pool.putconn(conn)
 
-    def test_schema_retrieval(self, postgresql_config, small_test_data, test_table_name, cleanup_tables):
+    def test_schema_retrieval(self, postgresql_test_config, small_test_data, test_table_name, cleanup_tables):
         """Test schema retrieval functionality"""
         cleanup_tables.append(test_table_name)
 
-        loader = PostgreSQLLoader(postgresql_config)
+        loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             # Create table
@@ -334,9 +334,9 @@ class TestPostgreSQLLoaderIntegration:
             retrieved_names = set(schema.names)
             assert original_names == retrieved_names
 
-    def test_error_handling(self, postgresql_config, small_test_data):
+    def test_error_handling(self, postgresql_test_config, small_test_data):
         """Test error handling scenarios"""
-        loader = PostgreSQLLoader(postgresql_config)
+        loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             # Test loading to non-existent table without create_table
@@ -347,11 +347,11 @@ class TestPostgreSQLLoaderIntegration:
             assert result.rows_loaded == 0
             assert 'does not exist' in result.error
 
-    def test_connection_pooling(self, postgresql_config, small_test_data, test_table_name, cleanup_tables):
+    def test_connection_pooling(self, postgresql_test_config, small_test_data, test_table_name, cleanup_tables):
         """Test connection pooling behavior"""
         cleanup_tables.append(test_table_name)
 
-        loader = PostgreSQLLoader(postgresql_config)
+        loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             # Perform multiple operations to test pool reuse
@@ -366,11 +366,11 @@ class TestPostgreSQLLoaderIntegration:
             # Note: _used is a dict in ThreadedConnectionPool, not an int
             assert len(loader.pool._used) <= loader.pool.maxconn
 
-    def test_performance_metrics(self, postgresql_config, medium_test_table, test_table_name, cleanup_tables):
+    def test_performance_metrics(self, postgresql_test_config, medium_test_table, test_table_name, cleanup_tables):
         """Test performance metrics in results"""
         cleanup_tables.append(test_table_name)
 
-        loader = PostgreSQLLoader(postgresql_config)
+        loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             start_time = time.time()
@@ -393,7 +393,7 @@ class TestPostgreSQLLoaderIntegration:
 class TestPostgreSQLLoaderPerformance:
     """Performance tests for PostgreSQL loader"""
 
-    def test_large_data_loading(self, postgresql_config, test_table_name, cleanup_tables):
+    def test_large_data_loading(self, postgresql_test_config, test_table_name, cleanup_tables):
         """Test loading large datasets"""
         cleanup_tables.append(test_table_name)
 
@@ -407,7 +407,7 @@ class TestPostgreSQLLoaderPerformance:
         }
         large_table = pa.Table.from_pydict(large_data)
 
-        loader = PostgreSQLLoader(postgresql_config)
+        loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             result = loader.load_table(large_table, test_table_name)

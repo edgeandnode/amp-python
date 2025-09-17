@@ -53,7 +53,7 @@ def comprehensive_test_data():
 
 
 @pytest.fixture
-def cleanup_redis(redis_config):
+def cleanup_redis(redis_test_config):
     """Cleanup Redis data after tests"""
     keys_to_clean = []
     patterns_to_clean = []
@@ -65,10 +65,10 @@ def cleanup_redis(redis_config):
         import redis
 
         r = redis.Redis(
-            host=redis_config['host'],
-            port=redis_config['port'],
-            db=redis_config['db'],
-            password=redis_config['password'],
+            host=redis_test_config['host'],
+            port=redis_test_config['port'],
+            db=redis_test_config['db'],
+            password=redis_test_config['password'],
         )
 
         # Delete specific keys
@@ -90,9 +90,9 @@ def cleanup_redis(redis_config):
 class TestRedisLoaderIntegration:
     """Integration tests for Redis loader"""
 
-    def test_loader_connection(self, redis_config):
+    def test_loader_connection(self, redis_test_config):
         """Test basic connection to Redis"""
-        loader = RedisLoader(redis_config)
+        loader = RedisLoader(redis_test_config)
 
         # Test connection
         loader.connect()
@@ -110,12 +110,12 @@ class TestRedisLoaderIntegration:
         assert loader._is_connected == False
         assert loader.redis_client is None
 
-    def test_context_manager(self, redis_config, small_test_data, cleanup_redis):
+    def test_context_manager(self, redis_test_config, small_test_data, cleanup_redis):
         """Test context manager functionality"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         patterns_to_clean.append('test_context:*')
 
-        loader = RedisLoader({**redis_config, 'data_structure': 'hash'})
+        loader = RedisLoader({**redis_test_config, 'data_structure': 'hash'})
 
         with loader:
             assert loader._is_connected == True
@@ -126,12 +126,12 @@ class TestRedisLoaderIntegration:
         # Should be disconnected after context
         assert loader._is_connected == False
 
-    def test_hash_storage(self, redis_config, small_test_data, cleanup_redis):
+    def test_hash_storage(self, redis_test_config, small_test_data, cleanup_redis):
         """Test hash data structure storage"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         patterns_to_clean.append('test_hash:*')
 
-        config = {**redis_config, 'data_structure': 'hash', 'key_pattern': 'test_hash:{id}'}
+        config = {**redis_test_config, 'data_structure': 'hash', 'key_pattern': 'test_hash:{id}'}
         loader = RedisLoader(config)
 
         with loader:
@@ -154,12 +154,12 @@ class TestRedisLoaderIntegration:
                 score = loader.redis_client.hget(key, 'score')
                 assert int(score.decode()) == [100, 200, 150, 300, 250][i]
 
-    def test_string_storage(self, redis_config, small_test_data, cleanup_redis):
+    def test_string_storage(self, redis_test_config, small_test_data, cleanup_redis):
         """Test string (JSON) data structure storage"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         patterns_to_clean.append('test_string:*')
 
-        config = {**redis_config, 'data_structure': 'string', 'key_pattern': 'test_string:{id}'}
+        config = {**redis_test_config, 'data_structure': 'string', 'key_pattern': 'test_string:{id}'}
         loader = RedisLoader(config)
 
         with loader:
@@ -178,12 +178,12 @@ class TestRedisLoaderIntegration:
                 assert json_data['name'] == ['Alice', 'Bob', 'Charlie', 'David', 'Eve'][i]
                 assert json_data['score'] == [100, 200, 150, 300, 250][i]
 
-    def test_stream_storage(self, redis_config, small_test_data, cleanup_redis):
+    def test_stream_storage(self, redis_test_config, small_test_data, cleanup_redis):
         """Test stream data structure storage"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         keys_to_clean.append('test_stream:stream')
 
-        config = {**redis_config, 'data_structure': 'stream'}
+        config = {**redis_test_config, 'data_structure': 'stream'}
         loader = RedisLoader(config)
 
         with loader:
@@ -200,12 +200,12 @@ class TestRedisLoaderIntegration:
             info = loader.redis_client.xinfo_stream(stream_key)
             assert info['length'] == 5
 
-    def test_set_storage(self, redis_config, small_test_data, cleanup_redis):
+    def test_set_storage(self, redis_test_config, small_test_data, cleanup_redis):
         """Test set data structure storage"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         keys_to_clean.append('test_set:set')
 
-        config = {**redis_config, 'data_structure': 'set', 'unique_field': 'name'}
+        config = {**redis_test_config, 'data_structure': 'set', 'unique_field': 'name'}
         loader = RedisLoader(config)
 
         with loader:
@@ -224,12 +224,12 @@ class TestRedisLoaderIntegration:
             names = {m.decode() for m in members}
             assert names == {'Alice', 'Bob', 'Charlie', 'David', 'Eve'}
 
-    def test_sorted_set_storage(self, redis_config, small_test_data, cleanup_redis):
+    def test_sorted_set_storage(self, redis_test_config, small_test_data, cleanup_redis):
         """Test sorted set data structure storage"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         keys_to_clean.append('test_zset:zset')
 
-        config = {**redis_config, 'data_structure': 'sorted_set', 'score_field': 'score'}
+        config = {**redis_test_config, 'data_structure': 'sorted_set', 'score_field': 'score'}
         loader = RedisLoader(config)
 
         with loader:
@@ -248,12 +248,12 @@ class TestRedisLoaderIntegration:
             scores = [score for _, score in members_with_scores]
             assert scores == [100.0, 150.0, 200.0, 250.0, 300.0]  # Should be sorted
 
-    def test_list_storage(self, redis_config, small_test_data, cleanup_redis):
+    def test_list_storage(self, redis_test_config, small_test_data, cleanup_redis):
         """Test list data structure storage"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         keys_to_clean.append('test_list:list')
 
-        config = {**redis_config, 'data_structure': 'list'}
+        config = {**redis_test_config, 'data_structure': 'list'}
         loader = RedisLoader(config)
 
         with loader:
@@ -267,12 +267,12 @@ class TestRedisLoaderIntegration:
             assert loader.redis_client.exists(list_key)
             assert loader.redis_client.llen(list_key) == 5
 
-    def test_append_mode(self, redis_config, small_test_data, cleanup_redis):
+    def test_append_mode(self, redis_test_config, small_test_data, cleanup_redis):
         """Test append mode functionality"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         patterns_to_clean.append('test_append:*')
 
-        config = {**redis_config, 'data_structure': 'hash', 'key_pattern': 'test_append:{id}'}
+        config = {**redis_test_config, 'data_structure': 'hash', 'key_pattern': 'test_append:{id}'}
         loader = RedisLoader(config)
 
         with loader:
@@ -296,12 +296,12 @@ class TestRedisLoaderIntegration:
                 key = f'test_append:{i}'
                 assert loader.redis_client.exists(key)
 
-    def test_overwrite_mode(self, redis_config, small_test_data, cleanup_redis):
+    def test_overwrite_mode(self, redis_test_config, small_test_data, cleanup_redis):
         """Test overwrite mode functionality"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         patterns_to_clean.append('test_overwrite:*')
 
-        config = {**redis_config, 'data_structure': 'hash', 'key_pattern': 'test_overwrite:{id}'}
+        config = {**redis_test_config, 'data_structure': 'hash', 'key_pattern': 'test_overwrite:{id}'}
         loader = RedisLoader(config)
 
         with loader:
@@ -320,12 +320,12 @@ class TestRedisLoaderIntegration:
             assert not loader.redis_client.exists('test_overwrite:4')
             assert not loader.redis_client.exists('test_overwrite:5')
 
-    def test_batch_loading(self, redis_config, comprehensive_test_data, cleanup_redis):
+    def test_batch_loading(self, redis_test_config, comprehensive_test_data, cleanup_redis):
         """Test batch loading functionality"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         patterns_to_clean.append('test_batch:*')
 
-        config = {**redis_config, 'data_structure': 'hash', 'key_pattern': 'test_batch:{id}', 'batch_size': 250}
+        config = {**redis_test_config, 'data_structure': 'hash', 'key_pattern': 'test_batch:{id}', 'batch_size': 250}
         loader = RedisLoader(config)
 
         with loader:
@@ -343,13 +343,13 @@ class TestRedisLoaderIntegration:
 
             assert total_rows == 1000
 
-    def test_ttl_functionality(self, redis_config, small_test_data, cleanup_redis):
+    def test_ttl_functionality(self, redis_test_config, small_test_data, cleanup_redis):
         """Test TTL (time-to-live) functionality"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         patterns_to_clean.append('test_ttl:*')
 
         config = {
-            **redis_config,
+            **redis_test_config,
             'data_structure': 'hash',
             'key_pattern': 'test_ttl:{id}',
             'ttl': 2,  # 2 seconds TTL
@@ -372,12 +372,12 @@ class TestRedisLoaderIntegration:
             time.sleep(3)
             assert not loader.redis_client.exists(key)
 
-    def test_null_value_handling(self, redis_config, null_test_data, cleanup_redis):
+    def test_null_value_handling(self, redis_test_config, null_test_data, cleanup_redis):
         """Test comprehensive null value handling across all data types"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         patterns_to_clean.append('test_nulls:*')
 
-        config = {**redis_config, 'data_structure': 'hash', 'key_pattern': 'test_nulls:{id}'}
+        config = {**redis_test_config, 'data_structure': 'hash', 'key_pattern': 'test_nulls:{id}'}
         loader = RedisLoader(config)
 
         with loader:
@@ -429,12 +429,12 @@ class TestRedisLoaderIntegration:
                     expected_int = expected_ints[i - 1]  # Convert id to index
                     assert int(int_val.decode()) == expected_int
 
-    def test_null_value_handling_string_structure(self, redis_config, null_test_data, cleanup_redis):
+    def test_null_value_handling_string_structure(self, redis_test_config, null_test_data, cleanup_redis):
         """Test null value handling with string (JSON) data structure"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         patterns_to_clean.append('test_json_nulls:*')
 
-        config = {**redis_config, 'data_structure': 'string', 'key_pattern': 'test_json_nulls:{id}'}
+        config = {**redis_test_config, 'data_structure': 'string', 'key_pattern': 'test_json_nulls:{id}'}
         loader = RedisLoader(config)
 
         with loader:
@@ -463,7 +463,7 @@ class TestRedisLoaderIntegration:
                     expected_int = expected_ints[i - 1]
                     assert json_data['int_field'] == expected_int
 
-    def test_binary_data_handling(self, redis_config, cleanup_redis):
+    def test_binary_data_handling(self, redis_test_config, cleanup_redis):
         """Test binary data handling"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         patterns_to_clean.append('test_binary:*')
@@ -472,7 +472,7 @@ class TestRedisLoaderIntegration:
         data = {'id': [1, 2, 3], 'binary_data': [b'hello', b'world', b'\x00\x01\x02\x03'], 'text_data': ['a', 'b', 'c']}
         table = pa.Table.from_pydict(data)
 
-        config = {**redis_config, 'data_structure': 'hash', 'key_pattern': 'test_binary:{id}'}
+        config = {**redis_test_config, 'data_structure': 'hash', 'key_pattern': 'test_binary:{id}'}
         loader = RedisLoader(config)
 
         with loader:
@@ -485,12 +485,12 @@ class TestRedisLoaderIntegration:
             assert loader.redis_client.hget('test_binary:2', 'binary_data') == b'world'
             assert loader.redis_client.hget('test_binary:3', 'binary_data') == b'\x00\x01\x02\x03'
 
-    def test_comprehensive_stats(self, redis_config, small_test_data, cleanup_redis):
+    def test_comprehensive_stats(self, redis_test_config, small_test_data, cleanup_redis):
         """Test comprehensive statistics functionality"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         patterns_to_clean.append('test_stats:*')
 
-        config = {**redis_config, 'data_structure': 'hash', 'key_pattern': 'test_stats:{id}'}
+        config = {**redis_test_config, 'data_structure': 'hash', 'key_pattern': 'test_stats:{id}'}
         loader = RedisLoader(config)
 
         with loader:
@@ -505,10 +505,10 @@ class TestRedisLoaderIntegration:
             assert 'estimated_memory_bytes' in stats
             assert 'estimated_memory_mb' in stats
 
-    def test_error_handling(self, redis_config, small_test_data):
+    def test_error_handling(self, redis_test_config, small_test_data):
         """Test error handling scenarios"""
         # Test with invalid configuration
-        invalid_config = {**redis_config, 'host': 'invalid-host-that-does-not-exist', 'socket_connect_timeout': 1}
+        invalid_config = {**redis_test_config, 'host': 'invalid-host-that-does-not-exist', 'socket_connect_timeout': 1}
         loader = RedisLoader(invalid_config)
 
         import redis
@@ -516,7 +516,7 @@ class TestRedisLoaderIntegration:
         with pytest.raises(redis.exceptions.ConnectionError):
             loader.connect()
 
-    def test_key_pattern_generation(self, redis_config, cleanup_redis):
+    def test_key_pattern_generation(self, redis_test_config, cleanup_redis):
         """Test various key pattern generations"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         patterns_to_clean.append('complex:*')
@@ -525,7 +525,11 @@ class TestRedisLoaderIntegration:
         data = {'user_id': ['u1', 'u2', 'u3'], 'session_id': ['s1', 's2', 's3'], 'timestamp': [100, 200, 300]}
         table = pa.Table.from_pydict(data)
 
-        config = {**redis_config, 'data_structure': 'hash', 'key_pattern': 'complex:{user_id}:{session_id}:{timestamp}'}
+        config = {
+            **redis_test_config,
+            'data_structure': 'hash',
+            'key_pattern': 'complex:{user_id}:{session_id}:{timestamp}',
+        }
         loader = RedisLoader(config)
 
         with loader:
@@ -537,13 +541,13 @@ class TestRedisLoaderIntegration:
             assert loader.redis_client.exists('complex:u2:s2:200')
             assert loader.redis_client.exists('complex:u3:s3:300')
 
-    def test_performance_metrics(self, redis_config, comprehensive_test_data, cleanup_redis):
+    def test_performance_metrics(self, redis_test_config, comprehensive_test_data, cleanup_redis):
         """Test performance metrics in results"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         patterns_to_clean.append('test_perf:*')
 
         config = {
-            **redis_config,
+            **redis_test_config,
             'data_structure': 'hash',
             'key_pattern': 'test_perf:{id}',
             'batch_size': 100,
@@ -573,7 +577,7 @@ class TestRedisLoaderIntegration:
 class TestRedisLoaderPerformance:
     """Performance tests for Redis loader"""
 
-    def test_large_data_loading(self, redis_config, cleanup_redis):
+    def test_large_data_loading(self, redis_test_config, cleanup_redis):
         """Test loading large datasets"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         patterns_to_clean.append('test_large:*')
@@ -589,7 +593,7 @@ class TestRedisLoaderPerformance:
         large_table = pa.Table.from_pydict(large_data)
 
         config = {
-            **redis_config,
+            **redis_test_config,
             'data_structure': 'hash',
             'key_pattern': 'test_large:{id}',
             'batch_size': 1000,
@@ -607,7 +611,7 @@ class TestRedisLoaderPerformance:
             # Verify performance metrics
             assert result.ops_per_second > 100  # Should handle >100 ops/sec
 
-    def test_data_structure_performance_comparison(self, redis_config, cleanup_redis):
+    def test_data_structure_performance_comparison(self, redis_test_config, cleanup_redis):
         """Compare performance across different data structures"""
         keys_to_clean, patterns_to_clean = cleanup_redis
 
@@ -623,7 +627,7 @@ class TestRedisLoaderPerformance:
             keys_to_clean.append(f'perf_{structure}:{structure}')
 
             config = {
-                **redis_config,
+                **redis_test_config,
                 'data_structure': structure,
                 'key_pattern': f'perf_{structure}:{{id}}',
                 'score_field': 'score' if structure == 'sorted_set' else None,
