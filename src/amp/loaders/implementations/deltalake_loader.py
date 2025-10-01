@@ -203,11 +203,7 @@ class DeltaLakeLoader(DataLoader[DeltaStorageConfig]):
         self._refresh_table_reference()
 
         # Post-write optimizations
-        optimization_results = self._perform_post_write_optimizations(table.num_rows)
-
-        # Store optimization results in base class metadata
-        if hasattr(self, '_last_batch_metadata'):
-            self._last_batch_metadata = optimization_results
+        _optimization_results = self._perform_post_write_optimizations()
 
         return batch.num_rows
 
@@ -283,7 +279,7 @@ class DeltaLakeLoader(DataLoader[DeltaStorageConfig]):
             self.logger.error(f'Failed to refresh table reference: {e}')
             # Don't set _table_exists = False here as the table might still exist
 
-    def _perform_post_write_optimizations(self, rows_written: int) -> Dict[str, Any]:
+    def _perform_post_write_optimizations(self) -> Dict[str, Any]:
         """Perform post-write optimizations with robust API handling"""
         optimization_results = {}
 
@@ -454,10 +450,6 @@ class DeltaLakeLoader(DataLoader[DeltaStorageConfig]):
         # Add table version if table exists
         if self._table_exists and self._delta_table is not None:
             metadata['table_version'] = self._delta_table.version()
-
-        # Add optimization results if available
-        if hasattr(self, '_last_batch_metadata'):
-            metadata['optimization_results'] = self._last_batch_metadata
 
         return metadata
 
