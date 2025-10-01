@@ -135,7 +135,7 @@ class IcebergLoader(DataLoader[IcebergStorageConfig]):
         # Get the Iceberg table (already created by _create_table_from_schema if needed)
         mode = kwargs.get('mode', LoadMode.APPEND)
         table_identifier = f'{self.config.namespace}.{table_name}'
-        
+
         # Use cached table if available
         if table_identifier in self._table_cache:
             iceberg_table = self._table_cache[table_identifier]
@@ -408,45 +408,13 @@ class IcebergLoader(DataLoader[IcebergStorageConfig]):
 
     def _get_loader_batch_metadata(self, batch: pa.RecordBatch, duration: float, **kwargs) -> Dict[str, Any]:
         """Get Iceberg-specific metadata for batch operation"""
-        metadata = {'namespace': self.config.namespace}
-
-        # Add partition columns if available
-        table_name = kwargs.get('table_name')
-        if table_name and self._table_exists(table_name):
-            try:
-                table_info = self.get_table_info(table_name)
-                metadata['partition_columns'] = table_info.get('partition_columns', [])
-            except Exception:
-                metadata['partition_columns'] = []
-        else:
-            # For new tables, get partition fields from partition_spec if available
-            metadata['partition_columns'] = []
-
-        return metadata
+        return {'namespace': self.config.namespace}
 
     def _get_loader_table_metadata(
         self, table: pa.Table, duration: float, batch_count: int, **kwargs
     ) -> Dict[str, Any]:
         """Get Iceberg-specific metadata for table operation"""
-        metadata = {'namespace': self.config.namespace}
-
-        # Add partition columns if available
-        table_name = kwargs.get('table_name')
-        if table_name and self._table_exists(table_name):
-            try:
-                table_info = self.get_table_info(table_name)
-                metadata['partition_columns'] = table_info.get('partition_columns', [])
-            except Exception:
-                metadata['partition_columns'] = []
-        else:
-            # For new tables, get partition fields from partition_spec if available
-            metadata['partition_columns'] = []
-            if self.config.partition_spec and hasattr(self.config.partition_spec, 'fields'):
-                # partition_spec.fields contains partition field definitions
-                # We'll extract them during table creation
-                metadata['partition_columns'] = []  # Will be populated after table creation
-
-        return metadata
+        return {'namespace': self.config.namespace}
 
     def _table_exists(self, table_name: str) -> bool:
         """Check if a table exists"""
