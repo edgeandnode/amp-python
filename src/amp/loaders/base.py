@@ -8,9 +8,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from logging import Logger
-from typing import Any, Dict, Generic, Iterator, Optional, Set, TypeVar
+from typing import Any, Dict, Generic, Iterator, List, Optional, Set, TypeVar
 
 import pyarrow as pa
+
+from ..streaming.types import BlockRange, ResponseBatchWithReorg
 
 
 class LoadMode(Enum):
@@ -32,9 +34,14 @@ class LoadResult:
     success: bool
     error: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Streaming/reorg specific fields
+    is_reorg: bool = False
+    invalidation_ranges: Optional[List[BlockRange]] = None
 
     def __str__(self) -> str:
-        if self.success:
+        if self.is_reorg:
+            return f'🔄 Reorg detected: {len(self.invalidation_ranges or [])} ranges invalidated'
+        elif self.success:
             return f'✅ Loaded {self.rows_loaded} rows to {self.table_name} in {self.duration:.2f}s'
         else:
             return f'❌ Failed to load to {self.table_name}: {self.error}'
@@ -300,6 +307,171 @@ class DataLoader(ABC, Generic[TConfig]):
                 error=str(e),
                 metadata={'batches_processed': batch_count},
             )
+
+    def load_stream_continuous(
+        self, stream_iterator: Iterator['ResponseBatchWithReorg'], table_name: str, **kwargs
+    ) -> Iterator[LoadResult]:
+        """
+        Load data from a continuous streaming iterator with reorg support.
+
+        This method handles streaming data that includes reorganization events.
+        When a reorg is detected, it calls _handle_reorg to let the loader
+        implementation handle the invalidation appropriately.
+
+        Args:
+            stream_iterator: Iterator yielding ResponseBatchWithReorg objects
+            table_name: Target table name
+            **kwargs: Additional options passed to load_batch
+
+        Yields:
+            LoadResult for each batch or reorg event
+        """
+        if not self._is_connected:
+            self.connect()
+
+        rows_loaded = 0
+        start_time = time.time()
+        batch_count = 0
+        reorg_count = 0
+
+        try:
+            for response in stream_iterator:
+                if response.is_reorg:
+                    # Handle reorganization
+                    reorg_count += 1
+                    duration = time.time() - start_time
+
+                    try:
+                        # Let the loader implementation handle the reorg
+                        self._handle_reorg(response.invalidation_ranges, table_name)
+
+                        # Yield a reorg result
+                        yield LoadResult(
+                            rows_loaded=0,
+                            duration=duration,
+                            ops_per_second=0,
+                            table_name=table_name,
+                            loader_type=self.__class__.__name__.replace('Loader', '').lower(),
+                            success=True,
+                            is_reorg=True,
+                            invalidation_ranges=response.invalidation_ranges,
+                            metadata={
+                                'operation': 'reorg',
+                                'invalidation_count': len(response.invalidation_ranges or []),
+                                'reorg_number': reorg_count,
+                            },
+                        )
+
+                    except Exception as e:
+                        self.logger.error(f'Failed to handle reorg: {str(e)}')
+                        yield LoadResult(
+                            rows_loaded=0,
+                            duration=duration,
+                            ops_per_second=0,
+                            table_name=table_name,
+                            loader_type=self.__class__.__name__.replace('Loader', '').lower(),
+                            success=False,
+                            error=str(e),
+                            is_reorg=True,
+                            invalidation_ranges=response.invalidation_ranges,
+                        )
+
+                else:
+                    # Normal data batch
+                    batch_count += 1
+
+                    # Add metadata columns to the batch data for streaming
+                    batch_data = response.data.data
+                    if response.data.metadata.ranges:
+                        batch_data = self._add_metadata_columns(batch_data, response.data.metadata.ranges)
+
+                    result = self.load_batch(batch_data, table_name, **kwargs)
+
+                    if result.success:
+                        rows_loaded += result.rows_loaded
+
+                    # Add streaming metadata
+                    result.metadata['is_streaming'] = True
+                    result.metadata['batch_count'] = batch_count
+                    if response.data.metadata.ranges:
+                        result.metadata['block_ranges'] = [
+                            {'network': r.network, 'start': r.start, 'end': r.end}
+                            for r in response.data.metadata.ranges
+                        ]
+
+                    yield result
+
+        except Exception as e:
+            self.logger.error(f'Streaming failed after {batch_count} batches: {str(e)}')
+            duration = time.time() - start_time
+            yield LoadResult(
+                rows_loaded=rows_loaded,
+                duration=duration,
+                ops_per_second=round(rows_loaded / duration, 2) if duration > 0 else 0,
+                table_name=table_name,
+                loader_type=self.__class__.__name__.replace('Loader', '').lower(),
+                success=False,
+                error=str(e),
+                metadata={
+                    'batches_processed': batch_count,
+                    'reorgs_processed': reorg_count,
+                    'is_streaming': True,
+                },
+            )
+
+    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str) -> None:
+        """
+        Handle a blockchain reorganization by invalidating affected data.
+
+        This method should be implemented by each loader to handle reorgs
+        in a way appropriate to their storage backend.
+
+        Args:
+            invalidation_ranges: List of block ranges to invalidate
+            table_name: The table containing the data to invalidate
+
+        Raises:
+            NotImplementedError: If the loader doesn't support reorg handling
+        """
+        raise NotImplementedError(
+            f'{self.__class__.__name__} does not implement _handle_reorg(). '
+            'Streaming with reorg detection requires implementing this method.'
+        )
+
+    def _add_metadata_columns(self, data: pa.RecordBatch, block_ranges: List[BlockRange]) -> pa.RecordBatch:
+        """
+        Add metadata columns for streaming data with multi-network blockchain information.
+
+        Adds metadata column:
+        - _meta_block_ranges: JSON array of all block ranges for cross-network support
+
+        This approach supports multi-network scenarios like bridge monitoring, cross-chain
+        DEX aggregation, and multi-network governance tracking. Each loader can optimize
+        storage (e.g., PostgreSQL can use JSONB with GIN indexing or native arrays).
+
+        Args:
+            data: The original Arrow RecordBatch
+            block_ranges: List of BlockRange objects associated with this batch
+
+        Returns:
+            Arrow RecordBatch with metadata columns added
+        """
+        if not block_ranges:
+            return data
+
+        # Create JSON representation of all block ranges for multi-network support
+        import json
+
+        ranges_json = json.dumps([{'network': br.network, 'start': br.start, 'end': br.end} for br in block_ranges])
+
+        # Create metadata array
+        num_rows = len(data)
+        ranges_array = pa.array([ranges_json] * num_rows, type=pa.string())
+
+        # Add metadata column
+        result = data.append_column('_meta_block_ranges', ranges_array)
+
+        return result
 
     def _get_batch_metadata(self, batch: pa.RecordBatch, duration: float, **kwargs) -> Dict[str, Any]:
         """Get standard metadata for batch operations"""
