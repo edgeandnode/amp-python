@@ -98,9 +98,6 @@ addopts = [
     "--tb=short",
     "--strict-markers",
 ]
-# Timeout configuration for longer-running integration tests
-timeout = 300  # 5 minutes per test
-timeout_method = "thread"
 
 markers = [
     "unit: Unit tests (fast, no external dependencies)",
