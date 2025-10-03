@@ -155,12 +155,12 @@ class TestPostgreSQLPerformance:
 class TestRedisPerformance:
     """Performance tests for Redis loader"""
 
-    def test_pipeline_performance(self, redis_config, performance_test_data):
+    def test_pipeline_performance(self, redis_test_config, performance_test_data):
         """Test Redis pipeline performance optimization"""
         # Test with and without pipelining
         configs = [
-            {**redis_config, 'pipeline_size': 1, 'data_structure': 'hash'},
-            {**redis_config, 'pipeline_size': 1000, 'data_structure': 'hash'},
+            {**redis_test_config, 'pipeline_size': 1, 'data_structure': 'hash'},
+            {**redis_test_config, 'pipeline_size': 1000, 'data_structure': 'hash'},
         ]
 
         results = {}
@@ -193,14 +193,14 @@ class TestRedisPerformance:
             },
         )
 
-    def test_data_structure_performance(self, redis_config, performance_test_data):
+    def test_data_structure_performance(self, redis_test_config, performance_test_data):
         """Compare performance across Redis data structures"""
         structures = ['hash', 'string', 'sorted_set']
         results = {}
 
         for structure in structures:
             config = {
-                **redis_config,
+                **redis_test_config,
                 'data_structure': structure,
                 'pipeline_size': 1000,
                 'score_field': 'score' if structure == 'sorted_set' else None,
@@ -233,9 +233,9 @@ class TestRedisPerformance:
                 },
             )
 
-    def test_memory_efficiency(self, redis_config, performance_test_data, memory_monitor):
+    def test_memory_efficiency(self, redis_test_config, performance_test_data, memory_monitor):
         """Test Redis loader memory efficiency"""
-        config = {**redis_config, 'data_structure': 'hash', 'pipeline_size': 1000}
+        config = {**redis_test_config, 'data_structure': 'hash', 'pipeline_size': 1000}
         loader = RedisLoader(config)
 
         with loader:
@@ -1015,7 +1015,13 @@ class TestCrossLoaderPerformance:
     """Performance comparison tests across all loaders"""
 
     def test_throughput_comparison(
-        self, postgresql_config, redis_config, snowflake_config, delta_basic_config, lmdb_perf_config, medium_test_table
+        self,
+        postgresql_config,
+        redis_test_config,
+        snowflake_config,
+        delta_basic_config,
+        lmdb_perf_config,
+        medium_test_table,
     ):
         """Compare throughput across all loaders with medium dataset"""
         results = {}
@@ -1036,7 +1042,7 @@ class TestCrossLoaderPerformance:
                     pg_loader.pool.putconn(conn)
 
         # Test Redis
-        redis_config_perf = {**redis_config, 'data_structure': 'hash', 'pipeline_size': 1000}
+        redis_config_perf = {**redis_test_config, 'data_structure': 'hash', 'pipeline_size': 1000}
         redis_loader = RedisLoader(redis_config_perf)
         with redis_loader:
             start_time = time.time()
@@ -1114,7 +1120,7 @@ class TestCrossLoaderPerformance:
             if throughput > 0:
                 print(f'  {loader_name}: {throughput:.0f}')
 
-    def test_memory_usage_comparison(self, postgresql_config, redis_config, snowflake_config, small_test_table):
+    def test_memory_usage_comparison(self, postgresql_config, redis_test_config, snowflake_config, small_test_table):
         """Compare memory usage patterns across loaders"""
         try:
             import psutil
@@ -1141,7 +1147,7 @@ class TestCrossLoaderPerformance:
 
         # Test Redis memory usage
         initial_memory = process.memory_info().rss
-        redis_config_mem = {**redis_config, 'data_structure': 'hash'}
+        redis_config_mem = {**redis_test_config, 'data_structure': 'hash'}
         redis_loader = RedisLoader(redis_config_mem)
         with redis_loader:
             redis_loader.load_table(small_test_table, 'memory_test')
