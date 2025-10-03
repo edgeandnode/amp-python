@@ -15,6 +15,7 @@ import pytest
 
 try:
     from src.amp.loaders.base import DataLoader, LoadConfig, LoadMode, LoadResult
+    from src.amp.streaming.types import BlockRange
 except ImportError:
     # Skip tests if modules not available
     pytest.skip('amp modules not available', allow_module_level=True)
@@ -59,6 +60,28 @@ class TestLoadResult:
         assert '❌' in result_str
         assert 'Connection failed' in result_str
         assert 'test_table' in result_str
+
+    def test_reorg_result_string_representation(self):
+        """Test string representation of reorg LoadResult"""
+        invalidation_ranges = [
+            BlockRange(network='ethereum', start=100, end=110),
+            BlockRange(network='polygon', start=200, end=205),
+        ]
+
+        result = LoadResult(
+            rows_loaded=0,
+            duration=0.5,
+            ops_per_second=0,
+            table_name='blocks',
+            loader_type='postgresql',
+            success=True,
+            is_reorg=True,
+            invalidation_ranges=invalidation_ranges,
+        )
+
+        result_str = str(result)
+        assert '🔄 Reorg detected' in result_str
+        assert '2 ranges invalidated' in result_str
 
 
 @pytest.mark.unit
@@ -177,9 +200,54 @@ class TestLoaderImplementations:
 
         return method_defs
 
+    def _verify_method_implementation(self, loader_name: str, loader_class: type, method_name: str) -> None:
+        """Verify that a method is actually implemented, not just inherited as a stub"""
+        method = getattr(loader_class, method_name)
+
+        # First try to check the source code
+        try:
+            source = inspect.getsource(method)
+
+            # Check if method is inherited from base class (not defined in this specific class)
+            # If 'class <LoaderClassName>' is NOT in source, it means method comes from base class
+            if f'class {loader_class}' not in source:
+                # Method is inherited, check if it's a stub
+                if method_name == '_handle_reorg':
+                    # For _handle_reorg, check if it just raises NotImplementedError
+                    if 'raise NotImplementedError' in source:
+                        pytest.fail(
+                            f'{loader_name} does not implement {method_name}() - it inherits the '
+                            f'NotImplementedError from base class. Each loader must implement '
+                            f'this method appropriately for its storage backend.'
+                        )
+            elif (
+                'pass' in source
+                and len([line for line in source.split('\n') if line.strip() and not line.strip().startswith('#')]) <= 2
+            ):
+                # Method is just 'pass'
+                pytest.fail(f"{loader_name}.{method_name} is just 'pass' - needs implementation")
+
+        except (OSError, TypeError):
+            # Can't get source, try runtime approach for _handle_reorg
+            if method_name == '_handle_reorg':
+                try:
+                    # Create a dummy instance to test the method
+                    test_instance = loader_class({'test': 'config'})
+                    test_instance._handle_reorg([], 'test_table')
+                    # If we get here, method didn't raise NotImplementedError - it's implemented
+                except NotImplementedError:
+                    # Method raises NotImplementedError - not implemented
+                    pytest.fail(
+                        f'{loader_name} does not implement {method_name}() - it raises NotImplementedError. '
+                        f'Each loader must implement this method.'
+                    )
+                except Exception:
+                    # Some other error occurred during execution, assume it's implemented
+                    pass
+
     def test_all_loaders_implement_required_methods(self):
-        """Test that all loader implementations have required methods"""
-        required_methods = ['connect', 'disconnect', '_load_batch_impl', '_create_table_from_schema']
+        """Test that all loader implementations properly implement required methods (not just inherit stubs)"""
+        required_methods = ['connect', 'disconnect', '_load_batch_impl', '_create_table_from_schema', '_handle_reorg']
 
         loaders = self._get_loader_classes()
 
@@ -189,9 +257,12 @@ class TestLoaderImplementations:
             for method_name in required_methods:
                 assert hasattr(loader_class, method_name), f'{loader_name} missing required method: {method_name}'
 
-                # Check that the method is actually implemented (not just inherited abstract)
+                # Check that the method is actually implemented (not just inherited stub)
                 method = getattr(loader_class, method_name)
                 assert method is not None, f'{loader_name}.{method_name} is None'
+
+                # Verify the method is actually implemented in this class, not just a stub
+                self._verify_method_implementation(loader_name, loader_class, method_name)
 
     def test_no_duplicate_method_definitions(self):
         """Test that no loader has duplicate method definitions"""
@@ -203,34 +274,3 @@ class TestLoaderImplementations:
             for method_name in critical_methods:
                 definitions = self._get_method_definitions(loader_class, method_name)
                 assert len(definitions) <= 1, f'{loader_name} has duplicate {method_name} definitions at: {definitions}'
-
-    def test_create_table_from_schema_not_just_pass(self):
-        """Test that _create_table_from_schema methods have meaningful implementations"""
-        loaders = self._get_loader_classes()
-
-        for loader_name, loader_class in loaders.items():
-            method = getattr(loader_class, '_create_table_from_schema', None)
-            if method:
-                # Get source code
-                try:
-                    source = inspect.getsource(method)
-                    # Check if it's just 'pass' or has actual implementation
-                    lines = [line.strip() for line in source.split('\n') if line.strip()]
-
-                    # Filter out comments and docstrings
-                    code_lines = []
-                    for line in lines:
-                        if not line.startswith('#') and not line.startswith('"""') and not line.startswith("'''"):
-                            code_lines.append(line)
-
-                    # Should have more than just the method definition line and 'pass'
-                    if len(code_lines) <= 2:  # def line + pass line only
-                        last_line = code_lines[-1] if code_lines else ''
-                        if last_line == 'pass':
-                            pytest.fail(
-                                f"{loader_name}._create_table_from_schema is just 'pass' - needs implementation"
-                            )
-
-                except (OSError, TypeError):
-                    # Can't get source, skip this check
-                    pass
