@@ -1,5 +1,6 @@
 # src/amp/loaders/implementations/deltalake_loader.py
 
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ try:
 except ImportError:
     DELTALAKE_AVAILABLE = False
 
+from ...streaming.types import BlockRange
 from ..base import DataLoader, LoadMode
 
 
@@ -648,4 +650,107 @@ class DeltaLakeLoader(DataLoader[DeltaStorageConfig]):
 
         except Exception as e:
             self.logger.error(f'Query failed: {e}')
+            raise
+
+    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str) -> None:
+        """
+        Handle blockchain reorganization by deleting affected rows from Delta Lake.
+
+        Delta Lake's versioning and transaction capabilities make this operation
+        particularly powerful - we can precisely delete affected data and even
+        roll back if needed using time travel features.
+
+        Args:
+            invalidation_ranges: List of block ranges to invalidate (reorg points)
+            table_name: The table containing the data to invalidate (not used but kept for API consistency)
+        """
+        if not invalidation_ranges:
+            return
+
+        try:
+            # First, ensure we have a connected table
+            if not self._delta_table:
+                self.logger.warning('No Delta table connected, skipping reorg handling')
+                return
+
+            # Load the current table data
+            current_table = self._delta_table.to_pyarrow_table()
+
+            # Check if the table has metadata column
+            if '_meta_block_ranges' not in current_table.schema.names:
+                self.logger.warning("Delta table doesn't have '_meta_block_ranges' column, skipping reorg handling")
+                return
+
+            # Build a mask to identify rows to keep
+            keep_mask = pa.array([True] * current_table.num_rows)
+
+            # Process each row to check if it should be invalidated
+            meta_column = current_table['_meta_block_ranges']
+
+            for i in range(current_table.num_rows):
+                meta_json = meta_column[i].as_py()
+
+                if meta_json:
+                    try:
+                        ranges_data = json.loads(meta_json)
+
+                        # Ensure ranges_data is a list
+                        if not isinstance(ranges_data, list):
+                            continue
+
+                        # Check each invalidation range
+                        for range_obj in invalidation_ranges:
+                            network = range_obj.network
+                            reorg_start = range_obj.start
+
+                            # Check if any range for this network should be invalidated
+                            for range_info in ranges_data:
+                                if (
+                                    isinstance(range_info, dict)
+                                    and range_info.get('network') == network
+                                    and range_info.get('end', 0) >= reorg_start
+                                ):
+                                    # Mark this row for deletion
+                                    # Create a mask for this specific row
+                                    row_mask = pa.array([j == i for j in range(current_table.num_rows)])
+                                    keep_mask = pa.compute.and_(keep_mask, pa.compute.invert(row_mask))
+                                    break
+
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+
+            # Filter the table to keep only valid rows
+            filtered_table = current_table.filter(keep_mask)
+            deleted_count = current_table.num_rows - filtered_table.num_rows
+
+            if deleted_count > 0:
+                # Overwrite the table with filtered data
+                # This creates a new version in Delta Lake, preserving history
+                self.logger.info(
+                    f'Executing blockchain reorg deletion for {len(invalidation_ranges)} networks '
+                    f'in Delta Lake table. Deleting {deleted_count} rows.'
+                )
+
+                # Use overwrite mode to replace table contents
+                write_deltalake(
+                    table_or_uri=self.config.table_path,
+                    data=filtered_table,
+                    mode='overwrite',
+                    partition_by=self.config.partition_by,
+                    schema_mode='overwrite' if self.config.schema_evolution else None,
+                    storage_options=self.config.storage_options,
+                )
+
+                # Refresh table reference
+                self._refresh_table_reference()
+
+                self.logger.info(
+                    f'Blockchain reorg completed. Deleted {deleted_count} rows from Delta Lake. '
+                    f'New version: {self._delta_table.version() if self._delta_table else "unknown"}'
+                )
+            else:
+                self.logger.info('No rows to delete for reorg in Delta Lake table')
+
+        except Exception as e:
+            self.logger.error(f'Failed to handle blockchain reorg in Delta Lake: {str(e)}')
             raise
