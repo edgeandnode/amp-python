@@ -1,13 +1,14 @@
 import io
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import pyarrow as pa
 import pyarrow.csv as pa_csv
 import snowflake.connector
 from snowflake.connector import DictCursor, SnowflakeConnection
 
+from ...streaming.types import BlockRange
 from ..base import DataLoader, LoadMode
 
 
@@ -390,7 +391,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             # Get table metadata
             self.cursor.execute(
                 """
-                SELECT 
+                SELECT
                     TABLE_NAME,
                     TABLE_SCHEMA,
                     TABLE_CATALOG,
@@ -412,7 +413,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             # Get column information
             self.cursor.execute(
                 """
-                SELECT 
+                SELECT
                     COLUMN_NAME,
                     DATA_TYPE,
                     IS_NULLABLE,
@@ -456,3 +457,83 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         except Exception as e:
             self.logger.error(f"Failed to get table info for '{table_name}': {str(e)}")
             return None
+
+    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str) -> None:
+        """
+        Handle blockchain reorganization by deleting affected rows from Snowflake.
+
+        Snowflake's SQL capabilities allow for efficient deletion using JSON functions
+        to parse the _meta_block_ranges column and identify affected rows.
+
+        Args:
+            invalidation_ranges: List of block ranges to invalidate (reorg points)
+            table_name: The table containing the data to invalidate
+        """
+        if not invalidation_ranges:
+            return
+
+        try:
+            # First check if the table has the metadata column
+            self.cursor.execute(
+                """
+                SELECT COUNT(*) as count
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = '_META_BLOCK_RANGES'
+                """,
+                (self.config.schema, table_name.upper()),
+            )
+
+            result = self.cursor.fetchone()
+            if not result or result['COUNT'] == 0:
+                self.logger.warning(
+                    f"Table '{table_name}' doesn't have '_meta_block_ranges' column, skipping reorg handling"
+                )
+                return
+
+            # Build DELETE statement with conditions for each invalidation range
+            # Snowflake's PARSE_JSON and ARRAY_SIZE functions help work with JSON data
+            delete_conditions = []
+
+            for range_obj in invalidation_ranges:
+                network = range_obj.network
+                reorg_start = range_obj.start
+
+                # Create condition for this network's reorg
+                # Delete rows where any range in the JSON array for this network has end >= reorg_start
+                condition = f"""
+                EXISTS (
+                    SELECT 1
+                    FROM TABLE(FLATTEN(input => PARSE_JSON("_META_BLOCK_RANGES"))) f
+                    WHERE f.value:network::STRING = '{network}'
+                    AND f.value:end::NUMBER >= {reorg_start}
+                )
+                """
+                delete_conditions.append(condition)
+
+            # Combine conditions with OR
+            if delete_conditions:
+                where_clause = ' OR '.join(f'({cond})' for cond in delete_conditions)
+
+                # Execute deletion
+                delete_sql = f'DELETE FROM {table_name} WHERE {where_clause}'
+
+                self.logger.info(
+                    f'Executing blockchain reorg deletion for {len(invalidation_ranges)} networks '
+                    f"in Snowflake table '{table_name}'"
+                )
+
+                # Execute the delete and get row count
+                self.cursor.execute(delete_sql)
+                deleted_rows = self.cursor.rowcount
+
+                # Commit the transaction
+                self.connection.commit()
+
+                self.logger.info(f"Blockchain reorg deleted {deleted_rows} rows from table '{table_name}'")
+
+        except Exception as e:
+            self.logger.error(f"Failed to handle blockchain reorg for table '{table_name}': {str(e)}")
+            # Rollback on error
+            if self.connection:
+                self.connection.rollback()
+            raise
