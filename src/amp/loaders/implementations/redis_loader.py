@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import pyarrow as pa
 import redis
 
+from ...streaming.types import BlockRange
 from ..base import DataLoader, LoadMode
 
 
@@ -79,6 +80,14 @@ class RedisLoader(DataLoader[RedisConfig]):
     - Comprehensive error handling
     - Connection pooling
     - Binary data support
+
+    Important Notes:
+    - For key-based data structures (hash, string, json) with {id} in key_pattern,
+      an 'id' field is REQUIRED in the data to ensure collision-proof keys across
+      job restarts. Without explicit IDs, keys could be overwritten when the job
+      is restarted.
+    - For streaming/reorg support, 'id' fields must be non-null to maintain
+      consistent secondary indexes.
     """
 
     # Declare loader capabilities
@@ -235,6 +244,9 @@ class RedisLoader(DataLoader[RedisConfig]):
                     pipe = self.redis_client.pipeline()
                     commands_in_pipe = 0
 
+        # Maintain secondary indexes for streaming data (if metadata present)
+        self._maintain_block_range_indexes(data_dict, num_rows, table_name, pipe)
+
         # Execute remaining commands
         if commands_in_pipe > 0:
             pipe.execute()
@@ -275,6 +287,9 @@ class RedisLoader(DataLoader[RedisConfig]):
                     pipe.execute()
                     pipe = self.redis_client.pipeline()
                     commands_in_pipe = 0
+
+        # Maintain secondary indexes for streaming data (if metadata present)
+        self._maintain_block_range_indexes(data_dict, num_rows, table_name, pipe)
 
         # Execute remaining commands
         if commands_in_pipe > 0:
@@ -501,18 +516,23 @@ class RedisLoader(DataLoader[RedisConfig]):
 
             # Handle remaining {id} placeholder
             if '{id}' in key:
-                if 'id' in data_dict:
-                    id_value = data_dict['id'][row_index]
-                    key = key.replace('{id}', str(id_value) if id_value is not None else str(row_index))
-                else:
-                    key = key.replace('{id}', str(row_index))
+                if 'id' not in data_dict:
+                    raise ValueError(
+                        f"Key pattern contains {{id}} placeholder but no 'id' field found in data. "
+                        f'Available fields: {list(data_dict.keys())}. '
+                        f"Please provide an 'id' field or use a different key pattern."
+                    )
+                id_value = data_dict['id'][row_index]
+                if id_value is None:
+                    raise ValueError(f'ID value is None at row {row_index}. Redis keys require non-null IDs.')
+                key = key.replace('{id}', str(id_value))
 
             return key
 
         except Exception as e:
-            # Fallback to simple key generation
-            self.logger.warning(f'Key generation failed, using fallback: {e}')
-            return f'{table_name}:{row_index}'
+            # Re-raise to fail fast rather than silently using fallback
+            self.logger.error(f'Key generation failed: {e}')
+            raise
 
     def _clear_data(self, table_name: str) -> None:
         """Optimized data clearing for overwrite mode"""
@@ -676,3 +696,137 @@ class RedisLoader(DataLoader[RedisConfig]):
         """Get Redis-specific metadata for table operation"""
         metadata = {'data_structure': self.data_structure.value}
         return metadata
+
+    def _maintain_block_range_indexes(self, data_dict: Dict[str, List], num_rows: int, table_name: str, pipe) -> None:
+        """
+        Maintain secondary indexes for efficient block range lookups.
+
+        Creates index entries of the form:
+        block_index:{table}:{network}:{start}-{end} -> SET of primary key IDs
+        """
+        # Check if this data has block range metadata
+        if '_meta_block_ranges' not in data_dict:
+            return
+
+        for i in range(num_rows):
+            # Get the primary key for this row
+            primary_key_id = self._extract_primary_key_id(data_dict, i, table_name)
+
+            # Parse block ranges from JSON metadata
+            ranges_json = data_dict['_meta_block_ranges'][i]
+            if ranges_json:
+                try:
+                    ranges_data = json.loads(ranges_json)
+                    for range_info in ranges_data:
+                        network = range_info['network']
+                        start = range_info['start']
+                        end = range_info['end']
+
+                        # Create index key
+                        index_key = f'block_index:{table_name}:{network}:{start}-{end}'
+
+                        # Add primary key to the index set
+                        pipe.sadd(index_key, primary_key_id)
+
+                        # Set TTL on index if configured
+                        if self.config.ttl:
+                            pipe.expire(index_key, self.config.ttl)
+
+                except (json.JSONDecodeError, KeyError) as e:
+                    self.logger.warning(f'Failed to parse block ranges for indexing: {e}')
+
+    def _extract_primary_key_id(self, data_dict: Dict[str, List], row_index: int, table_name: str) -> str:
+        """
+        Extract a primary key identifier from the row data for use in secondary indexes.
+        This should match the primary key used in the actual data storage.
+        """
+        # Require 'id' field for consistent key generation
+        if 'id' not in data_dict:
+            # This should have been caught by _generate_key_optimized already
+            # but double-check here for secondary index consistency
+            raise ValueError(
+                f"Secondary indexes require an 'id' field in the data. Available fields: {list(data_dict.keys())}"
+            )
+
+        id_value = data_dict['id'][row_index]
+        if id_value is None:
+            raise ValueError(f'ID value is None at row {row_index}. Redis secondary indexes require non-null IDs.')
+
+        return str(id_value)
+
+    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str) -> None:
+        """
+        Handle blockchain reorganization by efficiently deleting affected data using secondary indexes.
+
+        Uses the block range indexes to quickly find and delete all data that overlaps
+        with the invalidation ranges, supporting multi-network scenarios.
+        """
+        if not invalidation_ranges:
+            return
+
+        try:
+            pipe = self.redis_client.pipeline()
+            total_deleted = 0
+
+            for invalidation_range in invalidation_ranges:
+                network = invalidation_range.network
+                reorg_start = invalidation_range.start
+
+                # Find all index keys for this network
+                index_pattern = f'block_index:{table_name}:{network}:*'
+
+                for index_key in self.redis_client.scan_iter(match=index_pattern, count=1000):
+                    # Parse the range from the index key
+                    # Format: block_index:{table}:{network}:{start}-{end}
+                    try:
+                        key_parts = index_key.decode('utf-8').split(':')
+                        range_part = key_parts[-1]  # "{start}-{end}"
+                        _start_str, end_str = range_part.split('-')
+                        range_end = int(end_str)
+
+                        # Check if this range should be invalidated
+                        # In blockchain reorgs: if reorg starts at block N, delete all data where range_end >= N
+                        if range_end >= reorg_start:
+                            # Get all affected primary keys from this index
+                            affected_keys = self.redis_client.smembers(index_key)
+
+                            # Delete the primary data keys
+                            for key_id in affected_keys:
+                                key_id_str = key_id.decode('utf-8') if isinstance(key_id, bytes) else str(key_id)
+                                primary_key = self._construct_primary_key(key_id_str, table_name)
+                                pipe.delete(primary_key)
+                                total_deleted += 1
+
+                            # Delete the index entry itself
+                            pipe.delete(index_key)
+
+                    except (ValueError, IndexError) as e:
+                        self.logger.warning(f'Failed to parse index key {index_key}: {e}')
+                        continue
+
+            # Execute all deletions
+            if total_deleted > 0:
+                pipe.execute()
+                self.logger.info(f"Blockchain reorg deleted {total_deleted} keys from table '{table_name}'")
+            else:
+                self.logger.info(f"No data to delete for reorg in table '{table_name}'")
+
+        except Exception as e:
+            self.logger.error(f"Failed to handle blockchain reorg for table '{table_name}': {str(e)}")
+            raise
+
+    def _construct_primary_key(self, key_id: str, table_name: str) -> str:
+        """
+        Construct the actual primary data key from the key ID used in indexes.
+        This should match the key generation logic used in data storage.
+        """
+        # Use the same pattern as the original key generation
+        # For most cases, this will be {table}:{id}
+        base_pattern = self.config.key_pattern.replace('{table}', table_name)
+
+        # Replace {id} with the actual key_id
+        if '{id}' in base_pattern:
+            return base_pattern.replace('{id}', key_id)
+        else:
+            # Fallback for custom patterns - use table:id format
+            return f'{table_name}:{key_id}'
