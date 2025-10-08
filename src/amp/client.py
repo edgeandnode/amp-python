@@ -346,6 +346,7 @@ class Client:
             yield LoadResult(
                 rows_loaded=0,
                 duration=0.0,
+                ops_per_second=0.0,
                 table_name=destination,
                 loader_type=loader_type,
                 success=False,
