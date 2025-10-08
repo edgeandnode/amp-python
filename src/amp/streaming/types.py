@@ -64,7 +64,12 @@ class BatchMetadata:
     def from_flight_data(cls, metadata_bytes: bytes) -> 'BatchMetadata':
         """Parse metadata from Flight data"""
         try:
-            metadata_dict = json.loads(metadata_bytes.decode('utf-8'))
+            # Handle PyArrow Buffer objects
+            if hasattr(metadata_bytes, 'to_pybytes'):
+                metadata_str = metadata_bytes.to_pybytes().decode('utf-8')
+            else:
+                metadata_str = metadata_bytes.decode('utf-8')
+            metadata_dict = json.loads(metadata_str)
             ranges = [BlockRange.from_dict(r) for r in metadata_dict.get('ranges', [])]
             extra = {k: v for k, v in metadata_dict.items() if k != 'ranges'}
             return cls(ranges=ranges, extra=extra if extra else None)
