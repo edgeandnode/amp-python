@@ -23,9 +23,9 @@ except ImportError:
 class TestPostgreSQLPerformance:
     """Performance tests for PostgreSQL loader"""
 
-    def test_large_table_loading_performance(self, postgresql_config, performance_test_data, memory_monitor):
+    def test_large_table_loading_performance(self, postgresql_test_config, performance_test_data, memory_monitor):
         """Test loading large datasets with performance monitoring"""
-        loader = PostgreSQLLoader(postgresql_config)
+        loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             start_time = time.time()
@@ -59,7 +59,7 @@ class TestPostgreSQLPerformance:
                 finally:
                     loader.pool.putconn(conn)
 
-    def test_batch_performance_scaling(self, postgresql_config, performance_test_data):
+    def test_batch_performance_scaling(self, postgresql_test_config, performance_test_data):
         """Test performance scaling with different batch processing approaches"""
         from src.amp.loaders.base import LoadMode
 
@@ -72,7 +72,7 @@ class TestPostgreSQLPerformance:
         results = {}
 
         for approach_name, batch_size in batch_approaches.items():
-            loader = PostgreSQLLoader(postgresql_config)
+            loader = PostgreSQLLoader(postgresql_test_config)
             table_name = f'perf_batch_{approach_name}'
 
             with loader:
@@ -123,9 +123,9 @@ class TestPostgreSQLPerformance:
         for approach, throughput in results.items():
             assert throughput > 500, f'{approach} too slow: {throughput:.0f} rows/sec'
 
-    def test_connection_pool_performance(self, postgresql_config, small_test_table):
+    def test_connection_pool_performance(self, postgresql_test_config, small_test_table):
         """Test connection pool efficiency under load"""
-        config = {**postgresql_config, 'max_connections': 5}
+        config = {**postgresql_test_config, 'max_connections': 5}
         loader = PostgreSQLLoader(config)
 
         with loader:
@@ -1016,7 +1016,7 @@ class TestCrossLoaderPerformance:
 
     def test_throughput_comparison(
         self,
-        postgresql_config,
+        postgresql_test_config,
         redis_test_config,
         snowflake_config,
         delta_basic_config,
@@ -1027,7 +1027,7 @@ class TestCrossLoaderPerformance:
         results = {}
 
         # Test PostgreSQL
-        pg_loader = PostgreSQLLoader(postgresql_config)
+        pg_loader = PostgreSQLLoader(postgresql_test_config)
         with pg_loader:
             start_time = time.time()
             result = pg_loader.load_table(medium_test_table, 'throughput_test')
@@ -1120,7 +1120,9 @@ class TestCrossLoaderPerformance:
             if throughput > 0:
                 print(f'  {loader_name}: {throughput:.0f}')
 
-    def test_memory_usage_comparison(self, postgresql_config, redis_test_config, snowflake_config, small_test_table):
+    def test_memory_usage_comparison(
+        self, postgresql_test_config, redis_test_config, snowflake_config, small_test_table
+    ):
         """Compare memory usage patterns across loaders"""
         try:
             import psutil
@@ -1132,7 +1134,7 @@ class TestCrossLoaderPerformance:
 
         # Test PostgreSQL memory usage
         initial_memory = process.memory_info().rss
-        pg_loader = PostgreSQLLoader(postgresql_config)
+        pg_loader = PostgreSQLLoader(postgresql_test_config)
         with pg_loader:
             pg_loader.load_table(small_test_table, 'memory_test')
             peak_memory = process.memory_info().rss
