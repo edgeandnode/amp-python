@@ -53,7 +53,8 @@ delta_lake = [
 ]
 
 iceberg = [
-    "pyiceberg[sql-sqlite]>=0.9.1",
+    "pyiceberg[sql-sqlite]>=0.10.0",
+    "pydantic>=2.0,<2.12",  # PyIceberg 0.10.0 has issues with Pydantic 2.12+
 ]
 
 snowflake = [
@@ -68,7 +69,8 @@ all_loaders = [
     "psycopg2-binary>=2.9.0",       # PostgreSQL
     "redis>=4.5.0",                 # Redis
     "deltalake>=1.0.2",             # Delta Lake (consistent version)
-    "pyiceberg[sql-sqlite]>=0.9.1", # Apache Iceberg
+    "pyiceberg[sql-sqlite]>=0.10.0", # Apache Iceberg
+    "pydantic>=2.0,<2.12",          # PyIceberg 0.10.0 compatibility
     "snowflake-connector-python>=3.5.0",  # Snowflake
     "lmdb>=1.4.0",                  # LMDB
 ]
@@ -78,11 +80,11 @@ test = [
     "pytest-asyncio>=0.21.0",
     "pytest-mock>=3.10.0",
     "pytest-cov>=4.0.0",
-    "pytest-xdist>=3.0.0",         # Parallel test execution
-    "pytest-benchmark>=4.0.0",     # Performance benchmarking
-    "testcontainers>=3.7.0",       # Database containers for integration tests
-    "docker>=6.0.0",               # Required by testcontainers
-    "psutil>=5.9.0",               # Memory usage monitoring
+    "pytest-xdist>=3.0.0", # Parallel test execution
+    "pytest-benchmark>=4.0.0", # Performance benchmarking
+    "testcontainers>=4.0.0", # Database containers for integration tests
+    "docker>=6.0.0", # Required by testcontainers
+    "psutil>=5.9.0", # Memory usage monitoring
 ]
 
 [build-system]
@@ -97,6 +99,11 @@ addopts = [
     "-v",
     "--tb=short",
     "--strict-markers",
+]
+filterwarnings = [
+    # Ignore testcontainers deprecation warnings from the library itself
+    "ignore:The @wait_container_is_ready decorator is deprecated:DeprecationWarning:testcontainers",
+    "ignore:The wait_for_logs function with string or callable predicates is deprecated:DeprecationWarning",
 ]
 
 markers = [
