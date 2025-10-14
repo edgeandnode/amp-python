@@ -14,7 +14,6 @@ import pyarrow as pa
 from ..streaming.types import BlockRange, ResponseBatchWithReorg
 from .types import LoadMode, LoadResult
 
-
 # Type variable for configuration classes
 TConfig = TypeVar('TConfig')
 

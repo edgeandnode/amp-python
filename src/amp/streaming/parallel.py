@@ -1,12 +1,10 @@
 """
 Parallel streaming implementation for high-throughput data loading.
 
-This module implements parallel query execution using ThreadPoolExecutor. 
-It partitions streaming queries by block_num ranges using CTEs (Common Table Expressions) 
-that DataFusion inlines efficiently.
+This module implements parallel query execution using ThreadPoolExecutor.
+It partitions streaming queries by block_num ranges
 
 Key design decisions:
-- Uses CTEs to shadow table names with filtered versions for clean partitioning
 - Only supports streaming queries (not regular load operations)
 - Block range partitioning only (block_num or _block_num columns)
 """
@@ -175,8 +173,7 @@ class BlockRangePartitionStrategy:
 
         # Create partition filter
         partition_filter = (
-            f"{partition.block_column} >= {partition.start_block} "
-            f"AND {partition.block_column} < {partition.end_block}"
+            f'{partition.block_column} >= {partition.start_block} AND {partition.block_column} < {partition.end_block}'
         )
 
         # Check if query already has a WHERE clause (case-insensitive)
@@ -201,11 +198,7 @@ class BlockRangePartitionStrategy:
                     end_pos = keyword_pos
 
             # Insert partition filter with AND
-            partitioned_query = (
-                user_query[:end_pos] +
-                f" AND ({partition_filter})" +
-                user_query[end_pos:]
-            )
+            partitioned_query = user_query[:end_pos] + f' AND ({partition_filter})' + user_query[end_pos:]
         else:
             # No WHERE clause - add one before ORDER BY, LIMIT, GROUP BY, or SETTINGS
             end_keywords = [' ORDER BY ', ' LIMIT ', ' GROUP BY ', ' SETTINGS ']
@@ -217,11 +210,7 @@ class BlockRangePartitionStrategy:
                     insert_pos = keyword_pos
 
             # Insert WHERE clause with partition filter
-            partitioned_query = (
-                user_query[:insert_pos] +
-                f" WHERE {partition_filter}" +
-                user_query[insert_pos:]
-            )
+            partitioned_query = user_query[:insert_pos] + f' WHERE {partition_filter}' + user_query[insert_pos:]
 
         return partitioned_query
 
@@ -270,7 +259,7 @@ class ParallelStreamExecutor:
         Raises:
             RuntimeError: If query fails or returns no results
         """
-        query = f"SELECT MAX({self.config.block_column}) as max_block FROM {self.config.table_name}"
+        query = f'SELECT MAX({self.config.block_column}) as max_block FROM {self.config.table_name}'
         self.logger.info(f'Detecting current max block with query: {query}')
 
         try:
@@ -290,7 +279,7 @@ class ParallelStreamExecutor:
 
         except Exception as e:
             self.logger.error(f'Failed to detect max block: {e}')
-            raise RuntimeError(f'Failed to detect current max block from {self.config.table_name}: {e}')
+            raise RuntimeError(f'Failed to detect current max block from {self.config.table_name}: {e}') from e
 
     def execute_parallel_stream(
         self, user_query: str, destination: str, connection_name: str, load_config: Optional[Dict[str, Any]] = None
@@ -443,20 +432,16 @@ class ParallelStreamExecutor:
             # Add block filter to start from (detected_max - buffer) to catch potential reorgs
             # Check if query already has WHERE clause
             where_pos = streaming_query_upper.find(' WHERE ')
-            block_filter = f"{self.config.block_column} >= {continuous_start_block}"
+            block_filter = f'{self.config.block_column} >= {continuous_start_block}'
 
             if where_pos != -1:
                 # Has WHERE clause - append with AND
                 # Find position after WHERE keyword
                 insert_pos = where_pos + len(' WHERE ')
-                streaming_query = (
-                    streaming_query[:insert_pos] +
-                    f"({block_filter}) AND " +
-                    streaming_query[insert_pos:]
-                )
+                streaming_query = streaming_query[:insert_pos] + f'({block_filter}) AND ' + streaming_query[insert_pos:]
             else:
                 # No WHERE clause - add one before SETTINGS if present
-                streaming_query += f" WHERE {block_filter}"
+                streaming_query += f' WHERE {block_filter}'
 
             # Now add streaming settings for continuous mode
             streaming_query += ' SETTINGS stream = true'
@@ -521,7 +506,7 @@ class ParallelStreamExecutor:
                 destination=destination,
                 connection_name=connection_name,
                 read_all=False,  # Stream batches for memory efficiency
-                **load_config
+                **load_config,
             )
 
             # Aggregate results from streaming iterator
@@ -543,7 +528,7 @@ class ParallelStreamExecutor:
             self.logger.info(
                 f'Worker {partition.partition_id} completed: '
                 f'{total_rows:,} rows in {duration:.2f}s '
-                f'({batch_count} batches, {total_rows/duration:.0f} rows/sec)'
+                f'({batch_count} batches, {total_rows / duration:.0f} rows/sec)'
             )
 
             # Return aggregated result
