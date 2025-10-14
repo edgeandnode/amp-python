@@ -45,39 +45,48 @@ class ReorgAwareStream:
 
         Raises:
             StopIteration: When stream is exhausted
+            KeyboardInterrupt: When user cancels the stream
         """
-        # Get next batch from underlying stream
-        batch = next(self.stream_iterator)
+        try:
+            # Get next batch from underlying stream
+            batch = next(self.stream_iterator)
 
-        # Check if this batch contains only duplicate ranges
-        if self._is_duplicate_batch(batch.metadata.ranges):
-            self.logger.debug(f'Skipping duplicate batch with ranges: {batch.metadata.ranges}')
-            # Recursively call to get the next non-duplicate batch
-            return self.__next__()
+            # TODO: look for metadata.ranges_complete to see if it's a batch end. mostly for resuming streams
+            # also document the metadata.  numbers, network, hash, prev_hash (could be null)
+            # Check if this batch contains only duplicate ranges
+            if self._is_duplicate_batch(batch.metadata.ranges):
+                self.logger.debug(f'Skipping duplicate batch with ranges: {batch.metadata.ranges}')
+                # Recursively call to get the next non-duplicate batch
+                return self.__next__()
 
-        # Detect reorgs by comparing with previous ranges
-        invalidation_ranges = self._detect_reorg(batch.metadata.ranges)
+            # Detect reorgs by comparing with previous ranges
+            invalidation_ranges = self._detect_reorg(batch.metadata.ranges)
 
-        # Update previous ranges for each network
-        for range in batch.metadata.ranges:
-            self.prev_ranges_by_network[range.network] = range
+            # Update previous ranges for each network
+            for range in batch.metadata.ranges:
+                self.prev_ranges_by_network[range.network] = range
 
-        # If we detected a reorg, yield the reorg notification first
-        if invalidation_ranges:
-            self.logger.info(f'Reorg detected with {len(invalidation_ranges)} invalidation ranges')
-            # We need to yield the reorg and then the batch
-            # Store the batch to yield after the reorg
-            self._pending_batch = batch
-            return ResponseBatchWithReorg.reorg_batch(invalidation_ranges)
+            # If we detected a reorg, yield the reorg notification first
+            if invalidation_ranges:
+                self.logger.info(f'Reorg detected with {len(invalidation_ranges)} invalidation ranges')
+                # We need to yield the reorg and then the batch
+                # Store the batch to yield after the reorg
+                self._pending_batch = batch
+                return ResponseBatchWithReorg.reorg_batch(invalidation_ranges)
 
-        # Check if we have a pending batch from a previous reorg detection
-        if hasattr(self, '_pending_batch'):
-            pending = self._pending_batch
-            delattr(self, '_pending_batch')
-            return ResponseBatchWithReorg.data_batch(pending)
+            # Check if we have a pending batch from a previous reorg detection
+            if hasattr(self, '_pending_batch'):
+                pending = self._pending_batch
+                delattr(self, '_pending_batch')
+                return ResponseBatchWithReorg.data_batch(pending)
 
-        # Normal case - just return the data batch
-        return ResponseBatchWithReorg.data_batch(batch)
+            # Normal case - just return the data batch
+            return ResponseBatchWithReorg.data_batch(batch)
+
+        except KeyboardInterrupt:
+            self.logger.info('Reorg-aware stream cancelled by user')
+            self.stream_iterator.close()
+            raise
 
     def _detect_reorg(self, current_ranges: List[BlockRange]) -> List[BlockRange]:
         """
