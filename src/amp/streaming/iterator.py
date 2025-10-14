@@ -4,6 +4,7 @@ Streaming result iterator for continuous data loading.
 
 import logging
 import signal
+import threading
 from typing import Iterator, Optional, Tuple
 
 import pyarrow as pa
@@ -31,7 +32,10 @@ class StreamingResultIterator:
         self.logger = logging.getLogger(__name__)
         self._closed = False
 
-        signal.signal(signal.SIGINT, self._handle_interrupt)
+        # Only register signal handler in main thread
+        # Worker threads don't need SIGINT handling and can't register signal handlers
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGINT, self._handle_interrupt)
 
     def __iter__(self) -> Iterator[ResponseBatch]:
         """Return iterator instance"""
