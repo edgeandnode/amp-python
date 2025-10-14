@@ -9,7 +9,13 @@ from . import FlightSql_pb2
 from .config.connection_manager import ConnectionManager
 from .loaders.registry import create_loader, get_available_loaders
 from .loaders.types import LoadConfig, LoadMode, LoadResult
-from .streaming import ParallelConfig, ParallelStreamExecutor, ReorgAwareStream, ResumeWatermark, StreamingResultIterator
+from .streaming import (
+    ParallelConfig,
+    ParallelStreamExecutor,
+    ReorgAwareStream,
+    ResumeWatermark,
+    StreamingResultIterator,
+)
 
 
 class QueryBuilder:
@@ -57,7 +63,7 @@ class QueryBuilder:
 
         # Validate that parallel_config is only used with stream=True
         if kwargs.get('parallel_config'):
-            raise ValueError("parallel_config requires stream=True")
+            raise ValueError('parallel_config requires stream=True')
 
         # Default to batch streaming (read_all=False) for memory efficiency
         kwargs.setdefault('read_all', False)
@@ -238,7 +244,7 @@ class Client:
                 table_name=table_name,
                 loader_type=loader,
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
     def _load_stream(
@@ -264,7 +270,7 @@ class Client:
                 table_name=table_name,
                 loader_type=loader,
                 success=False,
-                error=str(e)
+                error=str(e),
             )
 
     def query_and_load_streaming(
@@ -389,4 +395,3 @@ class Client:
                 error=str(e),
                 metadata={'streaming_error': True},
             )
-

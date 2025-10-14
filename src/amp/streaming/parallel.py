@@ -1,12 +1,10 @@
 """
 Parallel streaming implementation for high-throughput data loading.
 
-This module implements parallel query execution using ThreadPoolExecutor. 
-It partitions streaming queries by block_num ranges using CTEs (Common Table Expressions) 
-that DataFusion inlines efficiently.
+This module implements parallel query execution using ThreadPoolExecutor.
+It partitions streaming queries by block_num ranges
 
 Key design decisions:
-- Uses CTEs to shadow table names with filtered versions for clean partitioning
 - Only supports streaming queries (not regular load operations)
 - Block range partitioning only (block_num or _block_num columns)
 """
@@ -23,6 +21,14 @@ from ..loaders.types import LoadResult
 
 if TYPE_CHECKING:
     from ..client import Client
+
+# SQL keyword constants for query parsing
+_WHERE = ' WHERE '
+_ORDER_BY = ' ORDER BY '
+_LIMIT = ' LIMIT '
+_GROUP_BY = ' GROUP BY '
+_SETTINGS = ' SETTINGS '
+_STREAM_TRUE = 'STREAM = TRUE'
 
 
 @dataclass
@@ -56,6 +62,7 @@ class ParallelConfig:
     partition_size: Optional[int] = None  # Blocks per partition (auto-calculated if not set)
     block_column: str = 'block_num'  # Column name to partition on
     stop_on_error: bool = False  # Stop all workers on first error
+    reorg_buffer: int = 200  # Block overlap when transitioning to continuous streaming (for reorg detection)
 
     def __post_init__(self):
         if self.num_workers < 1:
@@ -175,8 +182,7 @@ class BlockRangePartitionStrategy:
 
         # Create partition filter
         partition_filter = (
-            f"{partition.block_column} >= {partition.start_block} "
-            f"AND {partition.block_column} < {partition.end_block}"
+            f'{partition.block_column} >= {partition.start_block} AND {partition.block_column} < {partition.end_block}'
         )
 
         # Check if query already has a WHERE clause (case-insensitive)
@@ -184,15 +190,15 @@ class BlockRangePartitionStrategy:
         query_upper = user_query.upper()
 
         # Find WHERE position
-        where_pos = query_upper.find(' WHERE ')
+        where_pos = query_upper.find(_WHERE)
 
         if where_pos != -1:
             # Query has WHERE clause - append with AND
             # Need to insert before ORDER BY, LIMIT, GROUP BY, or SETTINGS if they exist
-            insert_pos = where_pos + len(' WHERE ')
+            insert_pos = where_pos + len(_WHERE)
 
             # Find the end of the WHERE clause (before ORDER BY, LIMIT, GROUP BY, SETTINGS)
-            end_keywords = [' ORDER BY ', ' LIMIT ', ' GROUP BY ', ' SETTINGS ']
+            end_keywords = [_ORDER_BY, _LIMIT, _GROUP_BY, _SETTINGS]
             end_pos = len(user_query)
 
             for keyword in end_keywords:
@@ -201,14 +207,10 @@ class BlockRangePartitionStrategy:
                     end_pos = keyword_pos
 
             # Insert partition filter with AND
-            partitioned_query = (
-                user_query[:end_pos] +
-                f" AND ({partition_filter})" +
-                user_query[end_pos:]
-            )
+            partitioned_query = user_query[:end_pos] + f' AND ({partition_filter})' + user_query[end_pos:]
         else:
             # No WHERE clause - add one before ORDER BY, LIMIT, GROUP BY, or SETTINGS
-            end_keywords = [' ORDER BY ', ' LIMIT ', ' GROUP BY ', ' SETTINGS ']
+            end_keywords = [_ORDER_BY, _LIMIT, _GROUP_BY, _SETTINGS]
             insert_pos = len(user_query)
 
             for keyword in end_keywords:
@@ -217,11 +219,7 @@ class BlockRangePartitionStrategy:
                     insert_pos = keyword_pos
 
             # Insert WHERE clause with partition filter
-            partitioned_query = (
-                user_query[:insert_pos] +
-                f" WHERE {partition_filter}" +
-                user_query[insert_pos:]
-            )
+            partitioned_query = user_query[:insert_pos] + f' WHERE {partition_filter}' + user_query[insert_pos:]
 
         return partitioned_query
 
@@ -270,7 +268,7 @@ class ParallelStreamExecutor:
         Raises:
             RuntimeError: If query fails or returns no results
         """
-        query = f"SELECT MAX({self.config.block_column}) as max_block FROM {self.config.table_name}"
+        query = f'SELECT MAX({self.config.block_column}) as max_block FROM {self.config.table_name}'
         self.logger.info(f'Detecting current max block with query: {query}')
 
         try:
@@ -290,7 +288,7 @@ class ParallelStreamExecutor:
 
         except Exception as e:
             self.logger.error(f'Failed to detect max block: {e}')
-            raise RuntimeError(f'Failed to detect current max block from {self.config.table_name}: {e}')
+            raise RuntimeError(f'Failed to detect current max block from {self.config.table_name}: {e}') from e
 
     def execute_parallel_stream(
         self, user_query: str, destination: str, connection_name: str, load_config: Optional[Dict[str, Any]] = None
@@ -377,7 +375,75 @@ class ParallelStreamExecutor:
             f'Starting parallel streaming with {len(partitions)} partitions across {self.config.num_workers} workers'
         )
 
-        # 2. Submit worker tasks
+        # 2. Pre-flight table creation (before workers start)
+        # Create table once to avoid locking complexity in parallel workers
+        try:
+            # Get connection info
+            connection_info = self.client.connection_manager.get_connection_info(connection_name)
+            loader_config = connection_info['config']
+            loader_type = connection_info['loader']
+
+            # Get sample schema by executing LIMIT 1 on original query
+            # We don't need partition filtering for schema detection, just need any row
+            sample_query = user_query.strip().rstrip(';')
+
+            # Remove SETTINGS clause (especially stream = true) to avoid streaming mode
+            sample_query_upper = sample_query.upper()
+            settings_pos = sample_query_upper.find(_SETTINGS)
+            if settings_pos != -1:
+                sample_query = sample_query[:settings_pos].rstrip()
+                sample_query_upper = sample_query.upper()
+
+            # Insert LIMIT 1 before ORDER BY, GROUP BY if present
+            end_keywords = [_ORDER_BY, _GROUP_BY]
+            insert_pos = len(sample_query)
+
+            for keyword in end_keywords:
+                keyword_pos = sample_query_upper.find(keyword)
+                if keyword_pos != -1 and keyword_pos < insert_pos:
+                    insert_pos = keyword_pos
+
+            # Insert LIMIT 1 at the correct position
+            sample_query = sample_query[:insert_pos].rstrip() + ' LIMIT 1' + sample_query[insert_pos:]
+
+            self.logger.debug(f'Fetching schema with sample query: {sample_query[:100]}...')
+            sample_table = self.client.get_sql(sample_query, read_all=True)
+
+            if sample_table.num_rows > 0:
+                # Create loader instance to get effective schema and create table
+                from ..loaders.registry import create_loader
+
+                loader_instance = create_loader(loader_type, loader_config)
+
+                try:
+                    loader_instance.connect()
+
+                    # Get schema from sample batch
+                    sample_batch = sample_table.to_batches()[0]
+                    effective_schema = sample_batch.schema
+
+                    # Create table once with schema
+                    if hasattr(loader_instance, '_create_table_from_schema'):
+                        loader_instance._create_table_from_schema(effective_schema, destination)
+                        loader_instance._created_tables.add(destination)
+                        self.logger.info(f"Pre-created table '{destination}' with {len(effective_schema)} columns")
+                    else:
+                        self.logger.warning('Loader does not support table creation, workers will handle it')
+                finally:
+                    loader_instance.disconnect()
+            else:
+                self.logger.warning('Sample query returned no rows, skipping pre-flight table creation')
+
+            # Update load_config to skip table creation in workers
+            load_config['create_table'] = False
+
+        except Exception as e:
+            self.logger.warning(
+                f'Pre-flight table creation failed: {e}. Workers will attempt table creation with locking.'
+            )
+            # Don't fail the entire job - let workers try to create the table
+
+        # 3. Submit worker tasks
         futures = {}
         for partition in partitions:
             future = self.executor.submit(
@@ -385,7 +451,7 @@ class ParallelStreamExecutor:
             )
             futures[future] = partition
 
-        # 3. Stream results as they complete
+        # 4. Stream results as they complete
         try:
             for future in as_completed(futures):
                 partition = futures[future]
@@ -417,17 +483,16 @@ class ParallelStreamExecutor:
             self.executor.shutdown(wait=True)
             self._log_final_stats()
 
-        # 4. If in hybrid mode, transition to continuous streaming for live blocks
+        # 5. If in hybrid mode, transition to continuous streaming for live blocks
         if continue_streaming:
             # Start continuous streaming with a buffer for reorg overlap
             # This ensures we catch any reorgs that occurred during parallel catchup
-            reorg_buffer = 200
-            continuous_start_block = max(self.config.min_block, detected_max_block - reorg_buffer)
+            continuous_start_block = max(self.config.min_block, detected_max_block - self.config.reorg_buffer)
 
             self.logger.info(
                 f'Parallel catch-up complete (loaded up to block {detected_max_block:,}). '
                 f'Transitioning to continuous streaming from block {continuous_start_block:,} '
-                f'(with {reorg_buffer}-block reorg buffer)...'
+                f'(with {self.config.reorg_buffer}-block reorg buffer)...'
             )
 
             # Ensure query has streaming settings
@@ -443,20 +508,16 @@ class ParallelStreamExecutor:
             # Add block filter to start from (detected_max - buffer) to catch potential reorgs
             # Check if query already has WHERE clause
             where_pos = streaming_query_upper.find(' WHERE ')
-            block_filter = f"{self.config.block_column} >= {continuous_start_block}"
+            block_filter = f'{self.config.block_column} >= {continuous_start_block}'
 
             if where_pos != -1:
                 # Has WHERE clause - append with AND
                 # Find position after WHERE keyword
                 insert_pos = where_pos + len(' WHERE ')
-                streaming_query = (
-                    streaming_query[:insert_pos] +
-                    f"({block_filter}) AND " +
-                    streaming_query[insert_pos:]
-                )
+                streaming_query = streaming_query[:insert_pos] + f'({block_filter}) AND ' + streaming_query[insert_pos:]
             else:
                 # No WHERE clause - add one before SETTINGS if present
-                streaming_query += f" WHERE {block_filter}"
+                streaming_query += f' WHERE {block_filter}'
 
             # Now add streaming settings for continuous mode
             streaming_query += ' SETTINGS stream = true'
@@ -521,7 +582,7 @@ class ParallelStreamExecutor:
                 destination=destination,
                 connection_name=connection_name,
                 read_all=False,  # Stream batches for memory efficiency
-                **load_config
+                **load_config,
             )
 
             # Aggregate results from streaming iterator
@@ -543,7 +604,7 @@ class ParallelStreamExecutor:
             self.logger.info(
                 f'Worker {partition.partition_id} completed: '
                 f'{total_rows:,} rows in {duration:.2f}s '
-                f'({batch_count} batches, {total_rows/duration:.0f} rows/sec)'
+                f'({batch_count} batches, {total_rows / duration:.0f} rows/sec)'
             )
 
             # Return aggregated result

@@ -233,7 +233,23 @@ except KeyboardInterrupt:
     print("\nStopped by user")
 ```
 
-**Note on Reorg Buffer**: When transitioning from parallel catchup to continuous streaming, the system automatically starts continuous streaming from `detected_max_block - 200`. This 200-block overlap ensures that any reorgs that occurred during the parallel catchup phase are detected and handled properly. With reorg detection enabled, duplicate blocks are automatically handled correctly.
+**Note on Reorg Buffer**: When transitioning from parallel catchup to continuous streaming, the system automatically starts continuous streaming from `detected_max_block - reorg_buffer` (default: 200 blocks). This overlap ensures that any reorgs that occurred during the parallel catchup phase are detected and handled properly. With reorg detection enabled, duplicate blocks are automatically handled correctly. The `reorg_buffer` can be customized via `ParallelConfig(reorg_buffer=N)`.
+
+## Limitations
+
+Currently, parallel streaming has the following limitations:
+
+1. **Block-based partitioning only**: Only supports partitioning by block number columns (`block_num` or `_block_num`). Tables without block numbers cannot use parallel execution.
+
+2. **Schema detection requires data**: Pre-flight schema detection requires at least 1 row in the source table. Empty tables will skip pre-flight creation and let workers handle it.
+
+3. **Static partitioning**: Partitions are created upfront based on the block range. The system does not support dynamic repartitioning during execution.
+
+4. **Thread-level parallelism**: Uses Python threads (ThreadPoolExecutor), not processes. For CPU-bound transformations, performance may be limited by the GIL.
+
+5. **Single table queries**: The partitioning strategy works best with queries against a single table. Complex joins or unions may require careful query structuring.
+
+6. **Reorg buffer configuration**: The `reorg_buffer` parameter (default: 200 blocks) is configurable but applies uniformly. Per-chain customization requires separate `ParallelConfig` instances.
 
 ## Performance Characteristics
 
@@ -301,16 +317,23 @@ Result: Zero data gaps, all reorgs caught ✓
 ─────────────────────────────────────────────────────────────────────
 ```
 
-**Why 200 blocks?**
+**Why 200 blocks (default)?**
 - Ethereum average reorg depth: 1-5 blocks
 - 200 blocks = ~40 minutes of history
 - Provides safety margin for deep reorgs that occurred during catchup
 - Small performance cost (200 blocks re-loaded) vs high data integrity value
 
 **Customizing the Buffer:**
-Currently hardcoded to 200 blocks. To modify, edit `parallel.py`:
+The reorg buffer is fully configurable via `ParallelConfig`:
 ```python
-reorg_buffer = 200  # Increase for networks with deeper reorgs
+parallel_config = ParallelConfig(
+    num_workers=4,
+    table_name='eth_firehose.blocks',
+    min_block=0,
+    max_block=None,  # Hybrid mode
+    reorg_buffer=500,  # Increase for networks with deeper reorgs (e.g., testnets)
+    block_column='block_num'
+)
 ```
 
 ### Custom Partition Filters
