@@ -21,8 +21,9 @@ Usage:
         pass
 """
 
-from .base import DataLoader, LoadConfig, LoadMode, LoadResult
+from .base import DataLoader
 from .registry import LoaderRegistry, create_loader, get_available_loaders, get_loader_class
+from .types import LoadConfig, LoadMode, LoadResult
 
 # Trigger auto-discovery on import
 LoaderRegistry._ensure_auto_discovery()
