@@ -364,18 +364,7 @@ class DataLoader(ABC, Generic[TConfig]):
 
                     except Exception as e:
                         self.logger.error(f'Failed to handle reorg: {str(e)}')
-                        yield LoadResult(
-                            rows_loaded=0,
-                            duration=duration,
-                            ops_per_second=0,
-                            table_name=table_name,
-                            loader_type=self.__class__.__name__.replace('Loader', '').lower(),
-                            success=False,
-                            error=str(e),
-                            is_reorg=True,
-                            invalidation_ranges=response.invalidation_ranges,
-                        )
-
+                        raise
                 else:
                     # Normal data batch
                     batch_count += 1
@@ -401,6 +390,9 @@ class DataLoader(ABC, Generic[TConfig]):
 
                     yield result
 
+        except KeyboardInterrupt:
+            self.logger.info(f'Streaming cancelled by user after {batch_count} batches, {rows_loaded} rows loaded')
+            raise
         except Exception as e:
             self.logger.error(f'Streaming failed after {batch_count} batches: {str(e)}')
             duration = time.time() - start_time

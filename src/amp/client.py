@@ -323,12 +323,14 @@ class Client:
             any_command.Pack(command_query)
             cmd = any_command.SerializeToString()
 
+            self.logger.info('Establishing Flight SQL connection...')
             flight_descriptor = flight.FlightDescriptor.for_command(cmd)
             info = self.conn.get_flight_info(flight_descriptor)
             reader = self.conn.do_get(info.endpoints[0].ticket)
 
             # Create streaming iterator
             stream_iterator = StreamingResultIterator(reader)
+            self.logger.info('Stream connection established, waiting for data...')
 
             # Optionally wrap with reorg detection
             if with_reorg_detection:
@@ -339,6 +341,7 @@ class Client:
             loader_instance = create_loader(loader_type, loader_config)
 
             with loader_instance:
+                self.logger.info(f'Starting continuous load to {destination}. Press Ctrl+C to stop.')
                 yield from loader_instance.load_stream_continuous(stream_iterator, destination, **load_config.__dict__)
 
         except Exception as e:

@@ -3,6 +3,7 @@ Streaming result iterator for continuous data loading.
 """
 
 import logging
+import signal
 from typing import Iterator, Optional, Tuple
 
 import pyarrow as pa
@@ -30,9 +31,26 @@ class StreamingResultIterator:
         self.logger = logging.getLogger(__name__)
         self._closed = False
 
+        signal.signal(signal.SIGINT, self._handle_interrupt)
+
     def __iter__(self) -> Iterator[ResponseBatch]:
         """Return iterator instance"""
         return self
+
+    def close(self):
+        """Close the stream"""
+        if not self._closed:
+            self.logger.info('Closing stream')
+            self._closed = True
+        try:
+            self.flight_reader.cancel()
+        except Exception as e:
+            self.logger.warning(f'Error cancelling flight reader: {e}')
+
+    def _handle_interrupt(self, signum, frame):
+        """Handle SIGINT (Ctrl+C) signal"""
+        self.logger.info('Interrupt signal received (%s), cancelling stream...', signum)
+        self.close()
 
     def __next__(self) -> ResponseBatch:
         """
@@ -43,6 +61,7 @@ class StreamingResultIterator:
 
         Raises:
             StopIteration: When stream is exhausted
+            KeyboardInterrupt: When user cancels the stream
         """
         if self._closed:
             raise StopIteration('Stream has been closed')
@@ -57,12 +76,16 @@ class StreamingResultIterator:
 
             return ResponseBatch(data=batch, metadata=metadata)
 
+        except KeyboardInterrupt:
+            self.logger.info('Stream cancelled by user')
+            self.close()
+            raise
         except StopIteration:
-            self._closed = True
+            self.close()
             raise
         except Exception as e:
             self.logger.error(f'Error reading from stream: {e}')
-            self._closed = True
+            self.close()
             raise
 
     def _read_next_batch(self) -> Tuple[Optional[pa.RecordBatch], Optional[BatchMetadata]]:
@@ -88,13 +111,6 @@ class StreamingResultIterator:
 
         except StopIteration:
             return None, None
-
-    def close(self) -> None:
-        """Close the underlying stream"""
-        if not self._closed:
-            self._closed = True
-            # PyArrow's FlightStreamReader doesn't have an explicit close method
-            # but we mark it as closed to prevent further reads
 
     def __enter__(self) -> 'StreamingResultIterator':
         """Context manager entry"""
