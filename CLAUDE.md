@@ -72,8 +72,8 @@ When implementing new loaders:
 5. Follow existing patterns from PostgreSQL and Redis loaders
 
 ### Testing Strategy
-- **Unit tests**: Mock external dependencies, test business logic
-- **Integration tests**: Use testcontainers for real database testing
+- **Unit tests**: Test pure logic and data structures WITHOUT mocking. Unit tests should be simple, fast, and test isolated components (dataclasses, utility functions, partitioning logic, etc.). Do NOT add tests that require mocking to `tests/unit/`.
+- **Integration tests**: Use testcontainers for real database testing. Tests that require external dependencies (databases, Flight SQL server, etc.) belong in `tests/integration/`.
 - **Performance tests**: Benchmark data loading operations
 - Tests can be filtered using pytest markers (e.g., `-m unit` for unit tests only)
 
