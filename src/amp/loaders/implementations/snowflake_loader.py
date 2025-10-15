@@ -28,13 +28,6 @@ class SnowflakeConnectionConfig:
     private_key_passphrase: Optional[str] = None
     token: Optional[str] = None
     okta_account_name: Optional[str] = None
-    login_timeout: int = 60
-    network_timeout: int = 300
-    socket_timeout: int = 300
-    ocsp_response_cache_filename: Optional[str] = None
-    validate_default_parameters: bool = True
-    paramstyle: str = 'qmark'
-    timezone: Optional[str] = None
     connection_params: Dict[str, Any] = None
 
     def __post_init__(self):
@@ -78,20 +71,24 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
     def connect(self) -> None:
         """Establish connection to Snowflake"""
         try:
-            # Build connection parameters
+            # Set defaults for connection parameters (can be overridden via connection_params)
+            default_params = {
+                'login_timeout': 60,
+                'network_timeout': 300,
+                'socket_timeout': 300,
+                'validate_default_parameters': True,
+                'paramstyle': 'qmark',
+            }
+
+            # Build connection parameters with required fields
             conn_params = {
                 'account': self.config.account,
                 'user': self.config.user,
                 'warehouse': self.config.warehouse,
                 'database': self.config.database,
                 'schema': self.config.schema,
-                'login_timeout': self.config.login_timeout,
-                'network_timeout': self.config.network_timeout,
-                'socket_timeout': self.config.socket_timeout,
-                'ocsp_response_cache_filename': self.config.ocsp_response_cache_filename,
-                'validate_default_parameters': self.config.validate_default_parameters,
-                'paramstyle': self.config.paramstyle,
-                **self.config.connection_params,
+                **default_params,
+                **self.config.connection_params,  # User params override defaults
             }
 
             # Add authentication parameters
@@ -113,8 +110,6 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             # Optional parameters
             if self.config.role:
                 conn_params['role'] = self.config.role
-            if self.config.timezone:
-                conn_params['timezone'] = self.config.timezone
 
             self.connection = snowflake.connector.connect(**conn_params)
             self.cursor = self.connection.cursor(DictCursor)
