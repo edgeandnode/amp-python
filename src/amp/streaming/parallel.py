@@ -619,6 +619,13 @@ class ParallelStreamExecutor:
                 idx = partition_query_upper.find('SETTINGS STREAM = TRUE')
                 partition_query = partition_query[:idx].rstrip()
 
+            # Add partition metadata for Snowpipe Streaming (separate channel per partition)
+            partition_load_config = {
+                **load_config,
+                'channel_suffix': f'partition_{partition.partition_id}',  # Each worker gets own channel
+                'offset_token': str(partition.start_block),  # Use start block as offset token
+            }
+
             # Execute query and load (NOT streaming mode - we want to load historical range and finish)
             # Use query_and_load with read_all=False to stream batches efficiently
             results_iterator = self.client.query_and_load(
@@ -626,7 +633,7 @@ class ParallelStreamExecutor:
                 destination=destination,
                 connection_name=connection_name,
                 read_all=False,  # Stream batches for memory efficiency
-                **load_config,
+                **partition_load_config,
             )
 
             # Aggregate results from streaming iterator

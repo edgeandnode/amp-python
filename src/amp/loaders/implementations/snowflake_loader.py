@@ -18,9 +18,9 @@ class SnowflakeConnectionConfig:
 
     account: str
     user: str
-    password: str
     warehouse: str
     database: str
+    password: Optional[str] = None  # Optional - required only for password auth
     schema: str = 'PUBLIC'
     role: Optional[str] = None
     authenticator: Optional[str] = None
@@ -37,9 +37,284 @@ class SnowflakeConnectionConfig:
     timezone: Optional[str] = None
     connection_params: Dict[str, Any] = None
 
+    # Loading method configuration
+    loading_method: str = 'stage'  # 'stage', 'insert', or 'snowpipe_streaming'
+
+    # Snowpipe Streaming specific options
+    streaming_channel_prefix: str = 'amp'
+    streaming_max_retries: int = 3
+    streaming_buffer_flush_interval: int = 1
+
     def __post_init__(self):
         if self.connection_params is None:
             self.connection_params = {}
+
+        # Parse private key if it's a PEM string
+        # The Snowflake connector requires a cryptography key object, not a string
+        if self.private_key and isinstance(self.private_key, str):
+            from cryptography.hazmat.backends import default_backend
+            from cryptography.hazmat.primitives import serialization
+
+            try:
+                pem_bytes = self.private_key.encode('utf-8')
+                if self.private_key_passphrase:
+                    passphrase = self.private_key_passphrase.encode('utf-8')
+                    self.private_key = serialization.load_pem_private_key(
+                        pem_bytes, password=passphrase, backend=default_backend()
+                    )
+                else:
+                    self.private_key = serialization.load_pem_private_key(
+                        pem_bytes, password=None, backend=default_backend()
+                    )
+            except Exception as e:
+                raise ValueError(
+                    f'Failed to parse private key: {e}. '
+                    'Ensure the key is in PKCS#8 PEM format (unencrypted or with passphrase).'
+                ) from e
+
+
+class SnowflakeConnectionPool:
+    """
+    Thread-safe connection pool for Snowflake connections.
+
+    Manages a pool of reusable Snowflake connections to avoid the overhead
+    of creating new connections for each parallel worker.
+
+    Features:
+    - Connection health validation before reuse
+    - Automatic connection refresh when stale
+    - Connection age tracking to prevent credential expiration
+    """
+
+    _pools: Dict[str, 'SnowflakeConnectionPool'] = {}
+    _pools_lock = threading.Lock()
+
+    # Connection lifecycle settings
+    MAX_CONNECTION_AGE = 3600  # Max age in seconds (1 hour) before refresh
+    CONNECTION_VALIDATION_TIMEOUT = 5  # Seconds to wait for validation query
+
+    def __init__(self, config: SnowflakeConnectionConfig, pool_size: int = 5):
+        """
+        Initialize connection pool.
+
+        Args:
+            config: Snowflake connection configuration
+            pool_size: Maximum number of connections in the pool
+        """
+        self.config = config
+        self.pool_size = pool_size
+        self._pool: Queue[tuple[SnowflakeConnection, float]] = Queue(maxsize=pool_size)  # (connection, created_at)
+        self._active_connections = 0
+        self._lock = threading.Lock()
+        self._closed = False
+
+    @classmethod
+    def get_pool(cls, config: SnowflakeConnectionConfig, pool_size: int = 5) -> 'SnowflakeConnectionPool':
+        """
+        Get or create a connection pool for the given configuration.
+
+        Uses connection config as key to share pools across loader instances
+        with the same configuration.
+        """
+        # Create a hashable key from config
+        key = f"{config.account}:{config.user}:{config.database}:{config.schema}"
+
+        with cls._pools_lock:
+            if key not in cls._pools:
+                cls._pools[key] = SnowflakeConnectionPool(config, pool_size)
+            return cls._pools[key]
+
+    def _validate_connection(self, connection: SnowflakeConnection) -> bool:
+        """
+        Validate that a connection is still healthy and responsive.
+
+        Args:
+            connection: The connection to validate
+
+        Returns:
+            True if connection is healthy, False otherwise
+        """
+        if connection.is_closed():
+            return False
+
+        try:
+            # Execute a simple query with timeout to verify connection is responsive
+            cursor = connection.cursor()
+            cursor.execute("SELECT 1", timeout=self.CONNECTION_VALIDATION_TIMEOUT)
+            cursor.fetchone()
+            cursor.close()
+            return True
+        except Exception:
+            # Any error means connection is not healthy
+            return False
+
+    def _create_connection(self) -> SnowflakeConnection:
+        """Create a new Snowflake connection"""
+        # Set defaults for connection parameters
+        # Increase timeouts for long-running operations (pandas loading, large datasets)
+        default_params = {
+            'login_timeout': 60,
+            'network_timeout': 600,  # Increased from 300 to 600 (10 minutes)
+            'socket_timeout': 600,  # Increased from 300 to 600 (10 minutes)
+            'validate_default_parameters': True,
+            'paramstyle': 'qmark',
+        }
+
+        # Build connection parameters
+        conn_params = {
+            'account': self.config.account,
+            'user': self.config.user,
+            'warehouse': self.config.warehouse,
+            'database': self.config.database,
+            'schema': self.config.schema,
+            **default_params,
+            **self.config.connection_params,
+        }
+
+        # Add authentication parameters
+        if self.config.authenticator:
+            conn_params['authenticator'] = self.config.authenticator
+            if self.config.authenticator == 'oauth':
+                conn_params['token'] = self.config.token
+            elif self.config.authenticator == 'okta' and self.config.okta_account_name:
+                conn_params['authenticator'] = f'https://{self.config.okta_account_name}.okta.com'
+        elif self.config.private_key:
+            conn_params['private_key'] = self.config.private_key
+            if self.config.private_key_passphrase:
+                conn_params['private_key_passphrase'] = self.config.private_key_passphrase
+        else:
+            conn_params['password'] = self.config.password
+
+        # Optional parameters
+        if self.config.role:
+            conn_params['role'] = self.config.role
+
+        return snowflake.connector.connect(**conn_params)
+
+    def acquire(self, timeout: Optional[float] = 30.0) -> SnowflakeConnection:
+        """
+        Acquire a connection from the pool with health validation.
+
+        Args:
+            timeout: Maximum time to wait for a connection (seconds)
+
+        Returns:
+            A healthy Snowflake connection
+
+        Raises:
+            RuntimeError: If pool is closed or timeout exceeded
+        """
+        if self._closed:
+            raise RuntimeError("Connection pool is closed")
+
+        try:
+            # Try to get an existing connection from the pool
+            connection, created_at = self._pool.get(block=False)
+            connection_age = time.time() - created_at
+
+            # Check if connection is too old or unhealthy
+            if connection_age > self.MAX_CONNECTION_AGE:
+                # Connection too old, close and create new one
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+                with self._lock:
+                    self._active_connections -= 1
+                # Create new connection below
+            elif self._validate_connection(connection):
+                # Connection is healthy, return it
+                return connection
+            else:
+                # Connection unhealthy, close and create new one
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+                with self._lock:
+                    self._active_connections -= 1
+                # Create new connection below
+
+        except Empty:
+            # No connections available in pool
+            pass
+
+        # Create new connection if under pool size limit
+        with self._lock:
+            if self._active_connections < self.pool_size:
+                connection = self._create_connection()
+                self._active_connections += 1
+                return connection
+
+        # Pool is at capacity, wait for a connection to be released
+        try:
+            connection, created_at = self._pool.get(block=True, timeout=timeout)
+            connection_age = time.time() - created_at
+
+            # Validate the connection we got
+            if connection_age > self.MAX_CONNECTION_AGE or not self._validate_connection(connection):
+                # Connection too old or unhealthy, create new one
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+                with self._lock:
+                    self._active_connections -= 1
+                connection = self._create_connection()
+                with self._lock:
+                    self._active_connections += 1
+
+            return connection
+        except Empty:
+            raise RuntimeError(f"Failed to acquire connection from pool within {timeout}s")
+
+    def release(self, connection: SnowflakeConnection) -> None:
+        """
+        Release a connection back to the pool with updated timestamp.
+
+        Args:
+            connection: The connection to release
+        """
+        if self._closed:
+            # Pool is closed, close the connection
+            try:
+                connection.close()
+            except Exception:
+                pass
+            return
+
+        # Return connection to pool if it's still open
+        # Store current time as "created_at" - connection stays fresh when actively used
+        if not connection.is_closed():
+            try:
+                self._pool.put((connection, time.time()), block=False)
+            except Exception:
+                # Pool is full, close the connection
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+                with self._lock:
+                    self._active_connections -= 1
+        else:
+            # Connection is closed, decrement counter
+            with self._lock:
+                self._active_connections -= 1
+
+    def close(self) -> None:
+        """Close all connections in the pool"""
+        self._closed = True
+
+        # Close all connections in the queue
+        while not self._pool.empty():
+            try:
+                connection, _ = self._pool.get(block=False)  # Unpack tuple
+                connection.close()
+            except Exception:
+                pass
+
+        with self._lock:
+            self._active_connections = 0
 
 
 class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
@@ -66,10 +341,17 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         self.cursor = None
         self._created_tables = set()  # Track created tables
 
-        # Loading configuration
+        # Loading configuration (backward compatible with use_stage)
         self.use_stage = config.get('use_stage', True)
         self.stage_name = config.get('stage_name', 'amp_STAGE')
         self.compression = config.get('compression', 'gzip')
+
+        # Determine loading method (use_stage is deprecated in favor of loading_method)
+        self.loading_method = self.config.loading_method
+
+        # Snowpipe Streaming clients and channels (one client per table)
+        self.streaming_clients: Dict[str, Any] = {}  # table_name -> StreamingIngestClient
+        self.streaming_channels: Dict[str, Any] = {}  # table_name:channel_name -> channel
 
     def _get_required_config_fields(self) -> list[str]:
         """Return required configuration fields"""
@@ -126,7 +408,8 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             self.logger.info(f'Warehouse: {result["CURRENT_WAREHOUSE()"]}')
             self.logger.info(f'Database: {result["CURRENT_DATABASE()"]}.{result["CURRENT_SCHEMA()"]}')
 
-            if self.use_stage:
+            # Initialize stage for stage loading (streaming client is created lazily per table)
+            if self.loading_method == 'stage' or self.use_stage:
                 self._create_stage()
 
             self._is_connected = True
@@ -135,8 +418,190 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             self.logger.error(f'Failed to connect to Snowflake: {str(e)}')
             raise
 
+    def _init_streaming_client(self, table_name: str) -> None:
+        """
+        Initialize Snowpipe Streaming client for a specific table.
+
+        Each table gets its own pipe and streaming client because the pipe's
+        COPY INTO clause is tied to a specific table.
+
+        Args:
+            table_name: The target table name (must already exist)
+        """
+        try:
+            from snowflake.ingest.streaming import StreamingIngestClient
+
+            # Pipe name for the Snowpipe Streaming client
+            # NOTE: Don't pre-create the pipe - Snowpipe Streaming SDK manages pipes internally
+            pipe_name = f'{self.config.streaming_channel_prefix}_{table_name}_pipe'
+
+            # Build properties for authentication
+            properties = {
+                'account': self.config.account,
+                'user': self.config.user,
+                'url': f'https://{self.config.account}.snowflakecomputing.com',
+            }
+
+            # Add authentication - Snowpipe Streaming requires key-pair auth
+            if self.config.private_key:
+                from cryptography.hazmat.primitives import serialization
+
+                # Private key is already parsed as a cryptography object in __post_init__
+                # Convert to PEM string for Snowpipe Streaming SDK
+                pem_bytes = self.config.private_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.PKCS8,
+                    encryption_algorithm=serialization.NoEncryption(),
+                )
+                properties['private_key'] = pem_bytes.decode('utf-8')
+            else:
+                # Snowpipe Streaming requires key-pair auth
+                raise ValueError(
+                    'Snowpipe Streaming requires private_key authentication. '
+                    'Password authentication is not supported.'
+                )
+
+            # Add role if specified
+            if self.config.role:
+                properties['role'] = self.config.role
+
+            # Each table gets its own pipe (pipe's COPY INTO is tied to one table)
+            pipe_name = f'{self.config.streaming_channel_prefix}_{table_name}_pipe'
+
+            # Create the streaming pipe before initializing the client
+            # The pipe must exist before the SDK can use it
+            self._create_streaming_pipe(pipe_name, table_name)
+
+            # Create client using Snowpipe Streaming API
+            client = StreamingIngestClient(
+                client_name=f'amp_{self.config.database}_{self.config.schema}_{table_name}',
+                db_name=self.config.database,
+                schema_name=self.config.schema,
+                pipe_name=pipe_name,
+                properties=properties,
+            )
+
+            # Store client for this table
+            self.streaming_clients[table_name] = client
+
+            self.logger.info(f'Initialized Snowpipe Streaming client with pipe {pipe_name} for table {table_name}')
+
+        except ImportError:
+            raise ImportError(
+                'snowpipe-streaming package required for Snowpipe Streaming. '
+                'Install with: pip install snowpipe-streaming'
+            )
+        except Exception as e:
+            self.logger.error(f'Failed to initialize Snowpipe Streaming client for {table_name}: {e}')
+            raise
+
+    def _create_streaming_pipe(self, pipe_name: str, table_name: str) -> None:
+        """
+        Create Snowpipe Streaming pipe if it doesn't exist.
+
+        Uses DATA_SOURCE(TYPE => 'STREAMING') to create a streaming-compatible pipe
+        (not a traditional file-based pipe). The pipe maps VARIANT data from the stream
+        to table columns.
+
+        Args:
+            pipe_name: Name of the pipe to create
+            table_name: Target table for the pipe (table must already exist)
+        """
+        try:
+            # Query table schema to get column names and types
+            # Table must exist before creating the pipe
+            self.cursor.execute(
+                """
+                SELECT COLUMN_NAME, DATA_TYPE
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+                ORDER BY ORDINAL_POSITION
+                """,
+                (self.config.schema, table_name.upper()),
+            )
+            column_info = [(row['COLUMN_NAME'], row['DATA_TYPE']) for row in self.cursor.fetchall()]
+
+            if not column_info:
+                raise RuntimeError(f"Table {table_name} does not exist or has no columns")
+
+            # Build SELECT clause: map $1:column_name::TYPE for each column
+            # The streaming data comes in as VARIANT ($1) and needs to be parsed
+            select_columns = [f"$1:{col}::{dtype}" for col, dtype in column_info]
+            column_names = [col for col, _ in column_info]
+
+            # Create streaming pipe using DATA_SOURCE(TYPE => 'STREAMING')
+            # This creates a streaming-compatible pipe (not file-based)
+            create_pipe_sql = f"""
+            CREATE PIPE IF NOT EXISTS {pipe_name}
+            AS COPY INTO {table_name} ({', '.join(f'"{col}"' for col in column_names)})
+            FROM (
+                SELECT {', '.join(select_columns)}
+                FROM TABLE(DATA_SOURCE(TYPE => 'STREAMING'))
+            )
+            """
+            self.cursor.execute(create_pipe_sql)
+            self.logger.info(f"Created or verified Snowpipe Streaming pipe '{pipe_name}' for table {table_name} with {len(column_info)} columns")
+        except Exception as e:
+            # Pipe creation might fail if it already exists or if we don't have permissions
+            # Log warning but continue - the SDK will validate if the pipe is accessible
+            self.logger.warning(f"Could not create streaming pipe '{pipe_name}': {e}")
+
+    def _get_or_create_channel(self, table_name: str, channel_suffix: str = 'default') -> Any:
+        """
+        Get or create a Snowpipe Streaming channel for a table.
+
+        Args:
+            table_name: Target table name (must already exist in Snowflake)
+            channel_suffix: Suffix for channel name (e.g., 'default', 'partition_0')
+
+        Returns:
+            Streaming channel instance
+        """
+        channel_name = f'{self.config.streaming_channel_prefix}_{table_name}_{channel_suffix}'
+        channel_key = f'{table_name}:{channel_name}'
+
+        if channel_key not in self.streaming_channels:
+            # Get the client for this table
+            client = self.streaming_clients[table_name]
+
+            # Open channel - returns (channel, status) tuple
+            channel, status = client.open_channel(channel_name=channel_name)
+
+            if status != 'OPEN':
+                raise RuntimeError(f'Failed to open streaming channel {channel_name}: status={status}')
+
+            self.streaming_channels[channel_key] = channel
+            self.logger.info(f'Opened Snowpipe Streaming channel: {channel_name}')
+
+        return self.streaming_channels[channel_key]
+
     def disconnect(self) -> None:
-        """Close Snowflake connection"""
+        """Close Snowflake connection and streaming channels"""
+        # Close all streaming channels
+        if self.streaming_channels:
+            self.logger.info(f'Closing {len(self.streaming_channels)} streaming channels...')
+            for channel_key, channel in self.streaming_channels.items():
+                try:
+                    channel.close()
+                    self.logger.debug(f'Closed channel: {channel.name}')
+                except Exception as e:
+                    self.logger.warning(f'Error closing channel: {e}')
+
+            self.streaming_channels.clear()
+
+        # Close all streaming clients
+        if self.streaming_clients:
+            self.logger.info(f'Closing {len(self.streaming_clients)} Snowpipe Streaming clients...')
+            for table_name, client in self.streaming_clients.items():
+                try:
+                    client.close()
+                    self.logger.debug(f'Closed Snowpipe Streaming client for table {table_name}')
+                except Exception as e:
+                    self.logger.warning(f'Error closing streaming client for {table_name}: {e}')
+
+            self.streaming_clients.clear()
+
+        # Close cursor and connection
         if self.cursor:
             self.cursor.close()
             self.cursor = None
@@ -171,12 +636,18 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                 self._create_table_from_schema(batch.schema, table_name)
             self._created_tables.add(table_name.upper())
 
-        if self.use_stage:
+        # Route to appropriate loading method
+        if self.loading_method == 'snowpipe_streaming':
+            rows_loaded = self._load_via_streaming(batch, table_name, **kwargs)
+        elif self.use_stage:
             rows_loaded = self._load_via_stage(batch, table_name)
         else:
             rows_loaded = self._load_via_insert(batch, table_name)
 
-        self.connection.commit()
+        # Commit only for non-streaming methods (streaming commits automatically)
+        if self.loading_method != 'snowpipe_streaming':
+            self.connection.commit()
+
         return rows_loaded
 
     def _create_stage(self) -> None:
@@ -264,6 +735,346 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         self.cursor.executemany(insert_sql, rows)
 
         return len(rows)
+
+    def _load_via_pandas(self, batch: pa.RecordBatch, table_name: str) -> int:
+        """
+        Load data via pandas DataFrame using Snowflake's write_pandas().
+
+        This method leverages Snowflake's native pandas integration which handles
+        type conversions automatically, including binary data.
+
+        Optimizations:
+        - Uses PyArrow-backed DataFrames to avoid unnecessary type conversions
+        - Enables compression for staging files to reduce network transfer
+        - Configures optimal chunk size for parallel uploads
+        - Uses logical types for proper timestamp handling
+        - Retries on transient errors (connection resets, credential expiration)
+
+        Args:
+            batch: PyArrow RecordBatch to load
+            table_name: Target table name (must already exist)
+
+        Returns:
+            Number of rows loaded
+
+        Raises:
+            RuntimeError: If write_pandas fails after retries
+            ImportError: If pandas or snowflake.connector.pandas_tools not available
+        """
+        try:
+            from snowflake.connector.pandas_tools import write_pandas
+        except ImportError:
+            raise ImportError(
+                'pandas and snowflake.connector.pandas_tools are required for pandas loading. '
+                'Install with: pip install pandas'
+            )
+
+        t_start = time.time()
+        max_retries = 3  # Retry on transient errors
+
+        # Convert PyArrow RecordBatch to pandas DataFrame
+        # Use PyArrow-backed DataFrame for zero-copy conversion (more efficient)
+        t_conversion_start = time.time()
+        try:
+            # PyArrow-backed DataFrames avoid unnecessary type conversions
+            # Requires pandas >= 1.5.0 with PyArrow support
+            if pd is not None and hasattr(pd, 'ArrowDtype'):
+                df = batch.to_pandas(types_mapper=pd.ArrowDtype)
+            else:
+                df = batch.to_pandas()
+        except Exception:
+            # Fallback to regular pandas if PyArrow backend not available
+            df = batch.to_pandas()
+        t_conversion_end = time.time()
+        self.logger.debug(f'Pandas conversion took {t_conversion_end - t_conversion_start:.2f}s for {batch.num_rows} rows')
+
+        # Use Snowflake's write_pandas to load data with retry logic
+        # This handles all type conversions internally and is optimized for bulk loading
+        # Let write_pandas handle table creation for better compatibility
+        t_write_start = time.time()
+
+        # Build write_pandas parameters
+        write_params = {
+            'df': df,
+            'table_name': table_name,
+            'database': self.config.database,
+            'schema': self.config.schema,
+            'quote_identifiers': True,  # Quote identifiers for safety
+            'auto_create_table': True,  # Let write_pandas create the table
+            'overwrite': False,  # Append mode - don't overwrite existing data
+            'use_logical_type': True,  # Use proper logical types for timestamps and other complex types
+        }
+
+        # Add compression if configured
+        if self.config.pandas_compression and self.config.pandas_compression != 'none':
+            write_params['compression'] = self.config.pandas_compression
+
+        # Add parallel parameter (may not be supported in all versions)
+        try:
+            write_params['parallel'] = self.config.pandas_parallel_threads
+        except TypeError:
+            # parallel parameter not supported in this version, skip it
+            pass
+
+        # Retry loop for transient errors
+        for attempt in range(max_retries + 1):
+            try:
+                # Pass current connection
+                write_params['conn'] = self.connection
+                success, num_chunks, num_rows, output = write_pandas(**write_params)
+
+                if not success:
+                    raise RuntimeError(f'write_pandas failed: {output}')
+
+                # Success! Break out of retry loop
+                break
+
+            except Exception as e:
+                error_str = str(e).lower()
+                # Check if error is transient (connection reset, credential expiration, timeout)
+                is_transient = any(pattern in error_str for pattern in [
+                    'connection reset', 'econnreset', '403', 'forbidden',
+                    'timeout', 'credential', 'expired', 'connection aborted',
+                    'jwt', 'invalid'  # JWT token expiration
+                ])
+
+                if attempt < max_retries and is_transient:
+                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    self.logger.warning(
+                        f'Pandas loading error (attempt {attempt + 1}/{max_retries + 1}), '
+                        f'refreshing connection and retrying in {wait_time}s: {e}'
+                    )
+                    time.sleep(wait_time)
+
+                    # Get a fresh connection from the pool
+                    # This will trigger connection validation and potential refresh
+                    if self._connection_pool:
+                        self._connection_pool.release(self.connection)
+                        self.connection = self._connection_pool.acquire()
+                        self.cursor = self.connection.cursor(DictCursor)
+                else:
+                    # Final attempt failed or non-transient error
+                    self.logger.error(f'Pandas loading failed after {attempt + 1} attempts: {e}')
+                    raise
+
+        t_write_end = time.time()
+
+        t_end = time.time()
+        write_time = t_write_end - t_write_start
+        total_time = t_end - t_start
+        throughput = num_rows / total_time if total_time > 0 else 0
+
+        self.logger.debug(f'write_pandas took {write_time:.2f}s for {num_rows} rows in {num_chunks} chunks')
+        self.logger.info(f'Total _load_via_pandas took {total_time:.2f}s for {num_rows} rows ({throughput:.0f} rows/sec)')
+
+        return num_rows
+
+    def _arrow_batch_to_snowflake_rows(self, batch: pa.RecordBatch) -> List[Dict[str, Any]]:
+        """
+        Convert PyArrow RecordBatch to list of row dictionaries for Snowpipe Streaming.
+
+        Arrow-optimized implementation:
+        - Uses Arrow's C++ optimized to_pylist() instead of to_pydict()
+        - Pre-identifies column types at schema level (once per batch)
+        - Processes columns independently (better cache locality)
+        - Transposes efficiently using zip()
+
+        Snowpipe Streaming expects row-oriented data as JSON-serializable dictionaries:
+        [
+            {'col1': val1, 'col2': val2, ...},
+            {'col1': val1, 'col2': val2, ...},
+        ]
+        """
+        import datetime
+
+        t_start = time.perf_counter()
+
+        # OPTIMIZATION 1: Pre-identify columns that need conversions (schema analysis once)
+        t_schema_start = time.perf_counter()
+        timestamp_columns = set()
+        binary_columns = set()
+
+        for field in batch.schema:
+            if pa.types.is_timestamp(field.type):
+                timestamp_columns.add(field.name)
+            elif (pa.types.is_binary(field.type) or
+                  pa.types.is_large_binary(field.type) or
+                  pa.types.is_fixed_size_binary(field.type)):
+                binary_columns.add(field.name)
+        t_schema_end = time.perf_counter()
+
+        # OPTIMIZATION 2: Column-wise processing using Arrow's optimized to_pylist()
+        t_conversion_start = time.perf_counter()
+        columns = {}
+        column_names = []
+
+        for field in batch.schema:
+            col_name = field.name
+            column_names.append(col_name)
+
+            # Arrow's to_pylist() is C++ optimized (much faster than Python loops)
+            col_array = batch.column(col_name)
+            pylist = col_array.to_pylist()
+
+            # OPTIMIZATION 3: Vectorized conversions per column (list comprehension)
+            if col_name in timestamp_columns:
+                # Convert timestamps to ISO 8601 strings
+                columns[col_name] = [
+                    v.isoformat() if isinstance(v, datetime.datetime) else None
+                    for v in pylist
+                ]
+            elif col_name in binary_columns:
+                # Convert binary data to hex strings
+                columns[col_name] = [
+                    v.hex() if isinstance(v, bytes) else None
+                    for v in pylist
+                ]
+            else:
+                # No conversion needed
+                columns[col_name] = pylist
+        t_conversion_end = time.perf_counter()
+
+        # OPTIMIZATION 4: Efficient transpose using zip() (C-optimized built-in)
+        t_transpose_start = time.perf_counter()
+        rows = [
+            dict(zip(column_names, row_values))
+            for row_values in zip(*[columns[col] for col in column_names])
+        ]
+        t_transpose_end = time.perf_counter()
+
+        t_end = time.perf_counter()
+
+        # Log timing breakdown with explicit stderr output and flushing
+        import sys
+        total_time = t_end - t_start
+        schema_time = t_schema_end - t_schema_start
+        conversion_time = t_conversion_end - t_conversion_start
+        transpose_time = t_transpose_end - t_transpose_start
+
+        timing_msg = (
+            f'⏱️  Row conversion timing for {batch.num_rows} rows: '
+            f'total={total_time*1000:.2f}ms '
+            f'(schema={schema_time*1000:.2f}ms, '
+            f'conversion={conversion_time*1000:.2f}ms, '
+            f'transpose={transpose_time*1000:.2f}ms)\n'
+        )
+        sys.stderr.write(timing_msg)
+        sys.stderr.flush()
+
+        return rows
+
+    def _is_transient_error(self, error: Exception) -> bool:
+        """
+        Check if error is transient and worth retrying.
+
+        Transient errors include network issues, rate limiting, and temporary service issues.
+        """
+        transient_patterns = [
+            'timeout',
+            'throttle',
+            'rate limit',
+            'service unavailable',
+            'connection reset',
+            'connection refused',
+            'temporarily unavailable',
+            'network',
+        ]
+
+        error_str = str(error).lower()
+        return any(pattern in error_str for pattern in transient_patterns)
+
+    def _append_with_retry(self, channel: Any, rows: List[Dict[str, Any]]) -> None:
+        """
+        Append rows to Snowpipe Streaming channel with automatic retry on transient failures.
+
+        Args:
+            channel: Snowpipe Streaming channel instance
+            rows: List of row dictionaries to append
+
+        Raises:
+            Exception: If insertion fails after all retries
+        """
+        max_retries = self.config.streaming_max_retries
+        rows_loaded = 0
+
+        for attempt in range(max_retries + 1):
+            try:
+                channel.append_rows(rows)
+                self.logger.debug(f'Inserted {len(rows)} rows to Snowpipe Streaming channel')
+                return
+            except Exception as e:
+                # Check if we should retry
+                if attempt < max_retries and self._is_transient_error(e):
+                    wait_time = 2**attempt  # Exponential backoff: 1s, 2s, 4s
+                    self.logger.warning(
+                        f'Snowpipe Streaming error (attempt {attempt + 1}/{max_retries + 1}), '
+                        f'retrying in {wait_time}s: {e}'
+                    )
+                    time.sleep(wait_time)
+                    rows_loaded = 0  # Reset counter for retry
+                else:
+                    # Final attempt failed or non-transient error
+                    self.logger.error(f'Snowpipe Streaming insertion failed after {attempt + 1} attempts: {e}')
+                    raise
+
+    def _load_via_streaming(self, batch: pa.RecordBatch, table_name: str, **kwargs) -> int:
+        """
+        Load data via Snowpipe Streaming API with optimal batch sizes and retry logic.
+
+        Optimizations:
+        - Splits large batches into optimal chunk sizes (50K rows) for Snowpipe Streaming
+        - Uses Arrow's zero-copy slice() operation for efficient chunking
+        - Delegates retry logic to helper method
+
+        Args:
+            batch: PyArrow RecordBatch to load
+            table_name: Target table name (must already exist)
+            **kwargs: Additional options including:
+                - channel_suffix: Optional channel suffix for parallel loading
+                - offset_token: Optional offset token for exactly-once semantics (currently unused)
+
+        Returns:
+            Number of rows loaded
+
+        Raises:
+            RuntimeError: If insertion fails after all retries
+        """
+        # Initialize streaming client for this table if needed (lazy initialization, one client per table)
+        if table_name not in self.streaming_clients:
+            self._init_streaming_client(table_name)
+
+        # Get channel (create if needed)
+        channel_suffix = kwargs.get('channel_suffix', 'default')
+        channel = self._get_or_create_channel(table_name, channel_suffix)
+
+        # OPTIMIZATION: Split large batches into optimal chunks for Snowpipe Streaming
+        # Snowpipe Streaming works best with chunks of 10K-50K rows
+        MAX_ROWS_PER_CHUNK = 50000
+
+        if batch.num_rows > MAX_ROWS_PER_CHUNK:
+            # Process in chunks using Arrow's zero-copy slice operation
+            total_loaded = 0
+            for offset in range(0, batch.num_rows, MAX_ROWS_PER_CHUNK):
+                chunk_size = min(MAX_ROWS_PER_CHUNK, batch.num_rows - offset)
+                chunk = batch.slice(offset, chunk_size)  # Zero-copy slice!
+
+                # Convert chunk to row-oriented format
+                rows = self._arrow_batch_to_snowflake_rows(chunk)
+
+                # Append with retry logic
+                self._append_with_retry(channel, rows)
+                total_loaded += len(rows)
+
+            self.logger.debug(
+                f'Loaded {total_loaded} rows to Snowpipe Streaming in '
+                f'{(batch.num_rows + MAX_ROWS_PER_CHUNK - 1) // MAX_ROWS_PER_CHUNK} chunks'
+            )
+            return total_loaded
+        else:
+            # Single batch (small enough to process at once)
+            rows = self._arrow_batch_to_snowflake_rows(batch)
+            self._append_with_retry(channel, rows)
+            return len(rows)
 
     def _create_table_from_schema(self, schema: pa.Schema, table_name: str) -> None:
         """Create Snowflake table from Arrow schema"""
@@ -466,8 +1277,13 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         """
         Handle blockchain reorganization by deleting affected rows from Snowflake.
 
-        Snowflake's SQL capabilities allow for efficient deletion using JSON functions
-        to parse the _meta_block_ranges column and identify affected rows.
+        For Snowpipe Streaming mode:
+        - Closes all streaming channels for the affected table
+        - Performs SQL-based deletion of affected rows
+        - Channels will be recreated on next insert with new offset tokens
+
+        For stage/insert modes:
+        - Uses SQL-based deletion with JSON functions to identify affected rows
 
         Args:
             invalidation_ranges: List of block ranges to invalidate (reorg points)
@@ -477,6 +1293,35 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             return
 
         try:
+            # For Snowpipe Streaming mode, close all channels for this table before deletion
+            if self.loading_method == 'snowpipe_streaming' and self.streaming_channels:
+                channels_to_close = []
+
+                # Find all channels for this table
+                for channel_key, channel in list(self.streaming_channels.items()):
+                    if channel_key.startswith(f'{table_name}:'):
+                        channels_to_close.append((channel_key, channel))
+
+                # Close and remove the channels
+                if channels_to_close:
+                    self.logger.info(
+                        f'Closing {len(channels_to_close)} streaming channels for table '
+                        f"'{table_name}' due to blockchain reorg"
+                    )
+
+                    for channel_key, channel in channels_to_close:
+                        try:
+                            channel.close()
+                            del self.streaming_channels[channel_key]
+                            self.logger.debug(f'Closed streaming channel: {channel.name}')
+                        except Exception as e:
+                            self.logger.warning(f'Error closing channel {channel.name}: {e}')
+                            # Continue closing other channels even if one fails
+
+                    self.logger.info(
+                        f'All streaming channels for table \'{table_name}\' closed. '
+                        'Channels will be recreated on next insert with new offset tokens.'
+                    )
             # First check if the table has the metadata column
             self.cursor.execute(
                 """

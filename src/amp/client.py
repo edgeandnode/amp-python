@@ -211,6 +211,13 @@ class Client:
             **{k: v for k, v in kwargs.items() if k in ['max_retries', 'retry_delay']},
         )
 
+        # Remove known LoadConfig params from kwargs, leaving loader-specific params
+        for key in ['max_retries', 'retry_delay']:
+            kwargs.pop(key, None)
+
+        # Remaining kwargs are loader-specific (e.g., channel_suffix for Snowflake)
+        loader_specific_kwargs = kwargs
+
         if read_all:
             self.logger.info(f'Loading entire query result to {loader_type}:{destination}')
         else:
@@ -221,20 +228,20 @@ class Client:
         # Get the data and load
         if read_all:
             table = self.get_sql(query, read_all=True)
-            return self._load_table(table, loader_type, destination, loader_config, load_config)
+            return self._load_table(table, loader_type, destination, loader_config, load_config, **loader_specific_kwargs)
         else:
             batch_stream = self.get_sql(query, read_all=False)
-            return self._load_stream(batch_stream, loader_type, destination, loader_config, load_config)
+            return self._load_stream(batch_stream, loader_type, destination, loader_config, load_config, **loader_specific_kwargs)
 
     def _load_table(
-        self, table: pa.Table, loader: str, table_name: str, config: Dict[str, Any], load_config: LoadConfig
+        self, table: pa.Table, loader: str, table_name: str, config: Dict[str, Any], load_config: LoadConfig, **kwargs
     ) -> LoadResult:
         """Load a complete Arrow Table"""
         try:
             loader_instance = create_loader(loader, config)
 
             with loader_instance:
-                return loader_instance.load_table(table, table_name, **load_config.__dict__)
+                return loader_instance.load_table(table, table_name, **load_config.__dict__, **kwargs)
         except Exception as e:
             self.logger.error(f'Failed to load table: {e}')
             return LoadResult(
@@ -254,13 +261,14 @@ class Client:
         table_name: str,
         config: Dict[str, Any],
         load_config: LoadConfig,
+        **kwargs,
     ) -> Iterator[LoadResult]:
         """Load from a stream of batches"""
         try:
             loader_instance = create_loader(loader, config)
 
             with loader_instance:
-                yield from loader_instance.load_stream(batch_stream, table_name, **load_config.__dict__)
+                yield from loader_instance.load_stream(batch_stream, table_name, **load_config.__dict__, **kwargs)
         except Exception as e:
             self.logger.error(f'Failed to load stream: {e}')
             yield LoadResult(

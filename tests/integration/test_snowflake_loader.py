@@ -29,7 +29,7 @@ except ImportError:
     pytest.skip('amp modules not available', allow_module_level=True)
 
 # Skip all Snowflake tests
-pytestmark = pytest.mark.skip(reason='Requires active Snowflake account - see module docstring for details')
+# pytestmark = pytest.mark.skip(reason='Requires active Snowflake account - see module docstring for details')
 
 
 @pytest.fixture
@@ -85,7 +85,7 @@ class TestSnowflakeLoaderIntegration:
         """Test basic table loading using stage"""
         cleanup_tables.append(test_table_name)
 
-        config = {**snowflake_config, 'use_stage': True}
+        config = {**snowflake_config, 'loading_method': 'stage'}
         loader = SnowflakeLoader(config)
 
         with loader:
@@ -106,7 +106,7 @@ class TestSnowflakeLoaderIntegration:
         cleanup_tables.append(test_table_name)
 
         # Use insert loading
-        config = {**snowflake_config, 'use_stage': False}
+        config = {**snowflake_config, 'loading_method': 'insert'}
         loader = SnowflakeLoader(config)
 
         with loader:
@@ -269,7 +269,7 @@ class TestSnowflakeLoaderIntegration:
         """Test performance with larger dataset"""
         cleanup_tables.append(test_table_name)
 
-        config = {**snowflake_config, 'use_stage': True}
+        config = {**snowflake_config, 'loading_method': 'stage'}
         loader = SnowflakeLoader(config)
 
         with loader:
@@ -336,7 +336,7 @@ class TestSnowflakeLoaderIntegration:
         # Test with different compression
         config = {
             **snowflake_config,
-            'use_stage': True,
+            'loading_method': 'stage',
             'compression': 'zstd',
         }
         loader = SnowflakeLoader(config)
@@ -536,6 +536,70 @@ class TestSnowflakeLoaderIntegration:
             remaining_id = loader.cursor.fetchone()['ID']
             assert remaining_id == 1
 
+    def test_parallel_streaming_with_stage(self, snowflake_config, test_table_name, cleanup_tables):
+        """Test parallel streaming using stage loading method"""
+        import threading
+
+        cleanup_tables.append(test_table_name)
+        config = {**snowflake_config, 'loading_method': 'stage'}
+        loader = SnowflakeLoader(config)
+
+        with loader:
+            # Create table first
+            initial_batch = pa.RecordBatch.from_pydict({
+                'id': [1],
+                'partition': ['partition_0'],
+                'value': [100]
+            })
+            loader.load_batch(initial_batch, test_table_name, create_table=True)
+
+            # Thread lock for serializing access to shared Snowflake connection
+            # (Snowflake connector is not thread-safe)
+            load_lock = threading.Lock()
+
+            # Load multiple batches in parallel from different "streams"
+            def load_partition_data(partition_id: int, start_id: int):
+                """Simulate a stream partition loading data"""
+                for batch_num in range(3):
+                    batch_start = start_id + (batch_num * 10)
+                    batch = pa.RecordBatch.from_pydict({
+                        'id': list(range(batch_start, batch_start + 10)),
+                        'partition': [f'partition_{partition_id}'] * 10,
+                        'value': list(range(batch_start * 100, (batch_start + 10) * 100, 100))
+                    })
+                    # Use lock to ensure thread-safe access to shared connection
+                    with load_lock:
+                        result = loader.load_batch(batch, test_table_name, create_table=False)
+                        assert result.success, f"Partition {partition_id} batch {batch_num} failed: {result.error}"
+
+            # Launch 3 parallel "streams" (threads simulating parallel streaming)
+            threads = []
+            for partition_id in range(3):
+                start_id = 100 + (partition_id * 100)
+                thread = threading.Thread(target=load_partition_data, args=(partition_id, start_id))
+                threads.append(thread)
+                thread.start()
+
+            # Wait for all streams to complete
+            for thread in threads:
+                thread.join()
+
+            # Verify all data loaded correctly
+            loader.cursor.execute(f'SELECT COUNT(*) FROM {test_table_name}')
+            count = loader.cursor.fetchone()['COUNT(*)']
+            # 1 initial + (3 partitions * 3 batches * 10 rows) = 91 rows
+            assert count == 91
+
+            # Verify each partition loaded correctly
+            for partition_id in range(3):
+                loader.cursor.execute(
+                    f'SELECT COUNT(*) FROM {test_table_name} WHERE "partition" = \'partition_{partition_id}\''
+                )
+                partition_count = loader.cursor.fetchone()['COUNT(*)']
+                # partition_0 has 31 rows (1 initial + 30 from thread), others have 30
+                expected_count = 31 if partition_id == 0 else 30
+                assert partition_count == expected_count
+
     def test_streaming_with_reorg(self, snowflake_config, test_table_name, cleanup_tables):
         """Test streaming data with reorg support"""
         from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch, ResponseBatchWithReorg
@@ -586,3 +650,291 @@ class TestSnowflakeLoaderIntegration:
             loader.cursor.execute(f'SELECT id FROM {test_table_name} ORDER BY id')
             remaining_ids = [row['ID'] for row in loader.cursor.fetchall()]
             assert remaining_ids == [1, 2]  # 3 and 4 deleted by reorg
+
+
+@pytest.fixture
+def snowflake_streaming_config():
+    """
+    Snowflake Snowpipe Streaming configuration from environment.
+
+    Requires:
+        - SNOWFLAKE_ACCOUNT: Account identifier
+        - SNOWFLAKE_USER: Username
+        - SNOWFLAKE_WAREHOUSE: Warehouse name
+        - SNOWFLAKE_DATABASE: Database name
+        - SNOWFLAKE_PRIVATE_KEY: Private key in PEM format (as string)
+        - SNOWFLAKE_SCHEMA: Schema name (optional, defaults to PUBLIC)
+        - SNOWFLAKE_ROLE: Role (optional)
+    """
+    import os
+
+    config = {
+        'account': os.getenv('SNOWFLAKE_ACCOUNT', 'test_account'),
+        'user': os.getenv('SNOWFLAKE_USER', 'test_user'),
+        'warehouse': os.getenv('SNOWFLAKE_WAREHOUSE', 'test_warehouse'),
+        'database': os.getenv('SNOWFLAKE_DATABASE', 'test_database'),
+        'schema': os.getenv('SNOWFLAKE_SCHEMA', 'PUBLIC'),
+        'loading_method': 'snowpipe_streaming',
+        'streaming_channel_prefix': 'test_amp',
+        'streaming_max_retries': 3,
+        'streaming_buffer_flush_interval': 1,
+    }
+
+    # Private key is required for Snowpipe Streaming
+    if os.getenv('SNOWFLAKE_PRIVATE_KEY'):
+        config['private_key'] = os.getenv('SNOWFLAKE_PRIVATE_KEY')
+    else:
+        pytest.skip('Snowpipe Streaming requires SNOWFLAKE_PRIVATE_KEY environment variable')
+
+    if os.getenv('SNOWFLAKE_ROLE'):
+        config['role'] = os.getenv('SNOWFLAKE_ROLE')
+
+    return config
+
+
+@pytest.mark.integration
+@pytest.mark.snowflake
+class TestSnowpipeStreamingIntegration:
+    """Integration tests for Snowpipe Streaming functionality"""
+
+    def test_streaming_connection(self, snowflake_streaming_config):
+        """Test connection with Snowpipe Streaming enabled"""
+        loader = SnowflakeLoader(snowflake_streaming_config)
+
+        loader.connect()
+        assert loader._is_connected is True
+        assert loader.connection is not None
+        # Streaming client is lazily initialized (created on first load, not at connection time)
+        assert loader.streaming_client is None
+
+        loader.disconnect()
+        assert loader._is_connected is False
+
+    def test_basic_streaming_batch_load(self, snowflake_streaming_config, small_test_table, test_table_name, cleanup_tables):
+        """Test basic batch loading via Snowpipe Streaming"""
+        cleanup_tables.append(test_table_name)
+        loader = SnowflakeLoader(snowflake_streaming_config)
+
+        with loader:
+            # Load first batch
+            batch = small_test_table.to_batches(max_chunksize=50)[0]
+            result = loader.load_batch(batch, test_table_name, create_table=True)
+
+            assert result.success is True
+            assert result.rows_loaded == batch.num_rows
+            assert result.table_name == test_table_name
+            assert result.metadata['loading_method'] == 'snowpipe_streaming'
+
+            # Data may take a few seconds to be queryable in Snowflake
+            time.sleep(5)
+
+            # Verify data loaded
+            loader.cursor.execute(f'SELECT COUNT(*) FROM {test_table_name}')
+            count = loader.cursor.fetchone()['COUNT(*)']
+            assert count == batch.num_rows
+
+    def test_streaming_multiple_batches(self, snowflake_streaming_config, medium_test_table, test_table_name, cleanup_tables):
+        """Test loading multiple batches via Snowpipe Streaming"""
+        cleanup_tables.append(test_table_name)
+        loader = SnowflakeLoader(snowflake_streaming_config)
+
+        with loader:
+            # Load multiple batches
+            total_rows = 0
+            for i, batch in enumerate(medium_test_table.to_batches(max_chunksize=1000)):
+                result = loader.load_batch(batch, test_table_name, create_table=(i == 0))
+                assert result.success is True
+                total_rows += result.rows_loaded
+
+            assert total_rows == medium_test_table.num_rows
+
+            # Wait for data to be queryable
+            time.sleep(5)
+
+            # Verify all data loaded
+            loader.cursor.execute(f'SELECT COUNT(*) FROM {test_table_name}')
+            count = loader.cursor.fetchone()['COUNT(*)']
+            assert count == medium_test_table.num_rows
+
+    def test_streaming_channel_management(self, snowflake_streaming_config, small_test_table, test_table_name, cleanup_tables):
+        """Test that channels are created and reused properly"""
+        cleanup_tables.append(test_table_name)
+        loader = SnowflakeLoader(snowflake_streaming_config)
+
+        with loader:
+            # Load batches with same channel suffix
+            batch = small_test_table.to_batches(max_chunksize=50)[0]
+
+            result1 = loader.load_batch(batch, test_table_name, create_table=True, channel_suffix='partition_0')
+            assert result1.success is True
+
+            result2 = loader.load_batch(batch, test_table_name, channel_suffix='partition_0')
+            assert result2.success is True
+
+            # Verify channel was reused (check loader's channel cache)
+            channel_key = f'{test_table_name}:test_amp_{test_table_name}_partition_0'
+            assert channel_key in loader.streaming_channels
+
+            # Wait for data to be queryable
+            time.sleep(5)
+
+            # Verify data loaded
+            loader.cursor.execute(f'SELECT COUNT(*) FROM {test_table_name}')
+            count = loader.cursor.fetchone()['COUNT(*)']
+            assert count == batch.num_rows * 2
+
+    def test_streaming_multiple_partitions(self, snowflake_streaming_config, small_test_table, test_table_name, cleanup_tables):
+        """Test parallel streaming with multiple partition channels"""
+        cleanup_tables.append(test_table_name)
+        loader = SnowflakeLoader(snowflake_streaming_config)
+
+        with loader:
+            batch = small_test_table.to_batches(max_chunksize=30)[0]
+
+            # Load to different partitions
+            result1 = loader.load_batch(batch, test_table_name, create_table=True, channel_suffix='partition_0')
+            result2 = loader.load_batch(batch, test_table_name, channel_suffix='partition_1')
+            result3 = loader.load_batch(batch, test_table_name, channel_suffix='partition_2')
+
+            assert result1.success and result2.success and result3.success
+
+            # Verify multiple channels created
+            assert len(loader.streaming_channels) == 3
+
+            # Wait for data to be queryable
+            time.sleep(5)
+
+            # Verify all data loaded
+            loader.cursor.execute(f'SELECT COUNT(*) FROM {test_table_name}')
+            count = loader.cursor.fetchone()['COUNT(*)']
+            assert count == batch.num_rows * 3
+
+    def test_streaming_data_types(self, snowflake_streaming_config, comprehensive_test_data, test_table_name, cleanup_tables):
+        """Test Snowpipe Streaming with various data types"""
+        cleanup_tables.append(test_table_name)
+        loader = SnowflakeLoader(snowflake_streaming_config)
+
+        with loader:
+            result = loader.load_table(comprehensive_test_data, test_table_name, create_table=True)
+            assert result.success is True
+
+            # Wait for data to be queryable
+            time.sleep(5)
+
+            # Verify data
+            loader.cursor.execute(f'SELECT COUNT(*) FROM {test_table_name}')
+            count = loader.cursor.fetchone()['COUNT(*)']
+            assert count == comprehensive_test_data.num_rows
+
+            # Verify specific row
+            loader.cursor.execute(f'SELECT * FROM {test_table_name} WHERE "id" = 0')
+            row = loader.cursor.fetchone()
+            assert row['id'] == 0
+
+    def test_streaming_null_handling(self, snowflake_streaming_config, null_test_data, test_table_name, cleanup_tables):
+        """Test Snowpipe Streaming with NULL values"""
+        cleanup_tables.append(test_table_name)
+        loader = SnowflakeLoader(snowflake_streaming_config)
+
+        with loader:
+            result = loader.load_table(null_test_data, test_table_name, create_table=True)
+            assert result.success is True
+
+            # Wait for data to be queryable
+            time.sleep(5)
+
+            # Verify NULL handling
+            loader.cursor.execute(f'SELECT COUNT(*) FROM {test_table_name} WHERE "text_field" IS NULL')
+            null_count = loader.cursor.fetchone()['COUNT(*)']
+            expected_nulls = sum(1 for val in null_test_data.column('text_field').to_pylist() if val is None)
+            assert null_count == expected_nulls
+
+    def test_streaming_reorg_channel_closure(self, snowflake_streaming_config, test_table_name, cleanup_tables):
+        """Test that reorg properly closes streaming channels"""
+        import json
+
+        from src.amp.streaming.types import BlockRange
+
+        cleanup_tables.append(test_table_name)
+        loader = SnowflakeLoader(snowflake_streaming_config)
+
+        with loader:
+            # Load initial data with multiple channels
+            batch = pa.RecordBatch.from_pydict({
+                'id': [1, 2, 3],
+                'value': [100, 200, 300],
+                '_meta_block_ranges': [json.dumps([{'network': 'ethereum', 'start': 100, 'end': 110}])] * 3
+            })
+
+            loader.load_batch(batch, test_table_name, create_table=True, channel_suffix='partition_0')
+            loader.load_batch(batch, test_table_name, channel_suffix='partition_1')
+
+            # Verify channels exist
+            assert len(loader.streaming_channels) == 2
+
+            # Wait for data to be queryable
+            time.sleep(5)
+
+            # Trigger reorg
+            invalidation_ranges = [BlockRange(network='ethereum', start=100, end=200)]
+            loader._handle_reorg(invalidation_ranges, test_table_name)
+
+            # Verify channels were closed
+            assert len(loader.streaming_channels) == 0
+
+            # Verify data was deleted
+            loader.cursor.execute(f'SELECT COUNT(*) FROM {test_table_name}')
+            count = loader.cursor.fetchone()['COUNT(*)']
+            assert count == 0
+
+    @pytest.mark.slow
+    def test_streaming_performance(self, snowflake_streaming_config, performance_test_data, test_table_name, cleanup_tables):
+        """Test Snowpipe Streaming performance with larger dataset"""
+        cleanup_tables.append(test_table_name)
+        loader = SnowflakeLoader(snowflake_streaming_config)
+
+        with loader:
+            start_time = time.time()
+            result = loader.load_table(performance_test_data, test_table_name, create_table=True)
+            duration = time.time() - start_time
+
+            assert result.success is True
+            assert result.rows_loaded == performance_test_data.num_rows
+
+            rows_per_second = result.rows_loaded / duration
+
+            print('\nSnowpipe Streaming Performance:')
+            print(f'  Total rows: {result.rows_loaded:,}')
+            print(f'  Duration: {duration:.2f}s')
+            print(f'  Throughput: {rows_per_second:,.0f} rows/sec')
+            print(f'  Loading method: {result.metadata.get("loading_method")}')
+
+            # Wait for data to be queryable
+            time.sleep(10)
+
+            # Verify data loaded
+            loader.cursor.execute(f'SELECT COUNT(*) FROM {test_table_name}')
+            count = loader.cursor.fetchone()['COUNT(*)']
+            assert count == performance_test_data.num_rows
+
+    def test_streaming_error_handling(self, snowflake_streaming_config, test_table_name, cleanup_tables):
+        """Test error handling in Snowpipe Streaming"""
+        cleanup_tables.append(test_table_name)
+        loader = SnowflakeLoader(snowflake_streaming_config)
+
+        with loader:
+            # Create table first
+            initial_data = pa.table({'id': [1, 2, 3], 'value': [100, 200, 300]})
+            result = loader.load_table(initial_data, test_table_name, create_table=True)
+            assert result.success is True
+
+            # Try to load incompatible schema (should handle gracefully)
+            incompatible_data = pa.RecordBatch.from_pydict({
+                'id': [4, 5],
+                'different_column': ['a', 'b']  # Schema mismatch
+            })
+
+            result = loader.load_batch(incompatible_data, test_table_name)
+            # Should fail gracefully
+            assert result.success is False
+            assert result.error is not None
