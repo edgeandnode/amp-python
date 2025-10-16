@@ -214,6 +214,264 @@ config = {
 
 **When to use**: Development/testing environments or when loading < 1000 rows per batch.
 
+### Snowpipe Streaming (Low-Latency Ingestion)
+
+**NEW**: High-performance, low-latency data ingestion using Snowflake's Snowpipe Streaming API.
+
+**Benefits**:
+- **Ultra-low latency**: 0.5-2 seconds vs 1-5 minutes for COPY INTO
+- **True streaming**: Data visible immediately after insert
+- **Parallel channels**: Multiple channels for concurrent ingestion
+- **Exactly-once semantics**: Built-in offset tracking prevents duplicates
+- **Ideal for blockchain**: Perfect for real-time blockchain data streaming
+
+**Requirements**:
+- Private key authentication (password auth not supported)
+- `snowpipe-streaming` package installed (`pip install snowpipe-streaming`)
+- Table must exist (auto-created if `create_table=True`)
+
+#### Basic Configuration
+
+```python
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
+
+# Load private key (required for Snowpipe Streaming)
+with open("rsa_key.p8", "rb") as key_file:
+    private_key = serialization.load_pem_private_key(
+        key_file.read(),
+        password=None,
+        backend=default_backend()
+    )
+
+config = {
+    'account': 'myorg-myaccount',
+    'user': 'myuser',
+    'warehouse': 'COMPUTE_WH',
+    'database': 'MY_DATABASE',
+    'private_key': private_key,  # Required for streaming
+
+    # Streaming configuration
+    'loading_method': 'snowpipe_streaming',  # Enable Snowpipe Streaming
+    'streaming_channel_prefix': 'amp',       # Channel name prefix (default: 'amp')
+    'streaming_max_retries': 3,              # Retry attempts for transient errors (default: 3)
+}
+```
+
+#### Basic Streaming Load
+
+```python
+from amp.client import Client
+
+client = Client("grpc://your-amp-server:80")
+
+# Configure with Snowpipe Streaming
+client.configure_connection(
+    name='snowflake_streaming',
+    loader='snowflake',
+    config={
+        'account': 'myorg-myaccount',
+        'user': 'myuser',
+        'warehouse': 'COMPUTE_WH',
+        'database': 'MY_DATABASE',
+        'private_key': private_key,
+        'loading_method': 'snowpipe_streaming',
+    }
+)
+
+# Stream data continuously
+results = client.sql('SELECT * FROM blocks').load(
+    connection='snowflake_streaming',
+    destination='blocks',
+    stream=True,
+)
+
+for result in results:
+    print(f"Streamed {result.rows_loaded:,} rows with {result.duration:.2f}s latency")
+```
+
+#### Parallel Streaming with Multiple Channels
+
+Snowpipe Streaming automatically creates isolated channels for each parallel worker:
+
+```python
+# Enable parallel streaming (4 workers, each with its own channel)
+results = client.sql('SELECT * FROM blocks').load(
+    connection='snowflake_streaming',
+    destination='blocks',
+    stream=True,
+    parallel=True,              # Enable parallel execution
+    num_partitions=4,           # 4 workers = 4 channels
+)
+
+# Behind the scenes, channels are created:
+# - amp_blocks_partition_0
+# - amp_blocks_partition_1
+# - amp_blocks_partition_2
+# - amp_blocks_partition_3
+
+for result in results:
+    print(f"Worker {result.partition_id}: {result.rows_loaded:,} rows")
+```
+
+#### Configuration Options
+
+```python
+config = {
+    # Required
+    'account': 'myorg-myaccount',
+    'user': 'myuser',
+    'warehouse': 'COMPUTE_WH',
+    'database': 'MY_DATABASE',
+    'private_key': private_key,
+
+    # Streaming method
+    'loading_method': 'snowpipe_streaming',
+
+    # Channel configuration
+    'streaming_channel_prefix': 'amp',        # Channel prefix (default: 'amp')
+                                               # Creates channels like: amp_tablename_partition_0
+
+    # Reliability
+    'streaming_max_retries': 3,               # Retry on transient errors (default: 3)
+                                               # Set to 0 to disable retries
+
+    # Buffer settings (for future use)
+    'streaming_buffer_flush_interval': 1,     # Flush interval in seconds (default: 1)
+}
+```
+
+#### Exactly-Once Semantics
+
+Snowpipe Streaming supports exactly-once delivery using offset tokens:
+
+```python
+# Offset tokens are automatically set to block numbers in streaming mode
+# This prevents duplicate data if a worker restarts
+results = client.sql('SELECT * FROM blocks').load(
+    connection='snowflake_streaming',
+    destination='blocks',
+    stream=True,
+    parallel=True,
+)
+
+# Each batch gets an offset token:
+# - Partition 0 starting at block 1000 → offset_token = "1000"
+# - Partition 1 starting at block 2000 → offset_token = "2000"
+# If a worker crashes and restarts, duplicate inserts are prevented
+```
+
+#### Reorg Handling with Snowpipe Streaming
+
+When using Snowpipe Streaming with blockchain reorgs:
+
+```python
+results = client.sql('SELECT * FROM blocks').load(
+    connection='snowflake_streaming',
+    destination='blocks',
+    stream=True,
+    with_reorg_detection=True,
+)
+
+for result in results:
+    if result.is_reorg:
+        # Reorg detected: all channels for this table are automatically closed
+        # Affected rows are deleted via SQL
+        # Channels will be recreated on next insert with new offset tokens
+        print(f"Reorg handled: {len(result.invalidation_ranges)} ranges")
+```
+
+**How it works**:
+1. Reorg detected in streaming data
+2. All Snowpipe channels for the table are closed
+3. SQL-based deletion removes affected rows
+4. Channels automatically recreate on next insert
+5. New offset tokens ensure no duplicates
+
+#### Performance Characteristics
+
+| Metric | Stage (COPY INTO) | Snowpipe Streaming |
+|--------|-------------------|-------------------|
+| Latency | 1-5 minutes | 0.5-2 seconds |
+| Throughput | Very high (bulk) | High (streaming) |
+| Best for | Historical loads | Real-time streaming |
+| Min batch size | 10,000+ rows | 1 row |
+| Parallel support | File-based | Channel-based |
+| Setup complexity | Medium | Medium |
+
+**When to use Snowpipe Streaming**:
+- ✅ Real-time blockchain data ingestion
+- ✅ Low-latency requirements (< 5 seconds)
+- ✅ Parallel streaming with isolated channels
+- ✅ Continuous data streams
+- ❌ Bulk historical loads (use stage loading instead)
+- ❌ Very large batches (> 100K rows per second)
+
+#### Troubleshooting Snowpipe Streaming
+
+**Issue**: `Private key authentication required`
+
+**Solution**: Snowpipe Streaming does not support password authentication:
+```python
+# Load private key
+with open("rsa_key.p8", "rb") as key_file:
+    private_key = serialization.load_pem_private_key(
+        key_file.read(),
+        password=None,
+        backend=default_backend()
+    )
+
+config = {
+    'private_key': private_key,  # Must use key-pair auth
+    # Do NOT use 'password' field
+}
+```
+
+**Issue**: `Channel already exists with different schema`
+
+**Solution**: Channel names must be unique per table. If schema changes, close old channels:
+```python
+# Option 1: Use a different channel prefix
+config = {
+    'streaming_channel_prefix': 'amp_v2',  # New prefix
+}
+
+# Option 2: Manually close channels via Snowflake SQL
+# SYSTEM$STREAM_HAS_DATA('channel_name')
+```
+
+**Issue**: `Transient network errors during insert`
+
+**Solution**: Increase retry attempts:
+```python
+config = {
+    'streaming_max_retries': 5,  # Increase from default 3
+}
+```
+
+The loader automatically retries with exponential backoff (1s, 2s, 4s, 8s, 16s).
+
+**Issue**: `High latency or slow performance`
+
+**Possible causes**:
+1. Warehouse suspended or too small
+2. Network latency to Snowflake
+3. Too many small batches (< 100 rows)
+
+**Solutions**:
+```python
+# 1. Ensure warehouse is running and sized appropriately
+config = {
+    'warehouse': 'LARGE_WH',  # Use larger warehouse
+}
+
+# 2. Increase batch size for better throughput
+results = client.sql(query).load(
+    batch_size=10000,  # Larger batches reduce overhead
+    # ...
+)
+```
+
 ## Usage Examples
 
 ### Basic Loading
@@ -493,4 +751,6 @@ client.configure_connection(
 
 - [Snowflake Python Connector Documentation](https://docs.snowflake.com/en/user-guide/python-connector.html)
 - [Snowflake COPY INTO Documentation](https://docs.snowflake.com/en/sql-reference/sql/copy-into-table.html)
+- [Snowpipe Streaming Documentation](https://docs.snowflake.com/en/user-guide/data-load-snowpipe-streaming-overview.html)
+- [Snowflake Ingest SDK](https://github.com/snowflakedb/snowflake-ingest-python)
 - [Implementing Data Loaders](./implementing_data_loaders.md) - Guide for creating custom loaders

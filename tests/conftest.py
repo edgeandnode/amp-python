@@ -81,12 +81,14 @@ def snowflake_config():
         'warehouse': os.getenv('SNOWFLAKE_WAREHOUSE', 'test_warehouse'),
         'database': os.getenv('SNOWFLAKE_DATABASE', 'test_database'),
         'schema': os.getenv('SNOWFLAKE_SCHEMA', 'PUBLIC'),
-        'use_stage': True,
+        'loading_method': 'stage',  # Default to stage loading for existing tests
     }
 
     # Add optional parameters if they exist
     if os.getenv('SNOWFLAKE_PASSWORD'):
         config['password'] = os.getenv('SNOWFLAKE_PASSWORD')
+    if os.getenv('SNOWFLAKE_PRIVATE_KEY'):
+        config['private_key'] = os.getenv('SNOWFLAKE_PRIVATE_KEY')
     if os.getenv('SNOWFLAKE_ROLE'):
         config['role'] = os.getenv('SNOWFLAKE_ROLE')
     if os.getenv('SNOWFLAKE_AUTHENTICATOR'):
