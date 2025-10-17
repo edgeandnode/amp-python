@@ -1,13 +1,20 @@
 import io
 import threading
 import time
+import uuid
 from dataclasses import dataclass
+from queue import Empty, Queue
 from typing import Any, Dict, List, Optional
 
 import pyarrow as pa
 import pyarrow.csv as pa_csv
 import snowflake.connector
 from snowflake.connector import DictCursor, SnowflakeConnection
+
+try:
+    import pandas as pd
+except ImportError:
+    pd = None  # pandas is optional, only needed for pandas loading method
 
 from ...streaming.types import BlockRange
 from ..base import DataLoader, LoadMode
@@ -39,7 +46,15 @@ class SnowflakeConnectionConfig:
     connection_params: Dict[str, Any] = None
 
     # Loading method configuration
-    loading_method: str = 'stage'  # 'stage', 'insert', or 'snowpipe_streaming'
+    loading_method: str = 'stage'  # 'stage', 'insert', 'pandas', or 'snowpipe_streaming'
+
+    # Connection pooling configuration
+    use_connection_pool: bool = True
+    pool_size: int = 5
+
+    # Pandas loading specific options
+    pandas_compression: str = 'gzip'  # Compression for pandas staging files ('gzip', 'snappy', or 'none')
+    pandas_parallel_threads: int = 4  # Number of parallel threads for pandas uploads
 
     # Snowpipe Streaming specific options
     streaming_channel_prefix: str = 'amp'
@@ -338,16 +353,22 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
 
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__(config)
-        self.connection: SnowflakeConnection = None
+        self.connection: Optional[SnowflakeConnection] = None
         self.cursor = None
         self._created_tables = set()  # Track created tables
+        self._connection_pool: Optional[SnowflakeConnectionPool] = None
+        self._owns_connection = False  # Track if we own the connection or got it from pool
+        self._worker_id = str(uuid.uuid4())[:8]  # Unique identifier for this loader instance
 
-        # Loading configuration (backward compatible with use_stage)
-        self.use_stage = config.get('use_stage', True)
+        # Loading configuration
         self.stage_name = config.get('stage_name', 'amp_STAGE')
         self.compression = config.get('compression', 'gzip')
 
-        # Determine loading method (use_stage is deprecated in favor of loading_method)
+        # Connection pooling configuration (use config object values)
+        self.use_connection_pool = self.config.use_connection_pool
+        self.pool_size = self.config.pool_size
+
+        # Determine loading method from config
         self.loading_method = self.config.loading_method
 
         # Snowpipe Streaming clients and channels (one client per table)
@@ -359,49 +380,75 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         return ['account', 'user', 'warehouse', 'database']
 
     def connect(self) -> None:
-        """Establish connection to Snowflake"""
+        """Establish connection to Snowflake using connection pool if enabled"""
         try:
-            # Build connection parameters
-            conn_params = {
-                'account': self.config.account,
-                'user': self.config.user,
-                'warehouse': self.config.warehouse,
-                'database': self.config.database,
-                'schema': self.config.schema,
-                'login_timeout': self.config.login_timeout,
-                'network_timeout': self.config.network_timeout,
-                'socket_timeout': self.config.socket_timeout,
-                'ocsp_response_cache_filename': self.config.ocsp_response_cache_filename,
-                'validate_default_parameters': self.config.validate_default_parameters,
-                'paramstyle': self.config.paramstyle,
-                **self.config.connection_params,
-            }
+            if self.use_connection_pool:
+                # Get or create connection pool
+                self._connection_pool = SnowflakeConnectionPool.get_pool(self.config, self.pool_size)
 
-            # Add authentication parameters
-            if self.config.authenticator:
-                conn_params['authenticator'] = self.config.authenticator
-                if self.config.authenticator == 'oauth':
-                    conn_params['token'] = self.config.token
-                elif self.config.authenticator == 'externalbrowser':
-                    pass  # No additional params needed
-                elif self.config.authenticator == 'okta' and self.config.okta_account_name:
-                    conn_params['authenticator'] = f'https://{self.config.okta_account_name}.okta.com'
-            elif self.config.private_key:
-                conn_params['private_key'] = self.config.private_key
-                if self.config.private_key_passphrase:
-                    conn_params['private_key_passphrase'] = self.config.private_key_passphrase
+                # Acquire a connection from the pool
+                self.connection = self._connection_pool.acquire()
+                self._owns_connection = False  # Pool owns the connection
+
+                self.logger.info(f'Acquired connection from pool (worker {self._worker_id})')
+
             else:
-                conn_params['password'] = self.config.password
+                # Create dedicated connection (legacy behavior)
+                # Set defaults for connection parameters
+                default_params = {
+                    'login_timeout': 60,
+                    'network_timeout': 300,
+                    'socket_timeout': 300,
+                    'validate_default_parameters': True,
+                    'paramstyle': 'qmark',
+                }
 
-            # Optional parameters
-            if self.config.role:
-                conn_params['role'] = self.config.role
-            if self.config.timezone:
-                conn_params['timezone'] = self.config.timezone
+                conn_params = {
+                    'account': self.config.account,
+                    'user': self.config.user,
+                    'warehouse': self.config.warehouse,
+                    'database': self.config.database,
+                    'schema': self.config.schema,
+                    'login_timeout': self.config.login_timeout,
+                    'network_timeout': self.config.network_timeout,
+                    'socket_timeout': self.config.socket_timeout,
+                    'ocsp_response_cache_filename': self.config.ocsp_response_cache_filename,
+                    'validate_default_parameters': self.config.validate_default_parameters,
+                    'paramstyle': self.config.paramstyle,
+                    **self.config.connection_params,
+                }
 
-            self.connection = snowflake.connector.connect(**conn_params)
+                # Add authentication parameters
+                if self.config.authenticator:
+                    conn_params['authenticator'] = self.config.authenticator
+                    if self.config.authenticator == 'oauth':
+                        conn_params['token'] = self.config.token
+                    elif self.config.authenticator == 'externalbrowser':
+                        pass  # No additional params needed
+                    elif self.config.authenticator == 'okta' and self.config.okta_account_name:
+                        conn_params['authenticator'] = f'https://{self.config.okta_account_name}.okta.com'
+                elif self.config.private_key:
+                    conn_params['private_key'] = self.config.private_key
+                    if self.config.private_key_passphrase:
+                        conn_params['private_key_passphrase'] = self.config.private_key_passphrase
+                else:
+                    conn_params['password'] = self.config.password
+
+                # Optional parameters
+                if self.config.role:
+                    conn_params['role'] = self.config.role
+                if self.config.timezone:
+                    conn_params['timezone'] = self.config.timezone
+
+                self.connection = snowflake.connector.connect(**conn_params)
+                self._owns_connection = True  # We own this connection
+
+                self.logger.info('Created dedicated Snowflake connection')
+
+            # Create cursor
             self.cursor = self.connection.cursor(DictCursor)
 
+            # Log connection info
             self.cursor.execute('SELECT CURRENT_VERSION(), CURRENT_WAREHOUSE(), CURRENT_DATABASE(), CURRENT_SCHEMA()')
             result = self.cursor.fetchone()
 
@@ -410,7 +457,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             self.logger.info(f'Database: {result["CURRENT_DATABASE()"]}.{result["CURRENT_SCHEMA()"]}')
 
             # Initialize stage for stage loading (streaming client is created lazily per table)
-            if self.loading_method == 'stage' or self.use_stage:
+            if self.loading_method == 'stage':
                 self._create_stage()
 
             self._is_connected = True
@@ -421,48 +468,44 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
 
     def _init_streaming_client(self, table_name: str) -> None:
         """
-        Initialize Snowpipe Streaming client for a specific table.
+        Initialize Snowpipe Streaming client.
 
         Each table gets its own pipe and streaming client because the pipe's
         COPY INTO clause is tied to a specific table.
 
         Args:
-            table_name: The target table name (must already exist)
+            table_name: The target table name (for pipe naming)
         """
         try:
             from snowflake.ingest.streaming import StreamingIngestClient
 
-            # Pipe name for the Snowpipe Streaming client
-            # NOTE: Don't pre-create the pipe - Snowpipe Streaming SDK manages pipes internally
-            pipe_name = f'{self.config.streaming_channel_prefix}_{table_name}_pipe'
-
-            # Build properties for authentication
-            properties = {
-                'account': self.config.account,
-                'user': self.config.user,
-                'url': f'https://{self.config.account}.snowflakecomputing.com',
-            }
-
             # Add authentication - Snowpipe Streaming requires key-pair auth
-            if self.config.private_key:
-                from cryptography.hazmat.primitives import serialization
-
-                # Private key is already parsed as a cryptography object in __post_init__
-                # Convert to PEM string for Snowpipe Streaming SDK
-                pem_bytes = self.config.private_key.private_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.PKCS8,
-                    encryption_algorithm=serialization.NoEncryption(),
-                )
-                properties['private_key'] = pem_bytes.decode('utf-8')
-            else:
-                # Snowpipe Streaming requires key-pair auth
+            if not self.config.private_key:
                 raise ValueError(
                     'Snowpipe Streaming requires private_key authentication. '
                     'Password authentication is not supported.'
                 )
 
-            # Add role if specified
+            from cryptography.hazmat.primitives import serialization
+
+            # Private key is already parsed as a cryptography object in __post_init__
+            # Convert to PEM string for Snowpipe Streaming SDK
+            pem_bytes = self.config.private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            private_key_pem = pem_bytes.decode('utf-8')
+
+            # Build properties dict for authentication
+            # Snowpipe Streaming needs host in addition to account
+            properties = {
+                'account': self.config.account,
+                'user': self.config.user,
+                'private_key': private_key_pem,
+                'host': f'{self.config.account}.snowflakecomputing.com',
+            }
+
             if self.config.role:
                 properties['role'] = self.config.role
 
@@ -566,15 +609,11 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             client = self.streaming_clients[table_name]
 
             # Open channel - returns (channel, status) tuple
-            # Status indicates channel state but appears to be a channel object representation
-            result = client.open_channel(channel_name=channel_name)
-            if isinstance(result, tuple):
-                channel, status = result
-            else:
-                channel = result
+            channel, status = client.open_channel(channel_name=channel_name)
+
+            self.logger.info(f'Opened Snowpipe Streaming channel: {channel_name} with status: {status}')
 
             self.streaming_channels[channel_key] = channel
-            self.logger.info(f'Opened Snowpipe Streaming channel: {channel_name}')
 
         return self.streaming_channels[channel_key]
 
@@ -586,9 +625,9 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             for channel_key, channel in self.streaming_channels.items():
                 try:
                     channel.close()
-                    self.logger.debug(f'Closed channel: {channel_key}')
+                    self.logger.debug(f'Closed channel: {channel.name}')
                 except Exception as e:
-                    self.logger.warning(f'Error closing channel {channel_key}: {e}')
+                    self.logger.warning(f'Error closing channel: {e}')
 
             self.streaming_channels.clear()
 
@@ -604,15 +643,25 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
 
             self.streaming_clients.clear()
 
-        # Close cursor and connection
+        # Close cursor
         if self.cursor:
             self.cursor.close()
             self.cursor = None
+
+        # Release connection back to pool or close it
         if self.connection:
-            self.connection.close()
+            if self._connection_pool and not self._owns_connection:
+                # Return connection to pool
+                self._connection_pool.release(self.connection)
+                self.logger.info(f'Released connection to pool (worker {self._worker_id})')
+            else:
+                # Close owned connection
+                self.connection.close()
+                self.logger.info('Closed Snowflake connection')
+
             self.connection = None
+
         self._is_connected = False
-        self.logger.info('Disconnected from Snowflake')
 
     def _clear_table(self, table_name: str) -> None:
         """Clear table for overwrite mode"""
@@ -639,13 +688,15 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                 self._create_table_from_schema(batch.schema, table_name)
             self._created_tables.add(table_name.upper())
 
-        # Route to appropriate loading method
+        # Route to appropriate loading method based on loading_method setting
         if self.loading_method == 'snowpipe_streaming':
             rows_loaded = self._load_via_streaming(batch, table_name, **kwargs)
-        elif self.use_stage:
-            rows_loaded = self._load_via_stage(batch, table_name)
-        else:
+        elif self.loading_method == 'insert':
             rows_loaded = self._load_via_insert(batch, table_name)
+        elif self.loading_method == 'pandas':
+            rows_loaded = self._load_via_pandas(batch, table_name)
+        else:  # default to 'stage'
+            rows_loaded = self._load_via_stage(batch, table_name)
 
         # Commit only for non-streaming methods (streaming commits automatically)
         if self.loading_method != 'snowpipe_streaming':
@@ -678,40 +729,117 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             raise RuntimeError(error_msg) from e
 
     def _load_via_stage(self, batch: pa.RecordBatch, table_name: str) -> int:
-        """Load data via Snowflake internal stage using COPY INTO"""
+        """Load data via Snowflake internal stage using COPY INTO with binary data support"""
+        import datetime
 
+        t_start = time.time()
+
+        # Identify binary columns and convert to hex for CSV compatibility
+        binary_columns = {}
+        modified_arrays = []
+        modified_fields = []
+
+        t_conversion_start = time.time()
+        for i, field in enumerate(batch.schema):
+            col_array = batch.column(i)
+
+            # Check if this is a binary type that needs hex encoding
+            if pa.types.is_binary(field.type) or pa.types.is_large_binary(field.type) or pa.types.is_fixed_size_binary(field.type):
+                binary_columns[field.name] = field.type
+
+                # Convert binary data to hex strings using list comprehension (faster)
+                pylist = col_array.to_pylist()
+                hex_values = [val.hex() if val is not None else None for val in pylist]
+
+                # Create string array for CSV
+                modified_arrays.append(pa.array(hex_values, type=pa.string()))
+                modified_fields.append(pa.field(field.name, pa.string()))
+
+            # Convert timestamps to string for CSV compatibility
+            elif pa.types.is_timestamp(field.type):
+                # Convert to Python list and format as ISO strings (faster)
+                pylist = col_array.to_pylist()
+                timestamp_values = [
+                    dt.strftime('%Y-%m-%d %H:%M:%S.%f') if isinstance(dt, datetime.datetime) else (str(dt) if dt is not None else None)
+                    for dt in pylist
+                ]
+
+                modified_arrays.append(pa.array(timestamp_values, type=pa.string()))
+                modified_fields.append(pa.field(field.name, pa.string()))
+
+            else:
+                # Keep other columns as-is
+                modified_arrays.append(col_array)
+                modified_fields.append(field)
+
+        t_conversion_end = time.time()
+        self.logger.debug(f'Data conversion took {t_conversion_end - t_conversion_start:.2f}s for {batch.num_rows} rows')
+
+        # Create modified batch with hex-encoded binary columns
+        t_batch_start = time.time()
+        modified_schema = pa.schema(modified_fields)
+        modified_batch = pa.RecordBatch.from_arrays(modified_arrays, schema=modified_schema)
+        t_batch_end = time.time()
+        self.logger.debug(f'Batch creation took {t_batch_end - t_batch_start:.2f}s')
+
+        # Write to CSV
+        t_csv_start = time.time()
         csv_buffer = io.BytesIO()
-
         write_options = pa_csv.WriteOptions(include_header=False, delimiter='|', quoting_style='needed')
-
-        pa_csv.write_csv(batch, csv_buffer, write_options=write_options)
+        pa_csv.write_csv(modified_batch, csv_buffer, write_options=write_options)
 
         csv_content = csv_buffer.getvalue()
         csv_buffer.close()
+        t_csv_end = time.time()
+        self.logger.debug(f'CSV writing took {t_csv_end - t_csv_start:.2f}s ({len(csv_content)} bytes)')
 
-        stage_path = f'@{self.stage_name}/temp_{table_name}_{int(time.time() * 1000)}.csv'
+        # Add worker_id to make file names unique across parallel workers
+        stage_path = f'@{self.stage_name}/temp_{table_name}_{self._worker_id}_{int(time.time() * 1000000)}.csv'
 
+        t_put_start = time.time()
         self.cursor.execute(f"PUT 'file://-' {stage_path} OVERWRITE = TRUE", file_stream=io.BytesIO(csv_content))
+        t_put_end = time.time()
+        self.logger.debug(f'PUT command took {t_put_end - t_put_start:.2f}s')
+
+        # Build column list with transformations - convert hex strings back to binary
+        final_column_specs = []
+        for i, field in enumerate(batch.schema, start=1):
+            if field.name in binary_columns:
+                # Use TO_BINARY to convert hex string back to binary
+                final_column_specs.append(f'TO_BINARY(${i}, \'HEX\')')
+            else:
+                final_column_specs.append(f'${i}')
 
         column_names = [f'"{field.name}"' for field in batch.schema]
 
         copy_sql = f"""
         COPY INTO {table_name} ({', '.join(column_names)})
-        FROM {stage_path}
+        FROM (
+            SELECT {', '.join(final_column_specs)}
+            FROM {stage_path}
+        )
         ON_ERROR = 'ABORT_STATEMENT'
         PURGE = TRUE
         """
 
+        t_copy_start = time.time()
         result = self.cursor.execute(copy_sql).fetchone()
         rows_loaded = result['rows_loaded'] if result else batch.num_rows
+        t_copy_end = time.time()
+        self.logger.debug(f'COPY INTO took {t_copy_end - t_copy_start:.2f}s ({rows_loaded} rows)')
+
+        t_end = time.time()
+        self.logger.info(f'Total _load_via_stage took {t_end - t_start:.2f}s for {rows_loaded} rows ({rows_loaded/(t_end - t_start):.0f} rows/sec)')
 
         return rows_loaded
 
     def _load_via_insert(self, batch: pa.RecordBatch, table_name: str) -> int:
-        """Load data via INSERT statements using Arrow's native iteration"""
+        """Load data via INSERT statements with proper type conversions for Snowflake"""
+        import datetime
 
         column_names = [field.name for field in batch.schema]
         quoted_column_names = [f'"{field.name}"' for field in batch.schema]
+        schema_fields = {field.name: field.type for field in batch.schema}
 
         placeholders = ', '.join(['?'] * len(quoted_column_names))
         insert_sql = f"""
@@ -722,15 +850,38 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         rows = []
         data_dict = batch.to_pydict()
 
-        # Transpose to row-wise format
+        # Transpose to row-wise format with type conversions
         for i in range(batch.num_rows):
             row = []
             for col_name in column_names:
                 value = data_dict[col_name][i]
+                field_type = schema_fields[col_name]
 
                 # Convert Arrow nulls to None
                 if value is None or (hasattr(value, 'is_valid') and not value.is_valid):
                     row.append(None)
+                    continue
+
+                # Convert Arrow scalars to Python types if needed
+                if hasattr(value, 'as_py'):
+                    value = value.as_py()
+
+                # Now handle type-specific conversions
+                if value is None:
+                    row.append(None)
+                # Convert timestamps to ISO string for Snowflake
+                # Snowflake connector has issues with datetime objects in qmark paramstyle
+                elif pa.types.is_timestamp(field_type):
+                    if isinstance(value, datetime.datetime):
+                        # Convert to ISO format string that Snowflake can parse
+                        # Format: 'YYYY-MM-DD HH:MM:SS.ffffff'
+                        row.append(value.strftime('%Y-%m-%d %H:%M:%S.%f'))
+                    else:
+                        # Shouldn't reach here after as_py() conversion
+                        row.append(str(value) if value is not None else None)
+                # Keep binary data as bytes (Snowflake handles bytes directly)
+                elif pa.types.is_binary(field_type) or pa.types.is_large_binary(field_type) or pa.types.is_fixed_size_binary(field_type):
+                    row.append(value)
                 else:
                     row.append(value)
             rows.append(row)
@@ -998,7 +1149,6 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             Exception: If insertion fails after all retries
         """
         max_retries = self.config.streaming_max_retries
-        rows_loaded = 0
 
         for attempt in range(max_retries + 1):
             try:
@@ -1014,7 +1164,6 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                         f'retrying in {wait_time}s: {e}'
                     )
                     time.sleep(wait_time)
-                    rows_loaded = 0  # Reset counter for retry
                 else:
                     # Final attempt failed or non-transient error
                     self.logger.error(f'Snowpipe Streaming insertion failed after {attempt + 1} attempts: {e}')
@@ -1319,9 +1468,9 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                         try:
                             channel.close()
                             del self.streaming_channels[channel_key]
-                            self.logger.debug(f'Closed streaming channel: {channel_key}')
+                            self.logger.debug(f'Closed streaming channel: {channel.name}')
                         except Exception as e:
-                            self.logger.warning(f'Error closing channel {channel_key}: {e}')
+                            self.logger.warning(f'Error closing channel {channel.name}: {e}')
                             # Continue closing other channels even if one fails
 
                     self.logger.info(

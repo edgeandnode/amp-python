@@ -199,16 +199,17 @@ class BlockRangePartitionStrategy:
         self.logger.info(f'Created {len(partitions)} partitions from block {min_block:,} to {max_block:,}')
         return partitions
 
+    # TODO: Simplify this, go back to wrapping with CTE?
     def wrap_query_with_partition(self, user_query: str, partition: QueryPartition) -> str:
         """
         Add partition filter to user query's WHERE clause.
 
         Injects a block range filter into the query to partition the data.
-        If the query already has a WHERE clause, appends with AND.
-        If not, adds a new WHERE clause.
+        For simple queries, appends to existing WHERE or adds new WHERE.
+        For nested subqueries, adds WHERE at the outer query level.
 
         Args:
-            user_query: Original user query (e.g., "SELECT * FROM blocks WHERE hash IS NOT NULL")
+            user_query: Original user query
             partition: Partition to apply
 
         Returns:
@@ -222,32 +223,16 @@ class BlockRangePartitionStrategy:
             f'{partition.block_column} >= {partition.start_block} AND {partition.block_column} < {partition.end_block}'
         )
 
-        # Check if query already has a WHERE clause (case-insensitive)
-        # Look for WHERE before any ORDER BY, LIMIT, or SETTINGS clauses
         query_upper = user_query.upper()
 
-        # Find WHERE position
-        where_pos = query_upper.find(_WHERE)
+        # Check if this is a subquery pattern: SELECT ... FROM (...) alias
+        # Look for closing paren followed by an identifier (the alias)
+        has_subquery = ')' in user_query and ' FROM (' in query_upper
 
-        if where_pos != -1:
-            # Query has WHERE clause - append with AND
-            # Need to insert before ORDER BY, LIMIT, GROUP BY, or SETTINGS if they exist
-            insert_pos = where_pos + len(_WHERE)
-
-            # Find the end of the WHERE clause (before ORDER BY, LIMIT, GROUP BY, SETTINGS)
-            end_keywords = [_ORDER_BY, _LIMIT, _GROUP_BY, _SETTINGS]
-            end_pos = len(user_query)
-
-            for keyword in end_keywords:
-                keyword_pos = query_upper.find(keyword, insert_pos)
-                if keyword_pos != -1 and keyword_pos < end_pos:
-                    end_pos = keyword_pos
-
-            # Insert partition filter with AND
-            partitioned_query = user_query[:end_pos] + f' AND ({partition_filter})' + user_query[end_pos:]
-        else:
-            # No WHERE clause - add one before ORDER BY, LIMIT, GROUP BY, or SETTINGS
-            end_keywords = [_ORDER_BY, _LIMIT, _GROUP_BY, _SETTINGS]
+        if has_subquery:
+            # For subqueries, add WHERE at the outer level (after the closing paren and alias)
+            # Find position before ORDER BY, LIMIT, GROUP BY, or SETTINGS
+            end_keywords = [' ORDER BY ', ' LIMIT ', ' GROUP BY ', ' SETTINGS ']
             insert_pos = len(user_query)
 
             for keyword in end_keywords:
@@ -255,8 +240,40 @@ class BlockRangePartitionStrategy:
                 if keyword_pos != -1 and keyword_pos < insert_pos:
                     insert_pos = keyword_pos
 
-            # Insert WHERE clause with partition filter
+            # Insert WHERE clause at outer level
             partitioned_query = user_query[:insert_pos] + f' WHERE {partition_filter}' + user_query[insert_pos:]
+
+        else:
+            # Simple query without subquery - check for existing WHERE
+            where_pos = query_upper.find(_WHERE)
+
+            if where_pos != -1:
+                # Query has WHERE clause - append with AND
+                insert_pos = where_pos + len(_WHERE)
+
+                # Find the end of the WHERE clause
+                end_keywords = [_ORDER_BY, _LIMIT, _GROUP_BY, _SETTINGS]
+                end_pos = len(user_query)
+
+                for keyword in end_keywords:
+                    keyword_pos = query_upper.find(keyword, insert_pos)
+                    if keyword_pos != -1 and keyword_pos < end_pos:
+                        end_pos = keyword_pos
+
+                # Insert partition filter with AND
+                partitioned_query = user_query[:end_pos] + f' AND ({partition_filter})' + user_query[end_pos:]
+            else:
+                # No WHERE clause - add one
+                end_keywords = [_ORDER_BY, _LIMIT, _GROUP_BY, _SETTINGS]
+                insert_pos = len(user_query)
+
+                for keyword in end_keywords:
+                    keyword_pos = query_upper.find(keyword)
+                    if keyword_pos != -1 and keyword_pos < insert_pos:
+                        insert_pos = keyword_pos
+
+                # Insert WHERE clause with partition filter
+                partitioned_query = user_query[:insert_pos] + f' WHERE {partition_filter}' + user_query[insert_pos:]
 
         return partitioned_query
 
@@ -450,7 +467,7 @@ class ParallelStreamExecutor:
             # Insert LIMIT 1 at the correct position
             sample_query = sample_query[:insert_pos].rstrip() + ' LIMIT 1' + sample_query[insert_pos:]
 
-            self.logger.debug(f'Fetching schema with sample query: {sample_query[:100]}...')
+            self.logger.debug(f"Fetching schema with sample query: {sample_query[:100]}...")
             sample_table = self.client.get_sql(sample_query, read_all=True)
 
             if sample_table.num_rows > 0:
@@ -620,6 +637,7 @@ class ParallelStreamExecutor:
                 partition_query = partition_query[:idx].rstrip()
 
             # Add partition metadata for Snowpipe Streaming (separate channel per partition)
+            # Table will be created by first worker with thread-safe locking
             partition_load_config = {
                 **load_config,
                 'channel_suffix': f'partition_{partition.partition_id}',  # Each worker gets own channel
