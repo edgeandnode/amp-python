@@ -1,6 +1,7 @@
 # amp/loaders/implementations/lmdb_loader.py
 
 import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -8,6 +9,7 @@ from typing import Any, Dict, List, Optional
 import lmdb
 import pyarrow as pa
 
+from ...streaming.types import BlockRange
 from ..base import DataLoader, LoadMode
 
 
@@ -347,3 +349,97 @@ class LMDBLoader(DataLoader[LMDBConfig]):
         except Exception as e:
             self.logger.error(f'Failed to get table info: {e}')
             return None
+
+    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str) -> None:
+        """
+        Handle blockchain reorganization by deleting affected entries from LMDB.
+
+        LMDB's key-value architecture requires iterating through entries to find
+        and delete affected data based on the metadata stored in each value.
+
+        Args:
+            invalidation_ranges: List of block ranges to invalidate (reorg points)
+            table_name: The table containing the data to invalidate
+        """
+        if not invalidation_ranges:
+            return
+
+        try:
+            db = self._get_or_create_db(self.config.database_name)
+            deleted_count = 0
+
+            with self.env.begin(write=True, db=db) as txn:
+                cursor = txn.cursor()
+                keys_to_delete = []
+
+                # First pass: identify keys to delete
+                if cursor.first():
+                    while True:
+                        key = cursor.key()
+                        value = cursor.value()
+
+                        # Deserialize the Arrow batch to check metadata
+                        try:
+                            # Read the serialized Arrow batch
+                            reader = pa.ipc.open_stream(value)
+                            batch = reader.read_next_batch()
+
+                            # Check if this batch has metadata column
+                            if '_meta_block_ranges' in batch.schema.names:
+                                # Get the metadata (should be a single row)
+                                meta_idx = batch.schema.get_field_index('_meta_block_ranges')
+                                meta_json = batch.column(meta_idx)[0].as_py()
+
+                                if meta_json:
+                                    try:
+                                        ranges_data = json.loads(meta_json)
+
+                                        # Ensure ranges_data is a list
+                                        if not isinstance(ranges_data, list):
+                                            continue
+
+                                        # Check each invalidation range
+                                        for range_obj in invalidation_ranges:
+                                            network = range_obj.network
+                                            reorg_start = range_obj.start
+
+                                            # Check if any range for this network should be invalidated
+                                            for range_info in ranges_data:
+                                                if (
+                                                    isinstance(range_info, dict)
+                                                    and range_info.get('network') == network
+                                                    and range_info.get('end', 0) >= reorg_start
+                                                ):
+                                                    keys_to_delete.append(key)
+                                                    deleted_count += 1
+                                                    break
+
+                                            if key in keys_to_delete:
+                                                break
+
+                                    except (json.JSONDecodeError, KeyError):
+                                        pass
+
+                        except Exception as e:
+                            self.logger.debug(f'Failed to deserialize entry: {e}')
+
+                        if not cursor.next():
+                            break
+
+                # Second pass: delete identified keys
+                for key in keys_to_delete:
+                    txn.delete(key)
+
+            if deleted_count > 0:
+                self.logger.info(
+                    f'Blockchain reorg deleted {deleted_count} entries from LMDB '
+                    f"(database: '{self.config.database_name or 'main'}')"
+                )
+            else:
+                self.logger.info(
+                    f"No entries to delete for reorg in LMDB (database: '{self.config.database_name or 'main'}')"
+                )
+
+        except Exception as e:
+            self.logger.error(f'Failed to handle blockchain reorg in LMDB: {str(e)}')
+            raise

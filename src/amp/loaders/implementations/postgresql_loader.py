@@ -1,9 +1,10 @@
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import pyarrow as pa
 from psycopg2.pool import ThreadedConnectionPool
 
+from ...streaming.types import BlockRange
 from ..base import DataLoader, LoadMode
 from ._postgres_helpers import has_binary_columns, prepare_csv_data, prepare_insert_data
 
@@ -120,7 +121,8 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
 
     def _copy_arrow_data(self, cursor: Any, data: Union[pa.RecordBatch, pa.Table], table_name: str) -> None:
         """Copy Arrow data to PostgreSQL using optimal method based on data types."""
-        if has_binary_columns(data.schema):
+        # Use INSERT for data with binary columns OR metadata columns (JSONB/range types need special handling)
+        if has_binary_columns(data.schema) or '_meta_block_ranges' in data.schema.names:
             self._insert_arrow_data(cursor, data, table_name)
         else:
             self._csv_copy_arrow_data(cursor, data, table_name)
@@ -160,7 +162,7 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
                 # Check if table already exists to avoid unnecessary work
                 cursor.execute(
                     """
-                    SELECT 1 FROM information_schema.tables 
+                    SELECT 1 FROM information_schema.tables
                     WHERE table_name = %s AND table_schema = 'public'
                 """,
                     (table_name,),
@@ -205,9 +207,18 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
 
                 # Build CREATE TABLE statement
                 columns = []
+                # Check if this is streaming data with metadata columns
+                has_metadata = any(field.name.startswith('_meta_') for field in schema)
+
                 for field in schema:
+                    # Skip generic metadata columns - we'll use _meta_block_range instead
+                    if field.name in ('_meta_range_start', '_meta_range_end'):
+                        continue
+                    # Special handling for JSONB metadata column
+                    elif field.name == '_meta_block_ranges':
+                        pg_type = 'JSONB'
                     # Handle complex types
-                    if pa.types.is_timestamp(field.type):
+                    elif pa.types.is_timestamp(field.type):
                         # Handle timezone-aware timestamps
                         if field.type.tz is not None:
                             pg_type = 'TIMESTAMPTZ'
@@ -246,6 +257,14 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
                     # Quote column name for safety (important for blockchain field names)
                     columns.append(f'"{field.name}" {pg_type}{nullable}')
 
+                # Add metadata columns for streaming/reorg support if this is streaming data
+                # but only if they don't already exist in the schema
+                if has_metadata:
+                    schema_field_names = [field.name for field in schema]
+                    if '_meta_block_ranges' not in schema_field_names:
+                        # Use JSONB for multi-network block ranges with GIN index support
+                        columns.append('"_meta_block_ranges" JSONB')
+
                 # Create the table - Fixed: use proper identifier quoting
                 create_sql = f"""
                 CREATE TABLE IF NOT EXISTS {table_name} (
@@ -272,7 +291,7 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
                     cur.execute(
                         """
                         SELECT column_name, data_type, is_nullable
-                        FROM information_schema.columns 
+                        FROM information_schema.columns
                         WHERE table_name = %s
                         ORDER BY ordinal_position
                     """,
@@ -328,3 +347,70 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
             return pa.decimal128(18, 6)  # Default precision/scale
 
         return type_mapping.get(pg_type, pa.string())  # Default to string
+
+    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str) -> None:
+        """
+        Handle blockchain reorganization by deleting affected rows using PostgreSQL JSONB operations.
+
+        In blockchain reorgs, if block N gets reorganized, ALL blocks >= N become invalid
+        because the chain has forked from that point. This method deletes all data
+        from the reorg point forward for each affected network, including ranges that overlap.
+
+        Args:
+            invalidation_ranges: List of block ranges to invalidate (reorg points)
+            table_name: The table containing the data to invalidate
+        """
+        if not invalidation_ranges:
+            return
+
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                # Build WHERE clause using JSONB operators for multi-network support
+                # For blockchain reorgs: if reorg starts at block N, delete all data that
+                # either starts >= N OR overlaps with N (range_end >= N)
+                where_conditions = []
+                params = []
+
+                for range_obj in invalidation_ranges:
+                    # Delete all data from reorg point forward for this network
+                    # Check if JSONB array contains any range where:
+                    # 1. Network matches
+                    # 2. Range end >= reorg start (catches both overlap and forward cases)
+                    where_conditions.append("""
+                        EXISTS (
+                            SELECT 1 FROM jsonb_array_elements("_meta_block_ranges") AS range_elem
+                            WHERE range_elem->>'network' = %s
+                            AND (range_elem->>'end')::int >= %s
+                        )
+                    """)
+                    params.extend(
+                        [
+                            range_obj.network,
+                            range_obj.start,  # Delete everything where range_end >= reorg_start
+                        ]
+                    )
+
+                # Combine conditions with OR (if any network has reorg, delete the row)
+                where_clause = ' OR '.join(where_conditions)
+
+                # Execute deletion
+                delete_sql = f'DELETE FROM {table_name} WHERE {where_clause}'
+
+                self.logger.info(
+                    f'Executing blockchain reorg deletion for {len(invalidation_ranges)} networks '
+                    f"in table '{table_name}'"
+                )
+                self.logger.debug(f'Delete SQL: {delete_sql} with params: {params}')
+
+                cur.execute(delete_sql, params)
+                deleted_rows = cur.rowcount
+                conn.commit()
+
+                self.logger.info(f"Blockchain reorg deleted {deleted_rows} rows from table '{table_name}'")
+
+        except Exception as e:
+            self.logger.error(f"Failed to handle blockchain reorg for table '{table_name}': {str(e)}")
+            raise
+        finally:
+            self.pool.putconn(conn)

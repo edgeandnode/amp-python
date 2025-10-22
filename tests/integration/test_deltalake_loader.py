@@ -543,3 +543,263 @@ class TestDeltaLakeLoaderAdvanced:
             # Verify final data integrity
             final_data = loader.query_table()
             assert final_data.num_rows == 8  # 5 + 3 * 1
+
+    def test_handle_reorg_no_table(self, delta_basic_config):
+        """Test reorg handling when table doesn't exist"""
+        from src.amp.streaming.types import BlockRange
+
+        loader = DeltaLakeLoader(delta_basic_config)
+
+        with loader:
+            # Call handle reorg on non-existent table
+            invalidation_ranges = [BlockRange(network='ethereum', start=100, end=200)]
+
+            # Should not raise any errors
+            loader._handle_reorg(invalidation_ranges, 'test_reorg_empty')
+
+    def test_handle_reorg_no_metadata_column(self, delta_basic_config):
+        """Test reorg handling when table lacks metadata column"""
+        from src.amp.streaming.types import BlockRange
+
+        loader = DeltaLakeLoader(delta_basic_config)
+
+        with loader:
+            # Create table without metadata column
+            data = pa.table(
+                {
+                    'id': [1, 2, 3],
+                    'block_num': [100, 150, 200],
+                    'value': [10.0, 20.0, 30.0],
+                    'year': [2024, 2024, 2024],
+                    'month': [1, 1, 1],
+                }
+            )
+            loader.load_table(data, 'test_reorg_no_meta', mode=LoadMode.OVERWRITE)
+
+            # Call handle reorg
+            invalidation_ranges = [BlockRange(network='ethereum', start=150, end=250)]
+
+            # Should log warning and not modify data
+            loader._handle_reorg(invalidation_ranges, 'test_reorg_no_meta')
+
+            # Verify data unchanged
+            remaining_data = loader.query_table()
+            assert remaining_data.num_rows == 3
+
+    def test_handle_reorg_single_network(self, delta_basic_config):
+        """Test reorg handling for single network data"""
+        from src.amp.streaming.types import BlockRange
+
+        loader = DeltaLakeLoader(delta_basic_config)
+
+        with loader:
+            # Create table with metadata
+            block_ranges = [
+                [{'network': 'ethereum', 'start': 100, 'end': 110}],
+                [{'network': 'ethereum', 'start': 150, 'end': 160}],
+                [{'network': 'ethereum', 'start': 200, 'end': 210}],
+            ]
+
+            data = pa.table(
+                {
+                    'id': [1, 2, 3],
+                    'block_num': [105, 155, 205],
+                    '_meta_block_ranges': [json.dumps(ranges) for ranges in block_ranges],
+                    'year': [2024, 2024, 2024],
+                    'month': [1, 1, 1],
+                }
+            )
+
+            # Load initial data
+            result = loader.load_table(data, 'test_reorg_single', mode=LoadMode.OVERWRITE)
+            assert result.success
+            assert result.rows_loaded == 3
+
+            # Verify all data exists
+            initial_data = loader.query_table()
+            assert initial_data.num_rows == 3
+
+            # Reorg from block 155 - should delete rows 2 and 3
+            invalidation_ranges = [BlockRange(network='ethereum', start=155, end=300)]
+            loader._handle_reorg(invalidation_ranges, 'test_reorg_single')
+
+            # Verify only first row remains
+            remaining_data = loader.query_table()
+            assert remaining_data.num_rows == 1
+            assert remaining_data['id'][0].as_py() == 1
+
+    def test_handle_reorg_multi_network(self, delta_basic_config):
+        """Test reorg handling preserves data from unaffected networks"""
+        from src.amp.streaming.types import BlockRange
+
+        loader = DeltaLakeLoader(delta_basic_config)
+
+        with loader:
+            # Create data from multiple networks
+            block_ranges = [
+                [{'network': 'ethereum', 'start': 100, 'end': 110}],
+                [{'network': 'polygon', 'start': 100, 'end': 110}],
+                [{'network': 'ethereum', 'start': 150, 'end': 160}],
+                [{'network': 'polygon', 'start': 150, 'end': 160}],
+            ]
+
+            data = pa.table(
+                {
+                    'id': [1, 2, 3, 4],
+                    'network': ['ethereum', 'polygon', 'ethereum', 'polygon'],
+                    '_meta_block_ranges': [json.dumps(r) for r in block_ranges],
+                    'year': [2024, 2024, 2024, 2024],
+                    'month': [1, 1, 1, 1],
+                }
+            )
+
+            # Load initial data
+            result = loader.load_table(data, 'test_reorg_multi', mode=LoadMode.OVERWRITE)
+            assert result.success
+            assert result.rows_loaded == 4
+
+            # Reorg only ethereum from block 150
+            invalidation_ranges = [BlockRange(network='ethereum', start=150, end=200)]
+            loader._handle_reorg(invalidation_ranges, 'test_reorg_multi')
+
+            # Verify ethereum row 3 deleted, but polygon rows preserved
+            remaining_data = loader.query_table()
+            assert remaining_data.num_rows == 3
+            remaining_ids = sorted([id.as_py() for id in remaining_data['id']])
+            assert remaining_ids == [1, 2, 4]  # Row 3 deleted
+
+    def test_handle_reorg_overlapping_ranges(self, delta_basic_config):
+        """Test reorg with overlapping block ranges"""
+        from src.amp.streaming.types import BlockRange
+
+        loader = DeltaLakeLoader(delta_basic_config)
+
+        with loader:
+            # Create data with overlapping ranges
+            block_ranges = [
+                [{'network': 'ethereum', 'start': 90, 'end': 110}],  # Overlaps with reorg
+                [{'network': 'ethereum', 'start': 140, 'end': 160}],  # Overlaps with reorg
+                [{'network': 'ethereum', 'start': 170, 'end': 190}],  # After reorg
+            ]
+
+            data = pa.table(
+                {
+                    'id': [1, 2, 3],
+                    '_meta_block_ranges': [json.dumps(ranges) for ranges in block_ranges],
+                    'year': [2024, 2024, 2024],
+                    'month': [1, 1, 1],
+                }
+            )
+
+            # Load initial data
+            result = loader.load_table(data, 'test_reorg_overlap', mode=LoadMode.OVERWRITE)
+            assert result.success
+            assert result.rows_loaded == 3
+
+            # Reorg from block 150 - should delete rows where end >= 150
+            invalidation_ranges = [BlockRange(network='ethereum', start=150, end=200)]
+            loader._handle_reorg(invalidation_ranges, 'test_reorg_overlap')
+
+            # Only first row should remain (ends at 110 < 150)
+            remaining_data = loader.query_table()
+            assert remaining_data.num_rows == 1
+            assert remaining_data['id'][0].as_py() == 1
+
+    def test_handle_reorg_version_history(self, delta_basic_config):
+        """Test that reorg creates proper version history in Delta Lake"""
+        from src.amp.streaming.types import BlockRange
+
+        loader = DeltaLakeLoader(delta_basic_config)
+
+        with loader:
+            # Create initial data
+            data = pa.table(
+                {
+                    'id': [1, 2, 3],
+                    '_meta_block_ranges': [
+                        json.dumps([{'network': 'ethereum', 'start': i * 50, 'end': i * 50 + 10}]) for i in range(3)
+                    ],
+                    'year': [2024, 2024, 2024],
+                    'month': [1, 1, 1],
+                }
+            )
+
+            # Load initial data
+            loader.load_table(data, 'test_reorg_history', mode=LoadMode.OVERWRITE)
+            initial_version = loader._delta_table.version()
+
+            # Perform reorg
+            invalidation_ranges = [BlockRange(network='ethereum', start=50, end=200)]
+            loader._handle_reorg(invalidation_ranges, 'test_reorg_history')
+
+            # Check that version increased
+            final_version = loader._delta_table.version()
+            assert final_version > initial_version
+
+            # Check history
+            history = loader.get_table_history(limit=5)
+            assert len(history) >= 2
+            # Latest operation should be an overwrite (from reorg)
+            assert history[0]['operation'] == 'WRITE'
+
+    def test_streaming_with_reorg(self, delta_temp_config):
+        """Test streaming data with reorg support"""
+        from src.amp.streaming.types import (
+            BatchMetadata,
+            BlockRange,
+            ResponseBatch,
+            ResponseBatchType,
+            ResponseBatchWithReorg,
+        )
+
+        loader = DeltaLakeLoader(delta_temp_config)
+
+        with loader:
+            # Create streaming data with metadata
+            data1 = pa.RecordBatch.from_pydict(
+                {'id': [1, 2], 'value': [100, 200], 'year': [2024, 2024], 'month': [1, 1]}
+            )
+
+            data2 = pa.RecordBatch.from_pydict(
+                {'id': [3, 4], 'value': [300, 400], 'year': [2024, 2024], 'month': [1, 1]}
+            )
+
+            # Create response batches
+            response1 = ResponseBatchWithReorg(
+                batch_type=ResponseBatchType.DATA,
+                data=ResponseBatch(
+                    data=data1, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110)])
+                ),
+            )
+
+            response2 = ResponseBatchWithReorg(
+                batch_type=ResponseBatchType.DATA,
+                data=ResponseBatch(
+                    data=data2, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160)])
+                ),
+            )
+
+            # Simulate reorg event
+            reorg_response = ResponseBatchWithReorg(
+                batch_type=ResponseBatchType.REORG,
+                invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)],
+            )
+
+            # Process streaming data
+            stream = [response1, response2, reorg_response]
+            results = list(loader.load_stream_continuous(iter(stream), 'test_streaming_reorg'))
+
+            # Verify results
+            assert len(results) == 3
+            assert results[0].success
+            assert results[0].rows_loaded == 2
+            assert results[1].success
+            assert results[1].rows_loaded == 2
+            assert results[2].success
+            assert results[2].is_reorg
+
+            # Verify reorg deleted the second batch
+            final_data = loader.query_table()
+            assert final_data.num_rows == 2
+            remaining_ids = sorted([id.as_py() for id in final_data['id']])
+            assert remaining_ids == [1, 2]  # 3 and 4 deleted by reorg

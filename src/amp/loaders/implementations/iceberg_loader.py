@@ -1,7 +1,8 @@
 # src/amp/loaders/implementations/iceberg_loader.py
 
+import json
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -32,6 +33,7 @@ except ImportError:
     ICEBERG_AVAILABLE = False
 
 # Import types for better IDE support
+from ...streaming.types import BlockRange
 from ..base import DataLoader, LoadMode
 from .iceberg_types import IcebergCatalog, IcebergTable
 
@@ -510,3 +512,188 @@ class IcebergLoader(DataLoader[IcebergStorageConfig]):
         except Exception as e:
             self.logger.error(f'Failed to get table info for {table_name}: {e}')
             return {'exists': False, 'error': str(e), 'table_name': table_name}
+
+    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str) -> None:
+        """
+        Handle blockchain reorganization by deleting affected rows from Iceberg table.
+
+        Iceberg's time-travel capabilities make this particularly powerful:
+        - We can precisely delete affected data using predicates
+        - Snapshots preserve history if rollback is needed
+        - ACID transactions ensure consistency
+
+        Args:
+            invalidation_ranges: List of block ranges to invalidate (reorg points)
+            table_name: The table containing the data to invalidate
+        """
+        if not invalidation_ranges:
+            return
+
+        try:
+            # Load the Iceberg table
+            table_identifier = f'{self.config.namespace}.{table_name}'
+            try:
+                iceberg_table = self._catalog.load_table(table_identifier)
+            except NoSuchTableError:
+                self.logger.warning(f"Table '{table_identifier}' does not exist, skipping reorg handling")
+                return
+
+            # Build delete predicate for all invalidation ranges
+            # For Iceberg, we'll use PyArrow expressions which get converted automatically
+            delete_conditions = []
+
+            for range_obj in invalidation_ranges:
+                network = range_obj.network
+                reorg_start = range_obj.start
+
+                # Create condition for this network's reorg
+                # Delete all rows where the block range metadata for this network has end >= reorg_start
+                # This catches both overlapping ranges and forward ranges from the reorg point
+
+                # Build expression to check _meta_block_ranges JSON array
+                # We need to parse the JSON and check if any range for this network
+                # has an end block >= reorg_start
+                delete_conditions.append(
+                    f'_meta_block_ranges LIKE \'%"network":"{network}"%\' AND '
+                    f'EXISTS (SELECT 1 FROM JSON_ARRAY_ELEMENTS(_meta_block_ranges) AS range_elem '
+                    f"WHERE range_elem->>'network' = '{network}' AND "
+                    f"(range_elem->>'end')::int >= {reorg_start})"
+                )
+
+            # Process reorg if we have deletion conditions
+            if delete_conditions:
+                self.logger.info(
+                    f'Executing blockchain reorg deletion for {len(invalidation_ranges)} networks '
+                    f"in Iceberg table '{table_name}'"
+                )
+
+                # Since PyIceberg doesn't have a direct delete API yet, we'll use overwrite
+                # with filtered data as a workaround
+                # Future: Use SQL delete when available:
+                # combined_condition = ' OR '.join(f'({cond})' for cond in delete_conditions)
+                # delete_expr = f"DELETE FROM {table_identifier} WHERE {combined_condition}"
+                self._perform_reorg_deletion(iceberg_table, invalidation_ranges, table_name)
+
+        except Exception as e:
+            self.logger.error(f"Failed to handle blockchain reorg for table '{table_name}': {str(e)}")
+            raise
+
+    def _perform_reorg_deletion(
+        self, iceberg_table: IcebergTable, invalidation_ranges: List[BlockRange], table_name: str
+    ) -> None:
+        """
+        Perform the actual deletion for reorg handling using Iceberg's capabilities.
+
+        Since PyIceberg doesn't have a direct DELETE API yet, we'll use scan and overwrite
+        to achieve the same effect while maintaining ACID guarantees.
+        """
+        try:
+            # First, scan the table to get current data
+            # We'll filter out the invalidated ranges during the scan
+            scan = iceberg_table.scan()
+
+            # Read all data into memory (for now - could be optimized with streaming)
+            arrow_table = scan.to_arrow()
+
+            if arrow_table.num_rows == 0:
+                self.logger.info(f"Table '{table_name}' is empty, nothing to delete for reorg")
+                return
+
+            # Check if the table has the metadata column
+            if '_meta_block_ranges' not in arrow_table.schema.names:
+                self.logger.warning(
+                    f"Table '{table_name}' doesn't have '_meta_block_ranges' column, skipping reorg handling"
+                )
+                return
+
+            # Filter out invalidated rows
+            import pyarrow.compute as pc
+
+            # Start with all rows marked as valid
+            keep_mask = pc.equal(pc.scalar(True), pc.scalar(True))
+
+            for range_obj in invalidation_ranges:
+                network = range_obj.network
+                reorg_start = range_obj.start
+
+                # For each row, check if it should be invalidated
+                # This is complex with JSON, so we'll parse and check each row
+                for i in range(arrow_table.num_rows):
+                    meta_json = arrow_table['_meta_block_ranges'][i].as_py()
+                    if meta_json:
+                        try:
+                            ranges_data = json.loads(meta_json)
+                            # Check if any range for this network should be invalidated
+                            for range_info in ranges_data:
+                                if range_info['network'] == network and range_info['end'] >= reorg_start:
+                                    # Mark this row for deletion
+                                    keep_mask = pc.and_(keep_mask, pc.not_equal(pc.scalar(i), pc.scalar(i)))
+                                    break
+                        except (json.JSONDecodeError, KeyError):
+                            continue
+
+            # Create a filtered table with only the rows we want to keep
+            # For a more efficient implementation, build a boolean array
+            keep_indices = []
+            deleted_count = 0
+
+            for i in range(arrow_table.num_rows):
+                should_delete = False
+                meta_json = arrow_table['_meta_block_ranges'][i].as_py()
+
+                if meta_json:
+                    try:
+                        ranges_data = json.loads(meta_json)
+
+                        # Ensure ranges_data is a list
+                        if not isinstance(ranges_data, list):
+                            continue
+
+                        # Check each invalidation range
+                        for range_obj in invalidation_ranges:
+                            network = range_obj.network
+                            reorg_start = range_obj.start
+
+                            # Check if any range for this network should be invalidated
+                            for range_info in ranges_data:
+                                if (
+                                    isinstance(range_info, dict)
+                                    and range_info.get('network') == network
+                                    and range_info.get('end', 0) >= reorg_start
+                                ):
+                                    should_delete = True
+                                    deleted_count += 1
+                                    break
+
+                            if should_delete:
+                                break
+
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+
+                if not should_delete:
+                    keep_indices.append(i)
+
+            if deleted_count == 0:
+                self.logger.info(f"No rows to delete for reorg in table '{table_name}'")
+                return
+
+            # Create new table with only kept rows
+            if keep_indices:
+                filtered_table = arrow_table.take(keep_indices)
+            else:
+                # All rows deleted - create empty table with same schema
+                filtered_table = pa.table({col: [] for col in arrow_table.schema.names}, schema=arrow_table.schema)
+
+            # Overwrite the table with filtered data
+            # This creates a new snapshot in Iceberg, preserving history
+            iceberg_table.overwrite(filtered_table)
+
+            self.logger.info(
+                f"Blockchain reorg deleted {deleted_count} rows from Iceberg table '{table_name}'. "
+                f'New snapshot created with {filtered_table.num_rows} remaining rows.'
+            )
+
+        except Exception as e:
+            self.logger.error(f'Failed to perform reorg deletion: {str(e)}')
+            raise

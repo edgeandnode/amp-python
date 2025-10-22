@@ -9,6 +9,7 @@ from . import FlightSql_pb2
 from .config.connection_manager import ConnectionManager
 from .loaders.base import LoadConfig, LoadMode, LoadResult
 from .loaders.registry import create_loader, get_available_loaders
+from .streaming import ReorgAwareStream, ResumeWatermark, StreamingResultIterator
 
 
 class QueryBuilder:
@@ -34,17 +35,39 @@ class QueryBuilder:
             **kwargs: Additional loader-specific options including:
                 - read_all: bool = False (if True, loads entire table at once; if False, streams batch by batch)
                 - batch_size: int = 10000 (size of each batch for streaming)
+                - stream: bool = False (if True, enables continuous streaming with reorg detection)
+                - with_reorg_detection: bool = True (enable reorg detection for streaming queries)
+                - resume_watermark: Optional[ResumeWatermark] = None (resume streaming from specific point)
 
         Returns:
             - If read_all=True: Single LoadResult with operation details
             - If read_all=False (default): Iterator of LoadResults, one per batch
+            - If stream=True: Iterator of LoadResults with continuous streaming and reorg support
         """
-        # Default to streaming (read_all=False) for memory efficiency
+        # Handle streaming mode
+        if kwargs.get('stream', False):
+            # Remove stream from kwargs to avoid passing it down
+            kwargs.pop('stream')
+            # Ensure query has streaming settings
+            # TODO: Add validation that the specific query uses features supported by streaming
+            streaming_query = self._ensure_streaming_query(self.query)
+            return self.client.query_and_load_streaming(
+                query=streaming_query, destination=destination, connection_name=connection, config=config, **kwargs
+            )
+
+        # Default to batch streaming (read_all=False) for memory efficiency
         kwargs.setdefault('read_all', False)
 
         return self.client.query_and_load(
             query=self.query, destination=destination, connection_name=connection, config=config, **kwargs
         )
+
+    def _ensure_streaming_query(self, query: str) -> str:
+        """Ensure query has SETTINGS stream = true"""
+        query = query.strip().rstrip(';')
+        if 'SETTINGS stream = true' not in query.upper():
+            query += ' SETTINGS stream = true'
+        return query
 
     def stream(self) -> Iterator[pa.RecordBatch]:
         """Stream query results as Arrow batches"""
@@ -226,4 +249,110 @@ class Client:
             self.logger.error(f'Failed to load stream: {e}')
             yield LoadResult(
                 rows_loaded=0, duration=0.0, table_name=table_name, loader_type=loader, success=False, error=str(e)
+            )
+
+    def query_and_load_streaming(
+        self,
+        query: str,
+        destination: str,
+        connection_name: str,
+        config: Optional[Dict[str, Any]] = None,
+        with_reorg_detection: bool = True,
+        resume_watermark: Optional[ResumeWatermark] = None,
+        **kwargs,
+    ) -> Iterator[LoadResult]:
+        """
+        Execute a streaming query and continuously load results into target system.
+
+        Args:
+            query: SQL query with 'SETTINGS stream = true'
+            destination: Target destination name (table name, key, path, etc.)
+            connection_name: Named connection (which specifies both loader type and config)
+            config: Inline configuration dict (alternative to named connection)
+            with_reorg_detection: Enable blockchain reorganization detection (default: True)
+            resume_watermark: Optional watermark to resume streaming from a specific point
+            **kwargs: Additional load options
+
+        Returns:
+            Iterator of LoadResults, including both data loads and reorg events
+
+        Yields:
+            LoadResult for each batch loaded or reorg event detected
+        """
+        # Get connection configuration and determine loader type
+        if connection_name:
+            try:
+                connection_info = self.connection_manager.get_connection_info(connection_name)
+                loader_config = connection_info['config']
+                loader_type = connection_info['loader']
+            except ValueError as e:
+                self.logger.error(f'Connection error: {e}')
+                raise
+        elif config:
+            loader_type = config.pop('loader_type', None)
+            if not loader_type:
+                raise ValueError("When using inline config, 'loader_type' must be specified")
+            loader_config = config
+        else:
+            raise ValueError('Either connection_name or config must be provided')
+
+        # Extract load config
+        load_config = LoadConfig(
+            batch_size=kwargs.pop('batch_size', 10000),
+            mode=LoadMode(kwargs.pop('mode', 'append')),
+            create_table=kwargs.pop('create_table', True),
+            schema_evolution=kwargs.pop('schema_evolution', False),
+            **{k: v for k, v in kwargs.items() if k in ['max_retries', 'retry_delay']},
+        )
+
+        self.logger.info(f'Starting streaming query to {loader_type}:{destination}')
+
+        try:
+            # Execute streaming query with Flight SQL
+            # Create a CommandStatementQuery message
+            command_query = FlightSql_pb2.CommandStatementQuery()
+            command_query.query = query
+
+            # Add resume watermark if provided
+            if resume_watermark:
+                # TODO: Add watermark to query metadata when Flight SQL supports it
+                self.logger.info(f'Resuming stream from watermark: {resume_watermark}')
+
+            # Wrap the CommandStatementQuery in an Any type
+            any_command = Any()
+            any_command.Pack(command_query)
+            cmd = any_command.SerializeToString()
+
+            self.logger.info('Establishing Flight SQL connection...')
+            flight_descriptor = flight.FlightDescriptor.for_command(cmd)
+            info = self.conn.get_flight_info(flight_descriptor)
+            reader = self.conn.do_get(info.endpoints[0].ticket)
+
+            # Create streaming iterator
+            stream_iterator = StreamingResultIterator(reader)
+            self.logger.info('Stream connection established, waiting for data...')
+
+            # Optionally wrap with reorg detection
+            if with_reorg_detection:
+                stream_iterator = ReorgAwareStream(stream_iterator)
+                self.logger.info('Reorg detection enabled for streaming query')
+
+            # Create loader instance and start continuous loading
+            loader_instance = create_loader(loader_type, loader_config)
+
+            with loader_instance:
+                self.logger.info(f'Starting continuous load to {destination}. Press Ctrl+C to stop.')
+                yield from loader_instance.load_stream_continuous(stream_iterator, destination, **load_config.__dict__)
+
+        except Exception as e:
+            self.logger.error(f'Streaming query failed: {e}')
+            yield LoadResult(
+                rows_loaded=0,
+                duration=0.0,
+                ops_per_second=0.0,
+                table_name=destination,
+                loader_type=loader_type,
+                success=False,
+                error=str(e),
+                metadata={'streaming_error': True},
             )

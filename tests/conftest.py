@@ -23,6 +23,12 @@ USE_TESTCONTAINERS = os.getenv('USE_TESTCONTAINERS', 'true').lower() == 'true'
 if 'TESTCONTAINERS_RYUK_DISABLED' not in os.environ:
     os.environ['TESTCONTAINERS_RYUK_DISABLED'] = 'true'
 
+# Set Docker host for Colima if not already set
+if 'DOCKER_HOST' not in os.environ:
+    colima_socket = Path.home() / '.colima' / 'default' / 'docker.sock'
+    if colima_socket.exists():
+        os.environ['DOCKER_HOST'] = f'unix://{colima_socket}'
+
 # Import testcontainers conditionally
 if USE_TESTCONTAINERS:
     try:
@@ -118,8 +124,18 @@ def postgres_container():
     if not TESTCONTAINERS_AVAILABLE:
         pytest.skip('Testcontainers not available')
 
+    import time
+
+    from testcontainers.core.waiting_utils import wait_for_logs
+
     container = PostgresContainer(image='postgres:13', username='test_user', password='test_pass', dbname='test_db')
     container.start()
+
+    # Wait for PostgreSQL to be ready using log message
+    wait_for_logs(container, 'database system is ready to accept connections', timeout=30)
+
+    # PostgreSQL logs "ready" twice - wait a bit more to ensure fully ready
+    time.sleep(2)
 
     yield container
 
@@ -132,8 +148,13 @@ def redis_container():
     if not TESTCONTAINERS_AVAILABLE:
         pytest.skip('Testcontainers not available')
 
+    from testcontainers.core.waiting_utils import wait_for_logs
+
     container = RedisContainer(image='redis:7-alpine')
     container.start()
+
+    # Wait for Redis to be ready using log message
+    wait_for_logs(container, 'Ready to accept connections', timeout=30)
 
     yield container
 

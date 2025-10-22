@@ -354,6 +354,236 @@ class TestLMDBLoaderIntegration:
 
         loader2.disconnect()
 
+    def test_handle_reorg_empty_db(self, lmdb_config):
+        """Test reorg handling on empty database"""
+        from src.amp.streaming.types import BlockRange
+
+        loader = LMDBLoader(lmdb_config)
+        loader.connect()
+
+        # Call handle reorg on empty database
+        invalidation_ranges = [BlockRange(network='ethereum', start=100, end=200)]
+
+        # Should not raise any errors
+        loader._handle_reorg(invalidation_ranges, 'test_reorg_empty')
+
+        loader.disconnect()
+
+    def test_handle_reorg_no_metadata(self, lmdb_config):
+        """Test reorg handling when data lacks metadata column"""
+        from src.amp.streaming.types import BlockRange
+
+        config = {**lmdb_config, 'key_column': 'id'}
+        loader = LMDBLoader(config)
+        loader.connect()
+
+        # Create data without metadata column
+        data = pa.table({'id': [1, 2, 3], 'block_num': [100, 150, 200], 'value': [10.0, 20.0, 30.0]})
+        loader.load_table(data, 'test_reorg_no_meta', mode=LoadMode.OVERWRITE)
+
+        # Call handle reorg
+        invalidation_ranges = [BlockRange(network='ethereum', start=150, end=250)]
+
+        # Should not delete any data (no metadata to check)
+        loader._handle_reorg(invalidation_ranges, 'test_reorg_no_meta')
+
+        # Verify data still exists
+        with loader.env.begin() as txn:
+            assert txn.get(b'1') is not None
+            assert txn.get(b'2') is not None
+            assert txn.get(b'3') is not None
+
+        loader.disconnect()
+
+    def test_handle_reorg_single_network(self, lmdb_config):
+        """Test reorg handling for single network data"""
+        import json
+
+        from src.amp.streaming.types import BlockRange
+
+        config = {**lmdb_config, 'key_column': 'id'}
+        loader = LMDBLoader(config)
+        loader.connect()
+
+        # Create table with metadata
+        block_ranges = [
+            [{'network': 'ethereum', 'start': 100, 'end': 110}],
+            [{'network': 'ethereum', 'start': 150, 'end': 160}],
+            [{'network': 'ethereum', 'start': 200, 'end': 210}],
+        ]
+
+        data = pa.table(
+            {
+                'id': [1, 2, 3],
+                'block_num': [105, 155, 205],
+                '_meta_block_ranges': [json.dumps(ranges) for ranges in block_ranges],
+            }
+        )
+
+        # Load initial data
+        result = loader.load_table(data, 'test_reorg_single', mode=LoadMode.OVERWRITE)
+        assert result.success
+        assert result.rows_loaded == 3
+
+        # Verify all data exists
+        with loader.env.begin() as txn:
+            assert txn.get(b'1') is not None
+            assert txn.get(b'2') is not None
+            assert txn.get(b'3') is not None
+
+        # Reorg from block 155 - should delete rows 2 and 3
+        invalidation_ranges = [BlockRange(network='ethereum', start=155, end=300)]
+        loader._handle_reorg(invalidation_ranges, 'test_reorg_single')
+
+        # Verify only first row remains
+        with loader.env.begin() as txn:
+            assert txn.get(b'1') is not None
+            assert txn.get(b'2') is None  # Deleted
+            assert txn.get(b'3') is None  # Deleted
+
+        loader.disconnect()
+
+    def test_handle_reorg_multi_network(self, lmdb_config):
+        """Test reorg handling preserves data from unaffected networks"""
+        import json
+
+        from src.amp.streaming.types import BlockRange
+
+        config = {**lmdb_config, 'key_column': 'id'}
+        loader = LMDBLoader(config)
+        loader.connect()
+
+        # Create data from multiple networks
+        block_ranges = [
+            [{'network': 'ethereum', 'start': 100, 'end': 110}],
+            [{'network': 'polygon', 'start': 100, 'end': 110}],
+            [{'network': 'ethereum', 'start': 150, 'end': 160}],
+            [{'network': 'polygon', 'start': 150, 'end': 160}],
+        ]
+
+        data = pa.table(
+            {
+                'id': [1, 2, 3, 4],
+                'network': ['ethereum', 'polygon', 'ethereum', 'polygon'],
+                '_meta_block_ranges': [json.dumps(r) for r in block_ranges],
+            }
+        )
+
+        # Load initial data
+        result = loader.load_table(data, 'test_reorg_multi', mode=LoadMode.OVERWRITE)
+        assert result.success
+        assert result.rows_loaded == 4
+
+        # Reorg only ethereum from block 150
+        invalidation_ranges = [BlockRange(network='ethereum', start=150, end=200)]
+        loader._handle_reorg(invalidation_ranges, 'test_reorg_multi')
+
+        # Verify ethereum row 3 deleted, but polygon rows preserved
+        with loader.env.begin() as txn:
+            assert txn.get(b'1') is not None  # ethereum block 100
+            assert txn.get(b'2') is not None  # polygon block 100
+            assert txn.get(b'3') is None  # ethereum block 150 (deleted)
+            assert txn.get(b'4') is not None  # polygon block 150
+
+        loader.disconnect()
+
+    def test_handle_reorg_overlapping_ranges(self, lmdb_config):
+        """Test reorg with overlapping block ranges"""
+        import json
+
+        from src.amp.streaming.types import BlockRange
+
+        config = {**lmdb_config, 'key_column': 'id'}
+        loader = LMDBLoader(config)
+        loader.connect()
+
+        # Create data with overlapping ranges
+        block_ranges = [
+            [{'network': 'ethereum', 'start': 90, 'end': 110}],  # Overlaps with reorg
+            [{'network': 'ethereum', 'start': 140, 'end': 160}],  # Overlaps with reorg
+            [{'network': 'ethereum', 'start': 170, 'end': 190}],  # After reorg
+        ]
+
+        data = pa.table({'id': [1, 2, 3], '_meta_block_ranges': [json.dumps(ranges) for ranges in block_ranges]})
+
+        # Load initial data
+        result = loader.load_table(data, 'test_reorg_overlap', mode=LoadMode.OVERWRITE)
+        assert result.success
+        assert result.rows_loaded == 3
+
+        # Reorg from block 150 - should delete rows where end >= 150
+        invalidation_ranges = [BlockRange(network='ethereum', start=150, end=200)]
+        loader._handle_reorg(invalidation_ranges, 'test_reorg_overlap')
+
+        # Only first row should remain (ends at 110 < 150)
+        with loader.env.begin() as txn:
+            assert txn.get(b'1') is not None
+            assert txn.get(b'2') is None  # Deleted (end=160 >= 150)
+            assert txn.get(b'3') is None  # Deleted (end=190 >= 150)
+
+        loader.disconnect()
+
+    def test_streaming_with_reorg(self, lmdb_config):
+        """Test streaming data with reorg support"""
+        from src.amp.streaming.types import (
+            BatchMetadata,
+            BlockRange,
+            ResponseBatch,
+            ResponseBatchType,
+            ResponseBatchWithReorg,
+        )
+
+        config = {**lmdb_config, 'key_column': 'id'}
+        loader = LMDBLoader(config)
+        loader.connect()
+
+        # Create streaming data with metadata
+        data1 = pa.RecordBatch.from_pydict({'id': [1, 2], 'value': [100, 200]})
+
+        data2 = pa.RecordBatch.from_pydict({'id': [3, 4], 'value': [300, 400]})
+
+        # Create response batches
+        response1 = ResponseBatchWithReorg(
+            batch_type=ResponseBatchType.DATA,
+            data=ResponseBatch(
+                data=data1, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110)])
+            ),
+        )
+
+        response2 = ResponseBatchWithReorg(
+            batch_type=ResponseBatchType.DATA,
+            data=ResponseBatch(
+                data=data2, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160)])
+            ),
+        )
+
+        # Simulate reorg event
+        reorg_response = ResponseBatchWithReorg(
+            batch_type=ResponseBatchType.REORG, invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)]
+        )
+
+        # Process streaming data
+        stream = [response1, response2, reorg_response]
+        results = list(loader.load_stream_continuous(iter(stream), 'test_streaming_reorg'))
+
+        # Verify results
+        assert len(results) == 3
+        assert results[0].success
+        assert results[0].rows_loaded == 2
+        assert results[1].success
+        assert results[1].rows_loaded == 2
+        assert results[2].success
+        assert results[2].is_reorg
+
+        # Verify reorg deleted the second batch
+        with loader.env.begin() as txn:
+            assert txn.get(b'1') is not None
+            assert txn.get(b'2') is not None
+            assert txn.get(b'3') is None  # Deleted by reorg
+            assert txn.get(b'4') is None  # Deleted by reorg
+
+        loader.disconnect()
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
