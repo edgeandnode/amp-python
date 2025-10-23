@@ -51,8 +51,7 @@ class ReorgAwareStream:
             # Get next batch from underlying stream
             batch = next(self.stream_iterator)
 
-            # TODO: look for metadata.ranges_complete to see if it's a batch end. mostly for resuming streams
-            # also document the metadata.  numbers, network, hash, prev_hash (could be null)
+            # Note: ranges_complete flag is handled by CheckpointStore in load_stream_continuous
             # Check if this batch contains only duplicate ranges
             if self._is_duplicate_batch(batch.metadata.ranges):
                 self.logger.debug(f'Skipping duplicate batch with ranges: {batch.metadata.ranges}')
