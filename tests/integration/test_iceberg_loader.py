@@ -228,7 +228,6 @@ class TestIcebergLoaderIntegration:
 
             assert result.success == True
             # Note: Partitioning requires creating PartitionSpec objects now
-            assert result.metadata['partition_columns'] == []
             assert result.metadata['namespace'] == iceberg_partitioned_config['namespace']
 
     def test_timestamp_conversion(self, iceberg_basic_config):
