@@ -2,7 +2,7 @@
 Unit tests for idempotency system.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 
@@ -48,7 +48,7 @@ class TestProcessedRange:
 
     def test_creation(self):
         """Test creating a processed range"""
-        timestamp = datetime.utcnow()
+        timestamp = datetime.now(UTC)
 
         pr = ProcessedRange(
             connection_name='test_conn',
@@ -76,7 +76,7 @@ class TestProcessedRange:
             network='ethereum',
             start_block=100,
             end_block=200,
-            processed_at=datetime.utcnow(),
+            processed_at=datetime.now(UTC),
         )
 
         block_range = BlockRange(network='ethereum', start=100, end=200)
@@ -90,7 +90,7 @@ class TestProcessedRange:
             network='ethereum',
             start_block=100,
             end_block=200,
-            processed_at=datetime.utcnow(),
+            processed_at=datetime.now(UTC),
         )
 
         block_range = BlockRange(network='polygon', start=100, end=200)
@@ -104,7 +104,7 @@ class TestProcessedRange:
             network='ethereum',
             start_block=100,
             end_block=200,
-            processed_at=datetime.utcnow(),
+            processed_at=datetime.now(UTC),
         )
 
         block_range = BlockRange(network='ethereum', start=100, end=300)

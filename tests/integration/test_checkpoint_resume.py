@@ -6,7 +6,7 @@ with real database connections.
 """
 
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 
 import psycopg2
 import pytest
@@ -82,7 +82,7 @@ class TestDatabaseCheckpointStore:
 
         checkpoint = CheckpointState(
             ranges=ranges,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             worker_id=0,
         )
 
@@ -103,7 +103,7 @@ class TestDatabaseCheckpointStore:
         ranges1 = [BlockRange(network='ethereum', start=100, end=200)]
         checkpoint1 = CheckpointState(
             ranges=ranges1,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
 
         # Save first checkpoint
@@ -113,7 +113,7 @@ class TestDatabaseCheckpointStore:
         ranges2 = [BlockRange(network='ethereum', start=200, end=300)]
         checkpoint2 = CheckpointState(
             ranges=ranges2,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
         checkpoint_store.save('conn1', 'table1', checkpoint2)
 
@@ -126,14 +126,14 @@ class TestDatabaseCheckpointStore:
         ranges_w0 = [BlockRange(network='ethereum', start=100, end=200)]
         checkpoint_w0 = CheckpointState(
             ranges=ranges_w0,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             worker_id=0,
         )
 
         ranges_w1 = [BlockRange(network='ethereum', start=300, end=400)]
         checkpoint_w1 = CheckpointState(
             ranges=ranges_w1,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             worker_id=1,
         )
 
@@ -154,12 +154,12 @@ class TestDatabaseCheckpointStore:
         # Create checkpoints for different networks
         checkpoint_eth = CheckpointState(
             ranges=[BlockRange(network='ethereum', start=100, end=200)],
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             worker_id=0,
         )
         checkpoint_poly = CheckpointState(
             ranges=[BlockRange(network='polygon', start=50, end=150)],
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             worker_id=1,
         )
         checkpoint_mixed = CheckpointState(
@@ -167,7 +167,7 @@ class TestDatabaseCheckpointStore:
                 BlockRange(network='ethereum', start=200, end=300),
                 BlockRange(network='polygon', start=150, end=250),
             ],
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             worker_id=2,
         )
 
@@ -191,7 +191,7 @@ class TestDatabaseCheckpointStore:
         """Test checkpoint deletion"""
         checkpoint = CheckpointState(
             ranges=[BlockRange(network='ethereum', start=100, end=200)],
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
 
         checkpoint_store.save('conn1', 'table1', checkpoint)
@@ -254,7 +254,7 @@ class TestEndToEndCheckpointResume:
                 # Save checkpoint
                 checkpoint = CheckpointState(
                     ranges=ranges,
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(UTC),
                 )
                 checkpoint_store.save('streaming_conn', 'streaming_table', checkpoint)
 
@@ -273,7 +273,7 @@ class TestEndToEndCheckpointResume:
                 BlockRange(network='ethereum', start=500, end=600, hash='0x123'),
                 BlockRange(network='polygon', start=200, end=300, hash='0x456'),
             ],
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
         checkpoint_store.save('resume_conn', 'resume_table', checkpoint)
 
@@ -292,7 +292,7 @@ class TestEndToEndCheckpointResume:
         # Save checkpoint for ethereum
         checkpoint = CheckpointState(
             ranges=[BlockRange(network='ethereum', start=100, end=200)],
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
         checkpoint_store.save('reorg_conn', 'reorg_table', checkpoint)
 
@@ -317,7 +317,7 @@ class TestEndToEndCheckpointResume:
         for i in range(5):
             checkpoint = CheckpointState(
                 ranges=[BlockRange(network='ethereum', start=i * 100, end=(i + 1) * 100)],
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
             )
             checkpoint_store.save('progressive_conn', 'progressive_table', checkpoint)
             checkpoints.append(checkpoint)
@@ -336,7 +336,7 @@ class TestEndToEndCheckpointResume:
         # Save initial checkpoint
         checkpoint_v0 = CheckpointState(
             ranges=[BlockRange(network='ethereum', start=100, end=200)],
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
         checkpoint_store.save('reorg_conn', 'reorg_table', checkpoint_v0)
 
@@ -349,7 +349,7 @@ class TestEndToEndCheckpointResume:
         # Save new checkpoint after reorg (stream would have restarted)
         checkpoint_v1 = CheckpointState(
             ranges=[BlockRange(network='ethereum', start=180, end=280)],  # May overlap with old
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
         checkpoint_store.save('reorg_conn', 'reorg_table', checkpoint_v1)
 
@@ -382,7 +382,7 @@ class TestCheckpointDisabled:
         # All operations should be no-ops
         checkpoint = CheckpointState(
             ranges=[BlockRange(network='ethereum', start=100, end=200)],
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
 
         store.save('conn1', 'table1', checkpoint)  # No-op
@@ -596,7 +596,7 @@ class TestIdempotencyExactlyOnce:
         # Save checkpoint after batch 1
         checkpoint1 = CheckpointState(
             ranges=ranges_batch1,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
         checkpoint_store.save('conn1', 'table1', checkpoint1)
 
@@ -607,7 +607,7 @@ class TestIdempotencyExactlyOnce:
         # Save checkpoint after batch 2
         checkpoint2 = CheckpointState(
             ranges=ranges_batch2,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
         checkpoint_store.save('conn1', 'table1', checkpoint2)
 

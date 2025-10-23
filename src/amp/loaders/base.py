@@ -6,7 +6,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import fields, is_dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from logging import Logger
 from typing import Any, Dict, Generic, Iterator, List, Optional, Set, TypeVar
 
@@ -553,7 +553,7 @@ class DataLoader(ABC, Generic[TConfig]):
                 # Save reorg checkpoint (keeps old checkpoints for history)
                 checkpoint = CheckpointState(
                     ranges=reorg_ranges,
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(UTC),
                     worker_id=worker_id,
                     is_reorg=True,
                 )
@@ -718,11 +718,11 @@ class DataLoader(ABC, Generic[TConfig]):
             batch_count: Current batch number
         """
         if ranges_complete and ranges:
-            from datetime import datetime
+            from datetime import UTC, datetime
 
             checkpoint = CheckpointState(
                 ranges=ranges,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
                 worker_id=worker_id,
             )
 

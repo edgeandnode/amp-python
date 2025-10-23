@@ -9,7 +9,7 @@ import hashlib
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import List, Optional
 
 from .types import BlockRange
@@ -253,7 +253,7 @@ class DatabaseProcessedRangesStore(ProcessedRangesStore):
             return
 
         table = f'{self.config.table_prefix}processed_ranges'
-        processed_at = datetime.utcnow()
+        processed_at = datetime.now(UTC)
 
         insert_sql = f"""
         INSERT INTO {table} (connection_name, table_name, network, start_block, end_block, processed_at, batch_hash)

@@ -2,7 +2,7 @@
 Unit tests for checkpoint system.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 
@@ -20,7 +20,7 @@ class TestCheckpointState:
             BlockRange(network='ethereum', start=100, end=200, hash='0xabc'),
             BlockRange(network='polygon', start=50, end=150, hash='0xdef'),
         ]
-        timestamp = datetime.utcnow()
+        timestamp = datetime.now(UTC)
 
         checkpoint = CheckpointState(
             ranges=ranges,
@@ -137,7 +137,7 @@ class TestNullCheckpointStore:
 
         checkpoint = CheckpointState(
             ranges=[BlockRange(network='ethereum', start=100, end=200)],
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
 
         # Should not raise
