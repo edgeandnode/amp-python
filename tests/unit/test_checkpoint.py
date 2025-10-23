@@ -2,7 +2,6 @@
 Unit tests for checkpoint system.
 """
 
-import json
 from datetime import datetime
 
 import pytest

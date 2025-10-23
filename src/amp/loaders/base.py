@@ -197,8 +197,8 @@ class DataLoader(ABC, Generic[TConfig]):
                 )
                 self.logger.error(error_msg)
                 self.logger.error(
-                    f'Client will stop. On restart, streaming will resume from last checkpoint. '
-                    f'Fix the data/configuration issue before restarting.'
+                    'Client will stop. On restart, streaming will resume from last checkpoint. '
+                    'Fix the data/configuration issue before restarting.'
                 )
                 # Raise exception to stop the stream
                 raise RuntimeError(error_msg)
@@ -220,8 +220,8 @@ class DataLoader(ABC, Generic[TConfig]):
                 )
                 self.logger.error(error_msg)
                 self.logger.error(
-                    f'Client will stop. On restart, streaming will resume from last checkpoint. '
-                    f'Fix the underlying issue before restarting.'
+                    'Client will stop. On restart, streaming will resume from last checkpoint. '
+                    'Fix the underlying issue before restarting.'
                 )
                 # Raise exception to stop the stream
                 raise RuntimeError(error_msg)
@@ -547,8 +547,7 @@ class DataLoader(ABC, Generic[TConfig]):
                 # Log reorg details
                 for range_obj in response.invalidation_ranges:
                     self.logger.warning(
-                        f'Reorg detected on {range_obj.network}: '
-                        f'blocks {range_obj.start}-{range_obj.end} invalidated'
+                        f'Reorg detected on {range_obj.network}: blocks {range_obj.start}-{range_obj.end} invalidated'
                     )
 
                 # Save reorg checkpoint (keeps old checkpoints for history)
@@ -674,9 +673,7 @@ class DataLoader(ABC, Generic[TConfig]):
 
             if is_duplicate:
                 # Skip this batch - already processed
-                self.logger.info(
-                    f'Skipping duplicate batch: {len(ranges)} ranges already processed for {table_name}'
-                )
+                self.logger.info(f'Skipping duplicate batch: {len(ranges)} ranges already processed for {table_name}')
                 return LoadResult(
                     rows_loaded=0,
                     duration=0.0,
@@ -693,9 +690,7 @@ class DataLoader(ABC, Generic[TConfig]):
         if result.success and ranges:
             # Mark batch as processed (for exactly-once semantics)
             try:
-                self.processed_ranges_store.mark_processed(
-                    connection_name, table_name, ranges, batch_hash
-                )
+                self.processed_ranges_store.mark_processed(connection_name, table_name, ranges, batch_hash)
             except Exception as e:
                 self.logger.error(f'Failed to mark ranges as processed: {e}')
                 # Continue anyway - checkpoint will provide resume capability
@@ -733,10 +728,7 @@ class DataLoader(ABC, Generic[TConfig]):
 
             try:
                 self.checkpoint_store.save(connection_name, table_name, checkpoint)
-                self.logger.info(
-                    f'Saved checkpoint at batch {batch_count} '
-                    f'({len(checkpoint.ranges)} ranges)'
-                )
+                self.logger.info(f'Saved checkpoint at batch {batch_count} ({len(checkpoint.ranges)} ranges)')
             except Exception as e:
                 # Log but don't fail the stream
                 self.logger.error(f'Failed to save checkpoint: {e}')
@@ -760,9 +752,7 @@ class DataLoader(ABC, Generic[TConfig]):
         result.metadata['batch_count'] = batch_count
         result.metadata['ranges_complete'] = ranges_complete
         if ranges:
-            result.metadata['block_ranges'] = [
-                {'network': r.network, 'start': r.start, 'end': r.end} for r in ranges
-            ]
+            result.metadata['block_ranges'] = [{'network': r.network, 'start': r.start, 'end': r.end} for r in ranges]
         return result
 
     def _compute_reorg_resume_point(self, invalidation_ranges: List[BlockRange]) -> List[BlockRange]:

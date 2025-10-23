@@ -121,9 +121,7 @@ class BatchMetadata:
             # Store remaining fields in extra
             extra = {k: v for k, v in metadata_dict.items() if k not in ('ranges', 'ranges_complete')}
 
-            return cls(
-                ranges=ranges, ranges_complete=ranges_complete, extra=extra if extra else None
-            )
+            return cls(ranges=ranges, ranges_complete=ranges_complete, extra=extra if extra else None)
         except (json.JSONDecodeError, KeyError) as e:
             # Fallback to empty metadata if parsing fails
             return cls(ranges=[], ranges_complete=False, extra={'parse_error': str(e)})

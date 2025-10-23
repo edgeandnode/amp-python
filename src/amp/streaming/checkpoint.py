@@ -9,7 +9,7 @@ and invalidation.
 import json
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -88,16 +88,12 @@ class CheckpointStore(ABC):
         self.config = config
 
     @abstractmethod
-    def save(
-        self, connection_name: str, table_name: str, checkpoint: CheckpointState
-    ) -> None:
+    def save(self, connection_name: str, table_name: str, checkpoint: CheckpointState) -> None:
         """Save a checkpoint for a specific connection and table"""
         pass
 
     @abstractmethod
-    def load(
-        self, connection_name: str, table_name: str, worker_id: int = 0
-    ) -> Optional[CheckpointState]:
+    def load(self, connection_name: str, table_name: str, worker_id: int = 0) -> Optional[CheckpointState]:
         """Load the latest checkpoint for a connection and table"""
         pass
 
@@ -159,9 +155,7 @@ class DatabaseCheckpointStore(CheckpointStore):
             logger.debug(f'Checkpoint table creation skipped: {e}')
             self.conn.rollback()
 
-    def save(
-        self, connection_name: str, table_name: str, checkpoint: CheckpointState
-    ) -> None:
+    def save(self, connection_name: str, table_name: str, checkpoint: CheckpointState) -> None:
         """Save checkpoint to database"""
         if not self.config.enabled:
             return
@@ -203,9 +197,7 @@ class DatabaseCheckpointStore(CheckpointStore):
             self.conn.rollback()
             raise
 
-    def load(
-        self, connection_name: str, table_name: str, worker_id: int = 0
-    ) -> Optional[CheckpointState]:
+    def load(self, connection_name: str, table_name: str, worker_id: int = 0) -> Optional[CheckpointState]:
         """Load checkpoint from database"""
         if not self.config.enabled:
             return None
@@ -310,14 +302,10 @@ class DatabaseCheckpointStore(CheckpointStore):
 class NullCheckpointStore(CheckpointStore):
     """No-op checkpoint store for when checkpointing is disabled"""
 
-    def save(
-        self, connection_name: str, table_name: str, checkpoint: CheckpointState
-    ) -> None:
+    def save(self, connection_name: str, table_name: str, checkpoint: CheckpointState) -> None:
         pass
 
-    def load(
-        self, connection_name: str, table_name: str, worker_id: int = 0
-    ) -> Optional[CheckpointState]:
+    def load(self, connection_name: str, table_name: str, worker_id: int = 0) -> Optional[CheckpointState]:
         return None
 
     def delete_for_network(self, connection_name: str, table_name: str, network: str) -> None:

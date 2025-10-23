@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Union
 import pyarrow as pa
 from psycopg2.pool import ThreadedConnectionPool
 
-from ...streaming.idempotency import DatabaseProcessedRangesStore, IdempotencyConfig
+from ...streaming.idempotency import DatabaseProcessedRangesStore
 from ...streaming.types import BlockRange
 from ..base import DataLoader, LoadMode
 from ._postgres_helpers import has_binary_columns, prepare_csv_data, prepare_insert_data

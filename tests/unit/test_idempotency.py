@@ -205,8 +205,9 @@ class TestBatchHashing:
 
     def test_compute_batch_hash(self):
         """Test computing hash of batch data"""
-        from src.amp.streaming.idempotency import compute_batch_hash
         import pyarrow as pa
+
+        from src.amp.streaming.idempotency import compute_batch_hash
 
         # Create test batch
         schema = pa.schema([('id', pa.int64()), ('value', pa.string())])
@@ -220,8 +221,9 @@ class TestBatchHashing:
 
     def test_same_data_same_hash(self):
         """Test that same data produces same hash"""
-        from src.amp.streaming.idempotency import compute_batch_hash
         import pyarrow as pa
+
+        from src.amp.streaming.idempotency import compute_batch_hash
 
         schema = pa.schema([('id', pa.int64()), ('value', pa.string())])
 
@@ -235,8 +237,9 @@ class TestBatchHashing:
 
     def test_different_data_different_hash(self):
         """Test that different data produces different hash"""
-        from src.amp.streaming.idempotency import compute_batch_hash
         import pyarrow as pa
+
+        from src.amp.streaming.idempotency import compute_batch_hash
 
         schema = pa.schema([('id', pa.int64()), ('value', pa.string())])
 

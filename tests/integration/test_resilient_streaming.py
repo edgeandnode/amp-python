@@ -8,17 +8,11 @@ and streaming scenarios.
 import time
 from dataclasses import dataclass
 from typing import Any, Dict
-from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
 import pytest
 
 from amp.loaders.base import DataLoader
-from amp.loaders.types import LoadResult
-from amp.streaming.resilience import (
-    BackPressureConfig,
-    RetryConfig,
-)
 
 
 @dataclass

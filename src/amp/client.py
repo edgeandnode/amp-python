@@ -362,9 +362,7 @@ class Client:
                         f'timestamp {checkpoint.timestamp}'
                     )
                     if checkpoint.is_reorg:
-                        resume_points = ', '.join(
-                            f'{r.network}:{r.start}' for r in checkpoint.ranges
-                        )
+                        resume_points = ', '.join(f'{r.network}:{r.start}' for r in checkpoint.ranges)
                         self.logger.info(f'Reorg resume points: {resume_points}')
             except Exception as e:
                 self.logger.warning(f'Failed to load checkpoint, starting from beginning: {e}')

@@ -6,9 +6,6 @@ and adaptive rate limiting without external dependencies.
 """
 
 import time
-from unittest.mock import patch
-
-import pytest
 
 from amp.streaming.resilience import (
     AdaptiveRateLimiter,
@@ -33,7 +30,12 @@ class TestRetryConfig:
 
     def test_custom_values(self):
         config = RetryConfig(
-            enabled=False, max_retries=5, initial_backoff_ms=500, max_backoff_ms=30000, backoff_multiplier=1.5, jitter=False
+            enabled=False,
+            max_retries=5,
+            initial_backoff_ms=500,
+            max_backoff_ms=30000,
+            backoff_multiplier=1.5,
+            jitter=False,
         )
         assert config.enabled is False
         assert config.max_retries == 5
@@ -57,7 +59,12 @@ class TestBackPressureConfig:
 
     def test_custom_values(self):
         config = BackPressureConfig(
-            enabled=False, initial_delay_ms=100, max_delay_ms=10000, adapt_on_429=False, adapt_on_timeout=False, recovery_factor=0.8
+            enabled=False,
+            initial_delay_ms=100,
+            max_delay_ms=10000,
+            adapt_on_429=False,
+            adapt_on_timeout=False,
+            recovery_factor=0.8,
         )
         assert config.enabled is False
         assert config.initial_delay_ms == 100
@@ -144,7 +151,9 @@ class TestExponentialBackoff:
 
     def test_max_backoff_cap(self):
         """Test that backoff is capped at max_backoff_ms"""
-        config = RetryConfig(initial_backoff_ms=1000, backoff_multiplier=10.0, max_backoff_ms=5000, jitter=False, max_retries=5)
+        config = RetryConfig(
+            initial_backoff_ms=1000, backoff_multiplier=10.0, max_backoff_ms=5000, jitter=False, max_retries=5
+        )
         backoff = ExponentialBackoff(config)
 
         # First retry: 1000ms

@@ -7,13 +7,10 @@ with real database connections.
 
 import time
 from datetime import datetime
-from unittest.mock import MagicMock, Mock, patch
 
 import psycopg2
-import pyarrow as pa
 import pytest
 
-from src.amp.loaders.base import DataLoader
 from src.amp.streaming.checkpoint import (
     CheckpointConfig,
     CheckpointState,
@@ -368,7 +365,6 @@ class TestCheckpointDisabled:
 
     def test_checkpoint_disabled_by_default(self):
         """Test that checkpoints are disabled by default"""
-        from src.amp.streaming.checkpoint import NullCheckpointStore
 
         config = CheckpointConfig()
         assert config.enabled is False
@@ -633,7 +629,6 @@ class TestIdempotencyExactlyOnce:
     def test_transactional_exactly_once_postgresql(self, postgresql_test_config, small_test_data):
         """Test transactional exactly-once semantics in PostgreSQL loader"""
         from src.amp.loaders.implementations.postgresql_loader import PostgreSQLLoader
-        from src.amp.streaming.idempotency import IdempotencyConfig
 
         # Configure loader with idempotency enabled
         config_dict = {
@@ -696,10 +691,13 @@ class TestIdempotencyExactlyOnce:
             conn = loader.pool.getconn()
             try:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT COUNT(*) FROM test_amp_processed_ranges
                     WHERE connection_name = %s AND table_name = %s
-                """, (connection_name, test_table))
+                """,
+                    (connection_name, test_table),
+                )
                 processed_count = cursor.fetchone()[0]
                 assert processed_count == 1, 'Exactly one processed range entry should exist'
             finally:

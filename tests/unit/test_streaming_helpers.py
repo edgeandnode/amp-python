@@ -6,15 +6,15 @@ ensuring each piece of logic works correctly in isolation.
 """
 
 import time
-from unittest.mock import Mock, MagicMock, patch
 from datetime import datetime
+from unittest.mock import Mock, patch
 
-import pytest
 import pyarrow as pa
+import pytest
 
-from src.amp.loaders.base import DataLoader, LoadResult
-from src.amp.streaming.types import BlockRange, ResponseBatch, ResponseBatchWithReorg, BatchMetadata
+from src.amp.loaders.base import LoadResult
 from src.amp.streaming.checkpoint import CheckpointState
+from src.amp.streaming.types import BlockRange
 from tests.fixtures.mock_clients import MockDataLoader
 
 
@@ -35,14 +35,13 @@ def mock_loader():
 @pytest.fixture
 def sample_batch():
     """Create a sample PyArrow batch for testing"""
-    schema = pa.schema([
-        ('id', pa.int64()),
-        ('name', pa.string()),
-    ])
-    data = pa.RecordBatch.from_arrays(
-        [pa.array([1, 2, 3]), pa.array(['a', 'b', 'c'])],
-        schema=schema
+    schema = pa.schema(
+        [
+            ('id', pa.int64()),
+            ('name', pa.string()),
+        ]
     )
+    data = pa.RecordBatch.from_arrays([pa.array([1, 2, 3]), pa.array(['a', 'b', 'c'])], schema=schema)
     return data
 
 
@@ -77,7 +76,7 @@ class TestProcessReorgEvent:
             connection_name='test_conn',
             worker_id=0,
             reorg_count=3,
-            start_time=start_time
+            start_time=start_time,
         )
 
         # Verify
@@ -116,7 +115,7 @@ class TestProcessReorgEvent:
             table_name='test_table',
             connection_name='test_conn',
             reorg_count=1,
-            start_time=start_time
+            start_time=start_time,
         )
 
         # Verify
@@ -139,7 +138,7 @@ class TestProcessReorgEvent:
                 table_name='test_table',
                 connection_name='test_conn',
                 reorg_count=1,
-                start_time=time.time()
+                start_time=time.time(),
             )
 
 
@@ -158,7 +157,7 @@ class TestProcessBatchTransactional:
             table_name='test_table',
             connection_name='test_conn',
             ranges=sample_ranges,
-            batch_hash='hash123'
+            batch_hash='hash123',
         )
 
         # Verify
@@ -185,7 +184,7 @@ class TestProcessBatchTransactional:
             table_name='test_table',
             connection_name='test_conn',
             ranges=sample_ranges,
-            batch_hash='hash123'
+            batch_hash='hash123',
         )
 
         # Verify
@@ -196,9 +195,7 @@ class TestProcessBatchTransactional:
     def test_transactional_load_failure(self, mock_loader, sample_batch, sample_ranges):
         """Test transactional load failure and error handling"""
         # Setup
-        mock_loader.load_batch_transactional = Mock(
-            side_effect=Exception('Transaction failed')
-        )
+        mock_loader.load_batch_transactional = Mock(side_effect=Exception('Transaction failed'))
 
         # Execute
         result = mock_loader._process_batch_transactional(
@@ -206,7 +203,7 @@ class TestProcessBatchTransactional:
             table_name='test_table',
             connection_name='test_conn',
             ranges=sample_ranges,
-            batch_hash='hash123'
+            batch_hash='hash123',
         )
 
         # Verify error result
@@ -228,12 +225,7 @@ class TestProcessBatchNonTransactional:
 
         # Mock load_batch to return success
         success_result = LoadResult(
-            rows_loaded=3,
-            duration=0.1,
-            ops_per_second=30.0,
-            table_name='test_table',
-            loader_type='mock',
-            success=True
+            rows_loaded=3, duration=0.1, ops_per_second=30.0, table_name='test_table', loader_type='mock', success=True
         )
         mock_loader.load_batch = Mock(return_value=success_result)
 
@@ -243,7 +235,7 @@ class TestProcessBatchNonTransactional:
             table_name='test_table',
             connection_name='test_conn',
             ranges=sample_ranges,
-            batch_hash='hash123'
+            batch_hash='hash123',
         )
 
         # Verify
@@ -271,7 +263,7 @@ class TestProcessBatchNonTransactional:
             table_name='test_table',
             connection_name='test_conn',
             ranges=sample_ranges,
-            batch_hash='hash123'
+            batch_hash='hash123',
         )
 
         # Verify
@@ -288,22 +280,13 @@ class TestProcessBatchNonTransactional:
         # Setup
         mock_loader.processed_ranges_store.is_processed = Mock()
         success_result = LoadResult(
-            rows_loaded=3,
-            duration=0.1,
-            ops_per_second=30.0,
-            table_name='test_table',
-            loader_type='mock',
-            success=True
+            rows_loaded=3, duration=0.1, ops_per_second=30.0, table_name='test_table', loader_type='mock', success=True
         )
         mock_loader.load_batch = Mock(return_value=success_result)
 
         # Execute with None ranges
         result = mock_loader._process_batch_non_transactional(
-            batch_data=sample_batch,
-            table_name='test_table',
-            connection_name='test_conn',
-            ranges=None,
-            batch_hash=None
+            batch_data=sample_batch, table_name='test_table', connection_name='test_conn', ranges=None, batch_hash=None
         )
 
         # Verify
@@ -316,17 +299,10 @@ class TestProcessBatchNonTransactional:
         """Test that mark_processed failure doesn't fail the load"""
         # Setup
         mock_loader.processed_ranges_store.is_processed = Mock(return_value=False)
-        mock_loader.processed_ranges_store.mark_processed = Mock(
-            side_effect=Exception('Mark failed')
-        )
+        mock_loader.processed_ranges_store.mark_processed = Mock(side_effect=Exception('Mark failed'))
 
         success_result = LoadResult(
-            rows_loaded=3,
-            duration=0.1,
-            ops_per_second=30.0,
-            table_name='test_table',
-            loader_type='mock',
-            success=True
+            rows_loaded=3, duration=0.1, ops_per_second=30.0, table_name='test_table', loader_type='mock', success=True
         )
         mock_loader.load_batch = Mock(return_value=success_result)
 
@@ -336,7 +312,7 @@ class TestProcessBatchNonTransactional:
             table_name='test_table',
             connection_name='test_conn',
             ranges=sample_ranges,
-            batch_hash='hash123'
+            batch_hash='hash123',
         )
 
         # Verify - load still succeeded despite mark_processed failure
@@ -363,7 +339,7 @@ class TestSaveCheckpointIfComplete:
                 connection_name='test_conn',
                 table_name='test_table',
                 worker_id=0,
-                batch_count=10
+                batch_count=10,
             )
 
         # Verify checkpoint was saved
@@ -390,7 +366,7 @@ class TestSaveCheckpointIfComplete:
             connection_name='test_conn',
             table_name='test_table',
             worker_id=0,
-            batch_count=10
+            batch_count=10,
         )
 
         # Verify no checkpoint was saved
@@ -408,7 +384,7 @@ class TestSaveCheckpointIfComplete:
             connection_name='test_conn',
             table_name='test_table',
             worker_id=0,
-            batch_count=10
+            batch_count=10,
         )
 
         # Verify no checkpoint was saved
@@ -429,7 +405,7 @@ class TestSaveCheckpointIfComplete:
                 connection_name='test_conn',
                 table_name='test_table',
                 worker_id=0,
-                batch_count=10
+                batch_count=10,
             )
 
         # Verify save was attempted
@@ -444,20 +420,12 @@ class TestAugmentStreamingResult:
         """Test result is augmented with streaming metadata including ranges"""
         # Setup
         result = LoadResult(
-            rows_loaded=10,
-            duration=1.0,
-            ops_per_second=10.0,
-            table_name='test_table',
-            loader_type='mock',
-            success=True
+            rows_loaded=10, duration=1.0, ops_per_second=10.0, table_name='test_table', loader_type='mock', success=True
         )
 
         # Execute
         augmented = mock_loader._augment_streaming_result(
-            result=result,
-            batch_count=5,
-            ranges=sample_ranges,
-            ranges_complete=True
+            result=result, batch_count=5, ranges=sample_ranges, ranges_complete=True
         )
 
         # Verify
@@ -477,20 +445,12 @@ class TestAugmentStreamingResult:
         """Test result is augmented without block ranges when ranges is None"""
         # Setup
         result = LoadResult(
-            rows_loaded=10,
-            duration=1.0,
-            ops_per_second=10.0,
-            table_name='test_table',
-            loader_type='mock',
-            success=True
+            rows_loaded=10, duration=1.0, ops_per_second=10.0, table_name='test_table', loader_type='mock', success=True
         )
 
         # Execute
         augmented = mock_loader._augment_streaming_result(
-            result=result,
-            batch_count=5,
-            ranges=None,
-            ranges_complete=False
+            result=result, batch_count=5, ranges=None, ranges_complete=False
         )
 
         # Verify
@@ -509,15 +469,12 @@ class TestAugmentStreamingResult:
             table_name='test_table',
             loader_type='mock',
             success=True,
-            metadata={'custom_key': 'custom_value'}
+            metadata={'custom_key': 'custom_value'},
         )
 
         # Execute
         augmented = mock_loader._augment_streaming_result(
-            result=result,
-            batch_count=5,
-            ranges=sample_ranges,
-            ranges_complete=True
+            result=result, batch_count=5, ranges=sample_ranges, ranges_complete=True
         )
 
         # Verify existing metadata is preserved

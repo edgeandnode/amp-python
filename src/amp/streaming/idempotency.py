@@ -6,7 +6,6 @@ providing exactly-once guarantees for financial and mission-critical application
 """
 
 import hashlib
-import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -96,9 +95,7 @@ class ProcessedRangesStore(ABC):
         self.config = config
 
     @abstractmethod
-    def is_processed(
-        self, connection_name: str, table_name: str, ranges: List[BlockRange]
-    ) -> bool:
+    def is_processed(self, connection_name: str, table_name: str, ranges: List[BlockRange]) -> bool:
         """
         Check if a set of block ranges has already been processed.
 
@@ -200,9 +197,7 @@ class DatabaseProcessedRangesStore(ProcessedRangesStore):
             logger.debug(f'Processed ranges table creation skipped: {e}')
             self.conn.rollback()
 
-    def is_processed(
-        self, connection_name: str, table_name: str, ranges: List[BlockRange]
-    ) -> bool:
+    def is_processed(self, connection_name: str, table_name: str, ranges: List[BlockRange]) -> bool:
         """Check if all ranges have been processed"""
         if not self.config.enabled or not ranges:
             return False
@@ -243,10 +238,7 @@ class DatabaseProcessedRangesStore(ProcessedRangesStore):
                 return False
 
         # All ranges have been processed
-        logger.info(
-            f'Duplicate detected: {len(ranges)} ranges already processed for '
-            f'{connection_name}.{table_name}'
-        )
+        logger.info(f'Duplicate detected: {len(ranges)} ranges already processed for {connection_name}.{table_name}')
         return True
 
     def mark_processed(
@@ -290,9 +282,7 @@ class DatabaseProcessedRangesStore(ProcessedRangesStore):
                 )
 
             self.conn.commit()
-            logger.debug(
-                f'Marked {len(ranges)} ranges as processed for {connection_name}.{table_name}'
-            )
+            logger.debug(f'Marked {len(ranges)} ranges as processed for {connection_name}.{table_name}')
 
         except Exception as e:
             logger.error(f'Failed to mark ranges as processed: {e}')
@@ -336,9 +326,7 @@ class DatabaseProcessedRangesStore(ProcessedRangesStore):
 class NullProcessedRangesStore(ProcessedRangesStore):
     """No-op processed ranges store when idempotency is disabled"""
 
-    def is_processed(
-        self, connection_name: str, table_name: str, ranges: List[BlockRange]
-    ) -> bool:
+    def is_processed(self, connection_name: str, table_name: str, ranges: List[BlockRange]) -> bool:
         return False
 
     def mark_processed(
