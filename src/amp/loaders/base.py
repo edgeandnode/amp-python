@@ -6,11 +6,25 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import fields, is_dataclass
+from datetime import datetime
 from logging import Logger
 from typing import Any, Dict, Generic, Iterator, List, Optional, Set, TypeVar
 
 import pyarrow as pa
 
+from ..streaming.checkpoint import CheckpointConfig, CheckpointState, NullCheckpointStore
+from ..streaming.idempotency import (
+    IdempotencyConfig,
+    NullProcessedRangesStore,
+    compute_batch_hash,
+)
+from ..streaming.resilience import (
+    AdaptiveRateLimiter,
+    BackPressureConfig,
+    ErrorClassifier,
+    ExponentialBackoff,
+    RetryConfig,
+)
 from ..streaming.types import BlockRange, ResponseBatchWithReorg
 from .types import LoadMode, LoadResult
 
@@ -48,6 +62,25 @@ class DataLoader(ABC, Generic[TConfig]):
         # Validate configuration
         self._validate_config()
 
+        # Initialize resilience components (enabled by default)
+        resilience_config = config.get('resilience', {})
+        self.retry_config = RetryConfig(**resilience_config.get('retry', {}))
+        self.back_pressure_config = BackPressureConfig(**resilience_config.get('back_pressure', {}))
+
+        self.rate_limiter = AdaptiveRateLimiter(self.back_pressure_config)
+
+        # Initialize checkpointing (disabled by default for backward compatibility)
+        checkpoint_config_dict = config.get('checkpoint', {})
+        self.checkpoint_config = CheckpointConfig(**checkpoint_config_dict)
+        # Start with NullCheckpointStore - will be replaced with DB store after connection
+        self.checkpoint_store = NullCheckpointStore(self.checkpoint_config)
+
+        # Initialize idempotency (disabled by default)
+        idempotency_config_dict = config.get('idempotency', {})
+        self.idempotency_config = IdempotencyConfig(**idempotency_config_dict)
+        # Start with NullProcessedRangesStore - will be replaced with DB store after connection
+        self.processed_ranges_store = NullProcessedRangesStore(self.idempotency_config)
+
     @property
     def is_connected(self) -> bool:
         """Check if the loader is connected to the target system."""
@@ -63,6 +96,10 @@ class DataLoader(ABC, Generic[TConfig]):
         if not hasattr(self, '__orig_bases__'):
             return config  # type: ignore
 
+        # Filter out reserved config keys handled by base loader
+        reserved_keys = {'resilience', 'checkpoint', 'idempotency'}
+        filtered_config = {k: v for k, v in config.items() if k not in reserved_keys}
+
         # Get the actual config type from the generic parameter
         for base in self.__orig_bases__:
             if hasattr(base, '__args__') and base.__args__:
@@ -70,7 +107,7 @@ class DataLoader(ABC, Generic[TConfig]):
                 # Check if it's a real type (not TypeVar)
                 if hasattr(config_type, '__name__'):
                     try:
-                        return config_type(**config)
+                        return config_type(**filtered_config)
                     except TypeError as e:
                         raise ValueError(f'Invalid {self.__class__.__name__} configuration: {e}') from e
 
@@ -124,7 +161,91 @@ class DataLoader(ABC, Generic[TConfig]):
         pass
 
     def load_batch(self, batch: pa.RecordBatch, table_name: str, **kwargs) -> LoadResult:
-        """Load a single Arrow RecordBatch with common error handling and timing"""
+        """
+        Load a single Arrow RecordBatch with automatic retry and back pressure.
+
+        This method wraps _try_load_batch with resilience features:
+        - Adaptive back pressure: Slow down on rate limits/timeouts
+        - Exponential backoff: Retry transient failures with increasing delays
+        """
+        # Apply adaptive back pressure (rate limiting)
+        self.rate_limiter.wait()
+
+        # Retry loop with exponential backoff
+        backoff = ExponentialBackoff(self.retry_config)
+        last_error = None
+
+        while True:
+            # Attempt to load a batch
+            result = self._try_load_batch(batch, table_name, **kwargs)
+
+            if result.success:
+                # Success path
+                self.rate_limiter.record_success()
+                return result
+
+            # Failed - determine if we should retry
+            last_error = result.error or 'Unknown error'
+            is_transient = ErrorClassifier.is_transient(last_error)
+
+            if not is_transient or not self.retry_config.enabled:
+                # Permanent error or retry disabled - STOP THE CLIENT
+                error_msg = (
+                    f'FATAL: Permanent error loading batch (not retryable). '
+                    f'Stopping client to prevent data loss. '
+                    f'Error: {last_error}'
+                )
+                self.logger.error(error_msg)
+                self.logger.error(
+                    f'Client will stop. On restart, streaming will resume from last checkpoint. '
+                    f'Fix the data/configuration issue before restarting.'
+                )
+                # Raise exception to stop the stream
+                raise RuntimeError(error_msg)
+
+            # Transient error - adapt rate limiter based on error type
+            if '429' in last_error or 'rate limit' in last_error.lower():
+                self.rate_limiter.record_rate_limit()
+            elif 'timeout' in last_error.lower() or 'timed out' in last_error.lower():
+                self.rate_limiter.record_timeout()
+
+            # Calculate backoff delay
+            delay = backoff.next_delay()
+            if delay is None:
+                # Max retries exceeded - STOP THE CLIENT
+                error_msg = (
+                    f'FATAL: Max retries ({self.retry_config.max_retries}) exceeded for batch. '
+                    f'Stopping client to prevent data loss. '
+                    f'Last error: {last_error}'
+                )
+                self.logger.error(error_msg)
+                self.logger.error(
+                    f'Client will stop. On restart, streaming will resume from last checkpoint. '
+                    f'Fix the underlying issue before restarting.'
+                )
+                # Raise exception to stop the stream
+                raise RuntimeError(error_msg)
+
+            # Retry with backoff
+            self.logger.warning(
+                f'Transient error loading batch (attempt {backoff.attempt}/{self.retry_config.max_retries}): '
+                f'{last_error}. Retrying in {delay:.1f}s...'
+            )
+            time.sleep(delay)
+
+    def _try_load_batch(self, batch: pa.RecordBatch, table_name: str, **kwargs) -> LoadResult:
+        """
+        Execute a single load attempt for an Arrow RecordBatch.
+
+        This is called by load_batch() within the retry loop. It handles:
+        - Connection management
+        - Mode validation
+        - Table creation
+        - Error handling and timing
+        - Metadata generation
+
+        Returns a LoadResult indicating success or failure of this single attempt.
+        """
         start_time = time.time()
 
         try:
@@ -161,7 +282,7 @@ class DataLoader(ABC, Generic[TConfig]):
             return LoadResult(
                 rows_loaded=rows_loaded,
                 duration=duration,
-                ops_per_second=round(rows_loaded / duration, 2),
+                ops_per_second=round(rows_loaded / duration, 2) if duration > 0 else 0,
                 table_name=table_name,
                 loader_type=self.__class__.__name__.replace('Loader', '').lower(),
                 success=True,
@@ -217,10 +338,11 @@ class DataLoader(ABC, Generic[TConfig]):
 
         except Exception as e:
             self.logger.error(f'Failed to load table: {str(e)}')
+            duration = time.time() - start_time
             return LoadResult(
                 rows_loaded=rows_loaded,
-                duration=time.time() - start_time,
-                ops_per_second=round(rows_loaded / duration, 2),
+                duration=duration,
+                ops_per_second=round(rows_loaded / duration, 2) if duration > 0 else 0,
                 table_name=table_name,
                 loader_type=self.__class__.__name__.replace('Loader', '').lower(),
                 success=False,
@@ -269,14 +391,13 @@ class DataLoader(ABC, Generic[TConfig]):
         """
         Load data from a continuous streaming iterator with reorg support.
 
-        This method handles streaming data that includes reorganization events.
-        When a reorg is detected, it calls _handle_reorg to let the loader
-        implementation handle the invalidation appropriately.
+        This method orchestrates the streaming load process, delegating specific
+        operations to focused helper methods for better maintainability.
 
         Args:
             stream_iterator: Iterator yielding ResponseBatchWithReorg objects
             table_name: Target table name
-            **kwargs: Additional options passed to load_batch
+            **kwargs: Additional options (connection_name, worker_id, etc.)
 
         Yields:
             LoadResult for each batch or reorg event
@@ -288,62 +409,88 @@ class DataLoader(ABC, Generic[TConfig]):
         start_time = time.time()
         batch_count = 0
         reorg_count = 0
+        connection_name = kwargs.get('connection_name', 'unknown')
+        worker_id = kwargs.get('worker_id', 0)
 
         try:
             for response in stream_iterator:
                 if response.is_reorg:
-                    # Handle reorganization
+                    # Process reorganization event
                     reorg_count += 1
-                    duration = time.time() - start_time
+                    result = self._process_reorg_event(
+                        response, table_name, connection_name, reorg_count, start_time, worker_id
+                    )
+                    yield result
 
-                    try:
-                        # Let the loader implementation handle the reorg
-                        self._handle_reorg(response.invalidation_ranges, table_name)
-
-                        # Yield a reorg result
-                        yield LoadResult(
-                            rows_loaded=0,
-                            duration=duration,
-                            ops_per_second=0,
-                            table_name=table_name,
-                            loader_type=self.__class__.__name__.replace('Loader', '').lower(),
-                            success=True,
-                            is_reorg=True,
-                            invalidation_ranges=response.invalidation_ranges,
-                            metadata={
-                                'operation': 'reorg',
-                                'invalidation_count': len(response.invalidation_ranges or []),
-                                'reorg_number': reorg_count,
-                            },
-                        )
-
-                    except Exception as e:
-                        self.logger.error(f'Failed to handle reorg: {str(e)}')
-                        raise
                 else:
-                    # Normal data batch
+                    # Process normal data batch
                     batch_count += 1
 
-                    # Add metadata columns to the batch data for streaming
+                    # Prepare batch data
                     batch_data = response.data.data
                     if response.data.metadata.ranges:
                         batch_data = self._add_metadata_columns(batch_data, response.data.metadata.ranges)
 
-                    result = self.load_batch(batch_data, table_name, **kwargs)
+                    # Compute batch hash if verification enabled
+                    batch_hash = None
+                    if self.idempotency_config.verification_hash:
+                        batch_hash = compute_batch_hash(batch_data)
 
-                    if result.success:
+                    # Choose processing strategy: transactional vs non-transactional
+                    use_transactional = (
+                        hasattr(self, 'load_batch_transactional')
+                        and self.idempotency_config.enabled
+                        and response.data.metadata.ranges
+                    )
+
+                    if use_transactional:
+                        # Atomic transactional loading (PostgreSQL with idempotency)
+                        result = self._process_batch_transactional(
+                            batch_data,
+                            table_name,
+                            connection_name,
+                            response.data.metadata.ranges,
+                            batch_hash,
+                        )
+                    else:
+                        # Non-transactional loading (separate check, load, mark)
+                        # Filter out parameters we've already extracted from kwargs
+                        filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ('connection_name', 'worker_id')}
+                        result = self._process_batch_non_transactional(
+                            batch_data,
+                            table_name,
+                            connection_name,
+                            response.data.metadata.ranges,
+                            batch_hash,
+                            **filtered_kwargs,
+                        )
+
+                        # Handle skip case (duplicate detected in non-transactional flow)
+                        if result and result.metadata.get('operation') == 'skip_duplicate':
+                            yield result
+                            continue
+
+                    # Update total rows loaded
+                    if result and result.success:
                         rows_loaded += result.rows_loaded
 
-                    # Add streaming metadata
-                    result.metadata['is_streaming'] = True
-                    result.metadata['batch_count'] = batch_count
+                    # Save checkpoint when microbatch completes
                     if response.data.metadata.ranges:
-                        result.metadata['block_ranges'] = [
-                            {'network': r.network, 'start': r.start, 'end': r.end}
-                            for r in response.data.metadata.ranges
-                        ]
+                        self._save_checkpoint_if_complete(
+                            response.data.metadata.ranges,
+                            response.data.metadata.ranges_complete,
+                            connection_name,
+                            table_name,
+                            worker_id,
+                            batch_count,
+                        )
 
-                    yield result
+                    # Augment result with streaming metadata and yield
+                    if result:
+                        result = self._augment_streaming_result(
+                            result, batch_count, response.data.metadata.ranges, response.data.metadata.ranges_complete
+                        )
+                        yield result
 
         except KeyboardInterrupt:
             self.logger.info(f'Streaming cancelled by user after {batch_count} batches, {rows_loaded} rows loaded')
@@ -365,6 +512,291 @@ class DataLoader(ABC, Generic[TConfig]):
                     'is_streaming': True,
                 },
             )
+
+    def _process_reorg_event(
+        self,
+        response: 'ResponseBatchWithReorg',
+        table_name: str,
+        connection_name: str,
+        reorg_count: int,
+        start_time: float,
+        worker_id: int = 0,
+    ) -> LoadResult:
+        """
+        Process a reorganization event.
+
+        Args:
+            response: Response containing invalidation ranges
+            table_name: Target table name
+            connection_name: Connection identifier
+            reorg_count: Number of reorgs processed so far
+            start_time: Stream start time for duration calculation
+
+        Returns:
+            LoadResult for the reorg event
+        """
+        try:
+            # Let the loader implementation handle the reorg (rollback data)
+            self._handle_reorg(response.invalidation_ranges, table_name)
+
+            # Create reorg checkpoint marking the resume point
+            if response.invalidation_ranges:
+                # Compute resume point from invalidation ranges
+                reorg_ranges = self._compute_reorg_resume_point(response.invalidation_ranges)
+
+                # Log reorg details
+                for range_obj in response.invalidation_ranges:
+                    self.logger.warning(
+                        f'Reorg detected on {range_obj.network}: '
+                        f'blocks {range_obj.start}-{range_obj.end} invalidated'
+                    )
+
+                # Save reorg checkpoint (keeps old checkpoints for history)
+                checkpoint = CheckpointState(
+                    ranges=reorg_ranges,
+                    timestamp=datetime.utcnow(),
+                    worker_id=worker_id,
+                    is_reorg=True,
+                )
+                self.checkpoint_store.save(connection_name, table_name, checkpoint)
+
+                self.logger.info(
+                    f'Saved reorg checkpoint. Will resume from: '
+                    f'{", ".join(f"{r.network}:{r.start}" for r in reorg_ranges)}'
+                )
+
+            # Build and return reorg result
+            duration = time.time() - start_time
+            return LoadResult(
+                rows_loaded=0,
+                duration=duration,
+                ops_per_second=0,
+                table_name=table_name,
+                loader_type=self.__class__.__name__.replace('Loader', '').lower(),
+                success=True,
+                is_reorg=True,
+                invalidation_ranges=response.invalidation_ranges,
+                metadata={
+                    'operation': 'reorg',
+                    'invalidation_count': len(response.invalidation_ranges or []),
+                    'reorg_number': reorg_count,
+                },
+            )
+
+        except Exception as e:
+            self.logger.error(f'Failed to handle reorg: {str(e)}')
+            raise
+
+    def _process_batch_transactional(
+        self,
+        batch_data: pa.RecordBatch,
+        table_name: str,
+        connection_name: str,
+        ranges: List[BlockRange],
+        batch_hash: Optional[str],
+    ) -> LoadResult:
+        """
+        Process a data batch using transactional exactly-once semantics.
+
+        Performs atomic check + load + mark in a single database transaction.
+
+        Args:
+            batch_data: Arrow RecordBatch to load
+            table_name: Target table name
+            connection_name: Connection identifier
+            ranges: Block ranges for this batch
+            batch_hash: Optional hash for verification
+
+        Returns:
+            LoadResult with operation outcome
+        """
+        start_time = time.time()
+        try:
+            rows_loaded_batch = self.load_batch_transactional(
+                batch_data, table_name, connection_name, ranges, batch_hash
+            )
+            duration = time.time() - start_time
+
+            return LoadResult(
+                rows_loaded=rows_loaded_batch,
+                duration=duration,
+                ops_per_second=round(rows_loaded_batch / duration, 2) if duration > 0 else 0,
+                table_name=table_name,
+                loader_type=self.__class__.__name__.replace('Loader', '').lower(),
+                success=True,
+                metadata={
+                    'operation': 'transactional_load' if rows_loaded_batch > 0 else 'skip_duplicate',
+                    'ranges': [r.to_dict() for r in ranges],
+                },
+            )
+
+        except Exception as e:
+            duration = time.time() - start_time
+            self.logger.error(f'Transactional batch load failed: {e}')
+            return LoadResult(
+                rows_loaded=0,
+                duration=duration,
+                ops_per_second=0,
+                table_name=table_name,
+                loader_type=self.__class__.__name__.replace('Loader', '').lower(),
+                success=False,
+                error=str(e),
+            )
+
+    def _process_batch_non_transactional(
+        self,
+        batch_data: pa.RecordBatch,
+        table_name: str,
+        connection_name: str,
+        ranges: Optional[List[BlockRange]],
+        batch_hash: Optional[str],
+        **kwargs,
+    ) -> Optional[LoadResult]:
+        """
+        Process a data batch using non-transactional flow (separate check, load, mark).
+
+        Used when loader doesn't support transactions or idempotency is disabled.
+
+        Args:
+            batch_data: Arrow RecordBatch to load
+            table_name: Target table name
+            connection_name: Connection identifier
+            ranges: Block ranges for this batch (if available)
+            batch_hash: Optional hash for verification
+            **kwargs: Additional options passed to load_batch
+
+        Returns:
+            LoadResult, or None if batch was skipped as duplicate
+        """
+        # Check if batch already processed (idempotency / exactly-once)
+        if ranges:
+            is_duplicate = self.processed_ranges_store.is_processed(connection_name, table_name, ranges)
+
+            if is_duplicate:
+                # Skip this batch - already processed
+                self.logger.info(
+                    f'Skipping duplicate batch: {len(ranges)} ranges already processed for {table_name}'
+                )
+                return LoadResult(
+                    rows_loaded=0,
+                    duration=0.0,
+                    ops_per_second=0.0,
+                    table_name=table_name,
+                    loader_type=self.__class__.__name__.replace('Loader', '').lower(),
+                    success=True,
+                    metadata={'operation': 'skip_duplicate', 'ranges': [r.to_dict() for r in ranges]},
+                )
+
+        # Load batch
+        result = self.load_batch(batch_data, table_name, **kwargs)
+
+        if result.success and ranges:
+            # Mark batch as processed (for exactly-once semantics)
+            try:
+                self.processed_ranges_store.mark_processed(
+                    connection_name, table_name, ranges, batch_hash
+                )
+            except Exception as e:
+                self.logger.error(f'Failed to mark ranges as processed: {e}')
+                # Continue anyway - checkpoint will provide resume capability
+
+        return result
+
+    def _save_checkpoint_if_complete(
+        self,
+        ranges: List[BlockRange],
+        ranges_complete: bool,
+        connection_name: str,
+        table_name: str,
+        worker_id: int,
+        batch_count: int,
+    ) -> None:
+        """
+        Save checkpoint when server signals microbatch completion.
+
+        Args:
+            ranges: Block ranges for this batch
+            ranges_complete: Whether this completes a microbatch
+            connection_name: Connection identifier
+            table_name: Target table name
+            worker_id: Worker ID for multi-worker setups
+            batch_count: Current batch number
+        """
+        if ranges_complete and ranges:
+            from datetime import datetime
+
+            checkpoint = CheckpointState(
+                ranges=ranges,
+                timestamp=datetime.utcnow(),
+                worker_id=worker_id,
+            )
+
+            try:
+                self.checkpoint_store.save(connection_name, table_name, checkpoint)
+                self.logger.info(
+                    f'Saved checkpoint at batch {batch_count} '
+                    f'({len(checkpoint.ranges)} ranges)'
+                )
+            except Exception as e:
+                # Log but don't fail the stream
+                self.logger.error(f'Failed to save checkpoint: {e}')
+
+    def _augment_streaming_result(
+        self, result: LoadResult, batch_count: int, ranges: Optional[List[BlockRange]], ranges_complete: bool
+    ) -> LoadResult:
+        """
+        Add streaming-specific metadata to a load result.
+
+        Args:
+            result: LoadResult to augment
+            batch_count: Current batch number
+            ranges: Block ranges for this batch (if available)
+            ranges_complete: Whether this completes a microbatch
+
+        Returns:
+            Augmented LoadResult
+        """
+        result.metadata['is_streaming'] = True
+        result.metadata['batch_count'] = batch_count
+        result.metadata['ranges_complete'] = ranges_complete
+        if ranges:
+            result.metadata['block_ranges'] = [
+                {'network': r.network, 'start': r.start, 'end': r.end} for r in ranges
+            ]
+        return result
+
+    def _compute_reorg_resume_point(self, invalidation_ranges: List[BlockRange]) -> List[BlockRange]:
+        """
+        Compute the resume point after a reorg from invalidation ranges.
+
+        For each network in invalidation_ranges, the resume point is the start
+        of the earliest invalidated block (the first block that needs reprocessing).
+
+        Args:
+            invalidation_ranges: List of block ranges that were invalidated by the reorg
+
+        Returns:
+            List of BlockRange objects representing the resume point for each affected network
+        """
+        # Group by network and find minimum start block
+        network_min_blocks = {}
+        for range_obj in invalidation_ranges:
+            network = range_obj.network
+            if network not in network_min_blocks or range_obj.start < network_min_blocks[network]:
+                network_min_blocks[network] = range_obj.start
+
+        # Create resume ranges - we resume FROM the invalidated start block
+        resume_ranges = []
+        for network, start_block in network_min_blocks.items():
+            resume_ranges.append(
+                BlockRange(
+                    network=network,
+                    start=start_block,
+                    end=start_block,  # Single point - the resume block
+                )
+            )
+
+        return resume_ranges
 
     def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str) -> None:
         """

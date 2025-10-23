@@ -327,11 +327,15 @@ class TestPostgreSQLLoaderIntegration:
             # Get schema
             schema = loader.get_table_schema(test_table_name)
             assert schema is not None
-            assert len(schema) == len(small_test_data.schema)
 
-            # Verify column names match
+            # Filter out metadata columns added by PostgreSQL loader
+            non_meta_fields = [field for field in schema if not field.name.startswith('_meta_')]
+
+            assert len(non_meta_fields) == len(small_test_data.schema)
+
+            # Verify column names match (excluding metadata columns)
             original_names = set(small_test_data.schema.names)
-            retrieved_names = set(schema.names)
+            retrieved_names = set(field.name for field in non_meta_fields)
             assert original_names == retrieved_names
 
     def test_error_handling(self, postgresql_test_config, small_test_data):

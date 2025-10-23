@@ -18,6 +18,7 @@ from threading import Lock
 from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional
 
 from ..loaders.types import LoadResult
+from .resilience import BackPressureConfig, RetryConfig
 
 if TYPE_CHECKING:
     from ..client import Client
@@ -53,7 +54,7 @@ class QueryPartition:
 
 @dataclass
 class ParallelConfig:
-    """Configuration for parallel streaming execution"""
+    """Configuration for parallel streaming execution with resilience support"""
 
     num_workers: int
     table_name: str  # Name of the table to partition (e.g., 'blocks', 'transactions')
@@ -64,6 +65,11 @@ class ParallelConfig:
     stop_on_error: bool = False  # Stop all workers on first error
     reorg_buffer: int = 200  # Block overlap when transitioning to continuous streaming (for reorg detection)
 
+    # Resilience configuration (applied to all workers)
+    # If not specified, uses sensible defaults from resilience module
+    retry_config: Optional[RetryConfig] = None
+    back_pressure_config: Optional[BackPressureConfig] = None
+
     def __post_init__(self):
         if self.num_workers < 1:
             raise ValueError(f'num_workers must be >= 1, got {self.num_workers}')
@@ -73,6 +79,37 @@ class ParallelConfig:
             raise ValueError(f'partition_size must be >= 1, got {self.partition_size}')
         if not self.table_name:
             raise ValueError('table_name is required')
+
+    def get_resilience_config(self) -> Dict[str, Any]:
+        """
+        Get resilience configuration as a dict suitable for loader config.
+
+        Returns:
+            Dict with resilience settings, or empty dict if all None (use defaults)
+        """
+        resilience_dict = {}
+
+        if self.retry_config is not None:
+            resilience_dict['retry'] = {
+                'enabled': self.retry_config.enabled,
+                'max_retries': self.retry_config.max_retries,
+                'initial_backoff_ms': self.retry_config.initial_backoff_ms,
+                'max_backoff_ms': self.retry_config.max_backoff_ms,
+                'backoff_multiplier': self.retry_config.backoff_multiplier,
+                'jitter': self.retry_config.jitter,
+            }
+
+        if self.back_pressure_config is not None:
+            resilience_dict['back_pressure'] = {
+                'enabled': self.back_pressure_config.enabled,
+                'initial_delay_ms': self.back_pressure_config.initial_delay_ms,
+                'max_delay_ms': self.back_pressure_config.max_delay_ms,
+                'adapt_on_429': self.back_pressure_config.adapt_on_429,
+                'adapt_on_timeout': self.back_pressure_config.adapt_on_timeout,
+                'recovery_factor': self.back_pressure_config.recovery_factor,
+            }
+
+        return {'resilience': resilience_dict} if resilience_dict else {}
 
 
 class BlockRangePartitionStrategy:
@@ -316,6 +353,13 @@ class ParallelStreamExecutor:
             LoadResult for each partition as it completes, then continuous streaming results
         """
         load_config = load_config or {}
+
+        # Merge resilience configuration into load_config
+        # This ensures all workers inherit the resilience behavior
+        resilience_config = self.config.get_resilience_config()
+        if resilience_config:
+            load_config.update(resilience_config)
+            self.logger.info('Applied resilience configuration to parallel workers')
 
         # Detect if we should continue with live streaming after parallel phase
         continue_streaming = self.config.max_block is None

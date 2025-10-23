@@ -346,6 +346,29 @@ class Client:
 
         self.logger.info(f'Starting streaming query to {loader_type}:{destination}')
 
+        # Create loader instance early to access checkpoint store
+        loader_instance = create_loader(loader_type, loader_config)
+
+        # Load checkpoint and create resume watermark if enabled (default: enabled)
+        if resume_watermark is None and kwargs.get('resume', True):
+            try:
+                checkpoint = loader_instance.checkpoint_store.load(connection_name, destination)
+
+                if checkpoint:
+                    resume_watermark = checkpoint.to_resume_watermark()
+                    checkpoint_type = 'reorg checkpoint' if checkpoint.is_reorg else 'checkpoint'
+                    self.logger.info(
+                        f'Resuming from {checkpoint_type}: {len(checkpoint.ranges)} ranges, '
+                        f'timestamp {checkpoint.timestamp}'
+                    )
+                    if checkpoint.is_reorg:
+                        resume_points = ', '.join(
+                            f'{r.network}:{r.start}' for r in checkpoint.ranges
+                        )
+                        self.logger.info(f'Reorg resume points: {resume_points}')
+            except Exception as e:
+                self.logger.warning(f'Failed to load checkpoint, starting from beginning: {e}')
+
         try:
             # Execute streaming query with Flight SQL
             # Create a CommandStatementQuery message
@@ -376,12 +399,13 @@ class Client:
                 stream_iterator = ReorgAwareStream(stream_iterator)
                 self.logger.info('Reorg detection enabled for streaming query')
 
-            # Create loader instance and start continuous loading
-            loader_instance = create_loader(loader_type, loader_config)
-
+            # Start continuous loading with checkpoint support
             with loader_instance:
                 self.logger.info(f'Starting continuous load to {destination}. Press Ctrl+C to stop.')
-                yield from loader_instance.load_stream_continuous(stream_iterator, destination, **load_config.__dict__)
+                # Pass connection_name for checkpoint saving
+                yield from loader_instance.load_stream_continuous(
+                    stream_iterator, destination, connection_name=connection_name, **load_config.__dict__
+                )
 
         except Exception as e:
             self.logger.error(f'Streaming query failed: {e}')

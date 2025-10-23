@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Union
 import pyarrow as pa
 from psycopg2.pool import ThreadedConnectionPool
 
+from ...streaming.idempotency import DatabaseProcessedRangesStore, IdempotencyConfig
 from ...streaming.types import BlockRange
 from ..base import DataLoader, LoadMode
 from ._postgres_helpers import has_binary_columns, prepare_csv_data, prepare_insert_data
@@ -84,6 +85,22 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
                 finally:
                     self.pool.putconn(conn)
 
+            # Replace NullStores with database-backed implementations
+            # This enables persistent checkpointing and idempotency
+            conn = self.pool.getconn()
+            try:
+                if self.checkpoint_config.enabled:
+                    from ...streaming.checkpoint import DatabaseCheckpointStore
+
+                    self.checkpoint_store = DatabaseCheckpointStore(self.checkpoint_config, conn)
+                    self.logger.info('Enabled database-backed checkpoint store')
+
+                if self.idempotency_config.enabled:
+                    self.processed_ranges_store = DatabaseProcessedRangesStore(self.idempotency_config, conn)
+                    self.logger.info('Enabled database-backed idempotency store')
+            finally:
+                self.pool.putconn(conn)
+
             self._is_connected = True
 
         except Exception as e:
@@ -106,6 +123,90 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
                 self._copy_arrow_data(cur, batch, table_name)
                 conn.commit()
             return batch.num_rows
+        finally:
+            self.pool.putconn(conn)
+
+    def load_batch_transactional(
+        self,
+        batch: pa.RecordBatch,
+        table_name: str,
+        connection_name: str,
+        ranges: List[BlockRange],
+        batch_hash: Optional[str] = None,
+    ) -> int:
+        """
+        Load a batch with transactional exactly-once semantics.
+
+        This method wraps the duplicate check, data loading, and processed marking
+        in a single PostgreSQL transaction, ensuring atomic exactly-once processing.
+
+        The transaction flow:
+        1. BEGIN TRANSACTION
+        2. Check if batch already processed (with SELECT FOR UPDATE lock)
+        3. If not processed:
+           - Load data into target table
+           - Mark ranges as processed in processed_ranges table
+        4. COMMIT (or ROLLBACK on error)
+
+        This guarantees that either both operations succeed or both fail,
+        preventing duplicate data even in case of crashes between operations.
+
+        Args:
+            batch: PyArrow RecordBatch to load
+            table_name: Target table name
+            connection_name: Connection identifier for tracking
+            ranges: Block ranges covered by this batch
+            batch_hash: Optional hash for additional validation
+
+        Returns:
+            Number of rows loaded (0 if duplicate)
+        """
+        if not self.idempotency_config.enabled:
+            raise ValueError('Transactional loading requires idempotency to be enabled')
+
+        conn = self.pool.getconn()
+        try:
+            # Create processed ranges store with this connection for transactional operations
+            store = DatabaseProcessedRangesStore(self.idempotency_config, conn)
+
+            # Disable autocommit to manage transaction manually
+            original_autocommit = conn.autocommit
+            conn.autocommit = False
+
+            try:
+                # Check if already processed (within transaction)
+                if store.is_processed(connection_name, table_name, ranges):
+                    self.logger.info(
+                        f'Batch already processed (ranges: {[f"{r.network}:{r.start}-{r.end}" for r in ranges]}), '
+                        f'skipping (transactional check)'
+                    )
+                    conn.rollback()
+                    return 0
+
+                # Load data within transaction
+                with conn.cursor() as cur:
+                    self._copy_arrow_data(cur, batch, table_name)
+
+                # Mark as processed within same transaction
+                store.mark_processed(connection_name, table_name, ranges, batch_hash)
+
+                # Commit transaction - both data load and processed marking succeed atomically
+                conn.commit()
+                self.logger.debug(
+                    f'Transactional batch load committed: {batch.num_rows} rows, '
+                    f'ranges: {[f"{r.network}:{r.start}-{r.end}" for r in ranges]}'
+                )
+                return batch.num_rows
+
+            except Exception as e:
+                # Rollback on any error - ensures no partial state
+                conn.rollback()
+                self.logger.error(f'Transactional batch load failed, rolled back: {e}')
+                raise
+            finally:
+                # Restore original autocommit setting
+                conn.autocommit = original_autocommit
+
         finally:
             self.pool.putconn(conn)
 
@@ -208,11 +309,9 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
 
                 # Build CREATE TABLE statement
                 columns = []
-                # Check if this is streaming data with metadata columns
-                has_metadata = any(field.name.startswith('_meta_') for field in schema)
 
                 for field in schema:
-                    # Skip generic metadata columns - we'll use _meta_block_range instead
+                    # Skip generic metadata columns - we'll use _meta_block_ranges instead
                     if field.name in ('_meta_range_start', '_meta_range_end'):
                         continue
                     # Special handling for JSONB metadata column
@@ -258,13 +357,14 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
                     # Quote column name for safety (important for blockchain field names)
                     columns.append(f'"{field.name}" {pg_type}{nullable}')
 
-                # Add metadata columns for streaming/reorg support if this is streaming data
-                # but only if they don't already exist in the schema
-                if has_metadata:
-                    schema_field_names = [field.name for field in schema]
-                    if '_meta_block_ranges' not in schema_field_names:
-                        # Use JSONB for multi-network block ranges with GIN index support
-                        columns.append('"_meta_block_ranges" JSONB')
+                # Always add metadata column for streaming/reorg support
+                # This supports hybrid streaming (parallel catch-up → continuous streaming)
+                # where initial batches don't have metadata but later ones do
+                schema_field_names = [field.name for field in schema]
+                if '_meta_block_ranges' not in schema_field_names:
+                    # Use JSONB for multi-network block ranges with GIN index support
+                    # This column is optional and can be NULL for non-streaming loads
+                    columns.append('"_meta_block_ranges" JSONB')
 
                 # Create the table - Fixed: use proper identifier quoting
                 create_sql = f"""

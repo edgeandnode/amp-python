@@ -1,4 +1,19 @@
 # Streaming module for continuous data loading
+from .checkpoint import (
+    CheckpointConfig,
+    CheckpointState,
+    CheckpointStore,
+    DatabaseCheckpointStore,
+    NullCheckpointStore,
+)
+from .idempotency import (
+    DatabaseProcessedRangesStore,
+    IdempotencyConfig,
+    NullProcessedRangesStore,
+    ProcessedRange,
+    ProcessedRangesStore,
+    compute_batch_hash,
+)
 from .iterator import StreamingResultIterator
 from .parallel import (
     BlockRangePartitionStrategy,
@@ -27,4 +42,15 @@ __all__ = [
     'ParallelStreamExecutor',
     'QueryPartition',
     'BlockRangePartitionStrategy',
+    'CheckpointConfig',
+    'CheckpointState',
+    'CheckpointStore',
+    'DatabaseCheckpointStore',
+    'NullCheckpointStore',
+    'IdempotencyConfig',
+    'ProcessedRange',
+    'ProcessedRangesStore',
+    'DatabaseProcessedRangesStore',
+    'NullProcessedRangesStore',
+    'compute_batch_hash',
 ]
