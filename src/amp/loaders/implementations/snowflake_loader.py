@@ -460,6 +460,20 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             if self.loading_method == 'stage':
                 self._create_stage()
 
+            # Replace NullStores with database-backed implementations
+            # This enables persistent checkpointing and idempotency
+            if self.checkpoint_config.enabled:
+                from ...streaming.checkpoint import DatabaseCheckpointStore
+
+                self.checkpoint_store = DatabaseCheckpointStore(self.checkpoint_config, self.connection)
+                self.logger.info('Enabled database-backed checkpoint store')
+
+            if self.idempotency_config.enabled:
+                from ...streaming.idempotency import DatabaseProcessedRangesStore
+
+                self.processed_ranges_store = DatabaseProcessedRangesStore(self.idempotency_config, self.connection)
+                self.logger.info('Enabled database-backed idempotency store')
+
             self._is_connected = True
 
         except Exception as e:
