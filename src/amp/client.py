@@ -7,6 +7,7 @@ from pyarrow import flight
 
 from . import FlightSql_pb2
 from .config.connection_manager import ConnectionManager
+from .config.label_manager import LabelManager
 from .loaders.registry import create_loader, get_available_loaders
 from .loaders.types import LoadConfig, LoadMode, LoadResult
 from .streaming import (
@@ -105,6 +106,7 @@ class Client:
     def __init__(self, url):
         self.conn = flight.connect(url)
         self.connection_manager = ConnectionManager()
+        self.label_manager = LabelManager()
         self.logger = logging.getLogger(__name__)
 
     def sql(self, query: str) -> QueryBuilder:
@@ -122,6 +124,18 @@ class Client:
     def configure_connection(self, name: str, loader: str, config: Dict[str, Any]) -> None:
         """Configure a named connection for reuse"""
         self.connection_manager.add_connection(name, loader, config)
+
+    def configure_label(self, name: str, csv_path: str, binary_columns: Optional[List[str]] = None) -> None:
+        """
+        Configure a label dataset from a CSV file for joining with streaming data.
+
+        Args:
+            name: Unique name for this label dataset
+            csv_path: Path to the CSV file
+            binary_columns: List of column names containing hex addresses to convert to binary.
+                          If None, auto-detects columns with 'address' in the name.
+        """
+        self.label_manager.add_label(name, csv_path, binary_columns)
 
     def list_connections(self) -> Dict[str, str]:
         """List all configured connections"""
@@ -238,7 +252,7 @@ class Client:
     ) -> LoadResult:
         """Load a complete Arrow Table"""
         try:
-            loader_instance = create_loader(loader, config)
+            loader_instance = create_loader(loader, config, label_manager=self.label_manager)
 
             with loader_instance:
                 return loader_instance.load_table(table, table_name, **load_config.__dict__, **kwargs)
@@ -265,7 +279,7 @@ class Client:
     ) -> Iterator[LoadResult]:
         """Load from a stream of batches"""
         try:
-            loader_instance = create_loader(loader, config)
+            loader_instance = create_loader(loader, config, label_manager=self.label_manager)
 
             with loader_instance:
                 yield from loader_instance.load_stream(batch_stream, table_name, **load_config.__dict__, **kwargs)
@@ -355,7 +369,7 @@ class Client:
         self.logger.info(f'Starting streaming query to {loader_type}:{destination}')
 
         # Create loader instance early to access checkpoint store
-        loader_instance = create_loader(loader_type, loader_config)
+        loader_instance = create_loader(loader_type, loader_config, label_manager=self.label_manager)
 
         # Load checkpoint and create resume watermark if enabled (default: enabled)
         if resume_watermark is None and kwargs.get('resume', True):

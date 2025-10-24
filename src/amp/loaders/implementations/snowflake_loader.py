@@ -351,8 +351,8 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
     REQUIRES_SCHEMA_MATCH = False
     SUPPORTS_TRANSACTIONS = True
 
-    def __init__(self, config: Dict[str, Any]) -> None:
-        super().__init__(config)
+    def __init__(self, config: Dict[str, Any], label_manager=None) -> None:
+        super().__init__(config, label_manager=label_manager)
         self.connection: Optional[SnowflakeConnection] = None
         self.cursor = None
         self._created_tables = set()  # Track created tables
@@ -625,9 +625,9 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             for channel_key, channel in self.streaming_channels.items():
                 try:
                     channel.close()
-                    self.logger.debug(f'Closed channel: {channel.name}')
+                    self.logger.debug(f'Closed channel: {channel_key}')
                 except Exception as e:
-                    self.logger.warning(f'Error closing channel: {e}')
+                    self.logger.warning(f'Error closing channel {channel_key}: {e}')
 
             self.streaming_channels.clear()
 
@@ -736,12 +736,18 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
 
         # Identify binary columns and convert to hex for CSV compatibility
         binary_columns = {}
+        # Track VARIANT columns so we can use PARSE_JSON in COPY INTO
+        variant_columns = set()
         modified_arrays = []
         modified_fields = []
 
         t_conversion_start = time.time()
         for i, field in enumerate(batch.schema):
             col_array = batch.column(i)
+
+            # Track _meta_block_ranges as VARIANT column for JSON parsing
+            if field.name == '_meta_block_ranges':
+                variant_columns.add(field.name)
 
             # Check if this is a binary type that needs hex encoding
             if pa.types.is_binary(field.type) or pa.types.is_large_binary(field.type) or pa.types.is_fixed_size_binary(field.type):
@@ -801,12 +807,15 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         t_put_end = time.time()
         self.logger.debug(f'PUT command took {t_put_end - t_put_start:.2f}s')
 
-        # Build column list with transformations - convert hex strings back to binary
+        # Build column list with transformations - convert hex strings back to binary, parse JSON for VARIANT
         final_column_specs = []
         for i, field in enumerate(batch.schema, start=1):
             if field.name in binary_columns:
                 # Use TO_BINARY to convert hex string back to binary
                 final_column_specs.append(f'TO_BINARY(${i}, \'HEX\')')
+            elif field.name in variant_columns:
+                # Use PARSE_JSON to convert JSON string to VARIANT
+                final_column_specs.append(f'PARSE_JSON(${i})')
             else:
                 final_column_specs.append(f'${i}')
 
@@ -1468,9 +1477,9 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                         try:
                             channel.close()
                             del self.streaming_channels[channel_key]
-                            self.logger.debug(f'Closed streaming channel: {channel.name}')
+                            self.logger.debug(f'Closed streaming channel: {channel_key}')
                         except Exception as e:
-                            self.logger.warning(f'Error closing channel {channel.name}: {e}')
+                            self.logger.warning(f'Error closing channel {channel_key}: {e}')
                             # Continue closing other channels even if one fails
 
                     self.logger.info(
@@ -1482,7 +1491,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                 """
                 SELECT COUNT(*) as count
                 FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = '_META_BLOCK_RANGES'
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = '_meta_block_ranges'
                 """,
                 (self.config.schema, table_name.upper()),
             )
@@ -1494,32 +1503,33 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                 )
                 return
 
-            # Build DELETE statement with conditions for each invalidation range
-            # Snowflake's PARSE_JSON and ARRAY_SIZE functions help work with JSON data
-            delete_conditions = []
+            # Build WHERE conditions for FLATTEN-based deletion
+            # Since Snowflake doesn't support complex subqueries in DELETE WHERE,
+            # we use a CTE-based approach with row identification
+            where_conditions = []
 
             for range_obj in invalidation_ranges:
                 network = range_obj.network
                 reorg_start = range_obj.start
 
                 # Create condition for this network's reorg
-                # Delete rows where any range in the JSON array for this network has end >= reorg_start
-                condition = f"""
-                EXISTS (
-                    SELECT 1
-                    FROM TABLE(FLATTEN(input => PARSE_JSON("_META_BLOCK_RANGES"))) f
-                    WHERE f.value:network::STRING = '{network}'
-                    AND f.value:end::NUMBER >= {reorg_start}
+                where_conditions.append(f"""
+                    (f.value:network::STRING = '{network}' AND f.value:end::NUMBER >= {reorg_start})
+                """)
+
+            if where_conditions:
+                # Use a CTE to identify rows to delete, then delete using METADATA$ROW_ID
+                where_clause = ' OR '.join(where_conditions)
+
+                # Create DELETE SQL using CTE for row identification
+                delete_sql = f"""
+                DELETE FROM {table_name}
+                WHERE "_meta_block_ranges" IN (
+                    SELECT DISTINCT "_meta_block_ranges"
+                    FROM {table_name}, LATERAL FLATTEN(input => "_meta_block_ranges") f
+                    WHERE {where_clause}
                 )
                 """
-                delete_conditions.append(condition)
-
-            # Combine conditions with OR
-            if delete_conditions:
-                where_clause = ' OR '.join(f'({cond})' for cond in delete_conditions)
-
-                # Execute deletion
-                delete_sql = f'DELETE FROM {table_name} WHERE {where_clause}'
 
                 self.logger.info(
                     f'Executing blockchain reorg deletion for {len(invalidation_ranges)} networks '

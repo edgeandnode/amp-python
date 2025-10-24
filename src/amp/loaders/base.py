@@ -50,11 +50,12 @@ class DataLoader(ABC, Generic[TConfig]):
     REQUIRES_SCHEMA_MATCH: bool = True
     SUPPORTS_TRANSACTIONS: bool = False
 
-    def __init__(self, config: Dict[str, Any]) -> None:
+    def __init__(self, config: Dict[str, Any], label_manager=None) -> None:
         self.logger: Logger = logging.getLogger(f'{self.__class__.__name__}')
         self._connection: Optional[Any] = None
         self._is_connected: bool = False
         self._created_tables: Set[str] = set()  # Track created tables
+        self.label_manager = label_manager  # For CSV label joining
 
         # Parse configuration into typed format
         self.config: TConfig = self._parse_config(config)
@@ -240,6 +241,7 @@ class DataLoader(ABC, Generic[TConfig]):
         This is called by load_batch() within the retry loop. It handles:
         - Connection management
         - Mode validation
+        - Label joining (if configured)
         - Table creation
         - Error handling and timing
         - Metadata generation
@@ -258,7 +260,26 @@ class DataLoader(ABC, Generic[TConfig]):
             if mode not in self.SUPPORTED_MODES:
                 raise ValueError(f'Unsupported mode {mode}. Supported modes: {self.SUPPORTED_MODES}')
 
-            # Handle table creation
+            # Apply label joining if requested
+            label_name = kwargs.get('label')
+            label_key_column = kwargs.get('label_key_column')
+            stream_key_column = kwargs.get('stream_key_column')
+
+            if label_name or label_key_column or stream_key_column:
+                # If any label param is provided, all must be provided
+                if not (label_name and label_key_column and stream_key_column):
+                    raise ValueError(
+                        'Label joining requires all three parameters: label, label_key_column, stream_key_column'
+                    )
+
+                # Perform the join
+                batch = self._join_with_labels(batch, label_name, label_key_column, stream_key_column)
+                self.logger.debug(
+                    f'Joined batch with label {label_name}: {batch.num_rows} rows after join '
+                    f'(columns: {", ".join(batch.schema.names)})'
+                )
+
+            # Handle table creation (use joined schema if applicable)
             if kwargs.get('create_table', True) and table_name not in self._created_tables:
                 if hasattr(self, '_create_table_from_schema'):
                     self._create_table_from_schema(batch.schema, table_name)
@@ -890,6 +911,133 @@ class DataLoader(ABC, Generic[TConfig]):
     ) -> Dict[str, Any]:
         """Override in subclasses to add loader-specific table metadata"""
         return {}
+
+    def _get_effective_schema(
+        self, original_schema: pa.Schema, label_name: Optional[str], label_key_column: Optional[str]
+    ) -> pa.Schema:
+        """
+        Get effective schema by merging label columns into original schema.
+
+        If label_name is None, returns original schema unchanged.
+        Otherwise, merges label columns (excluding the join key which is already in original).
+
+        Args:
+            original_schema: Original data schema
+            label_name: Name of the label dataset (None if no labels)
+            label_key_column: Column name in the label table to join on
+
+        Returns:
+            Schema with label columns merged in
+        """
+        if label_name is None or label_key_column is None:
+            return original_schema
+
+        if self.label_manager is None:
+            raise ValueError('Label manager not configured')
+
+        label_table = self.label_manager.get_label(label_name)
+        if label_table is None:
+            raise ValueError(f"Label '{label_name}' not found")
+
+        # Start with original schema fields
+        merged_fields = list(original_schema)
+
+        # Add label columns (excluding the join key which is already in original)
+        for field in label_table.schema:
+            if field.name != label_key_column and field.name not in original_schema.names:
+                merged_fields.append(field)
+
+        return pa.schema(merged_fields)
+
+    def _join_with_labels(
+        self, batch: pa.RecordBatch, label_name: str, label_key_column: str, stream_key_column: str
+    ) -> pa.RecordBatch:
+        """
+        Join batch data with labels using inner join.
+
+        Handles automatic type conversion between stream and label key columns
+        (e.g., string ↔ binary for Ethereum addresses).
+
+        Args:
+            batch: Original data batch
+            label_name: Name of the label dataset
+            label_key_column: Column name in the label table to join on
+            stream_key_column: Column name in the batch data to join on
+
+        Returns:
+            Joined RecordBatch with label columns added
+
+        Raises:
+            ValueError: If label_manager not configured, label not found, or invalid columns
+        """
+        if self.label_manager is None:
+            raise ValueError('Label manager not configured')
+
+        label_table = self.label_manager.get_label(label_name)
+        if label_table is None:
+            raise ValueError(f"Label '{label_name}' not found")
+
+        # Validate columns exist
+        if stream_key_column not in batch.schema.names:
+            raise ValueError(f"Stream key column '{stream_key_column}' not found in batch schema")
+
+        if label_key_column not in label_table.schema.names:
+            raise ValueError(f"Label key column '{label_key_column}' not found in label table")
+
+        # Convert batch to table for join operation
+        batch_table = pa.Table.from_batches([batch])
+
+        # Get column types for join keys
+        stream_key_type = batch_table.schema.field(stream_key_column).type
+        label_key_type = label_table.schema.field(label_key_column).type
+
+        # If types don't match, cast one to match the other
+        # Prefer casting to binary since that's more efficient
+        import pyarrow.compute as pc
+
+        if stream_key_type != label_key_type:
+            # Try to cast stream key to label key type
+            if pa.types.is_fixed_size_binary(label_key_type) and pa.types.is_string(stream_key_type):
+                # Cast string to binary (hex strings like "0xABCD...")
+                def hex_to_binary(value):
+                    if value is None:
+                        return None
+                    # Remove 0x prefix if present
+                    hex_str = value[2:] if value.startswith('0x') else value
+                    return bytes.fromhex(hex_str)
+
+                # Cast the stream column to binary
+                stream_column = batch_table.column(stream_key_column)
+                binary_length = label_key_type.byte_width
+                binary_values = pa.array(
+                    [hex_to_binary(v.as_py()) for v in stream_column], type=pa.binary(binary_length)
+                )
+                batch_table = batch_table.set_column(
+                    batch_table.schema.get_field_index(stream_key_column), stream_key_column, binary_values
+                )
+            elif pa.types.is_binary(stream_key_type) and pa.types.is_string(label_key_type):
+                # Cast binary to string (for test compatibility)
+                stream_column = batch_table.column(stream_key_column)
+                string_values = pa.array([v.as_py().hex() if v.as_py() else None for v in stream_column])
+                batch_table = batch_table.set_column(
+                    batch_table.schema.get_field_index(stream_key_column), stream_key_column, string_values
+                )
+
+        # Perform inner join using PyArrow compute
+        # Inner join will filter out rows where stream key doesn't match any label key
+        joined_table = batch_table.join(
+            label_table, keys=stream_key_column, right_keys=label_key_column, join_type='inner'
+        )
+
+        # Convert back to RecordBatch
+        if joined_table.num_rows == 0:
+            # Empty result - return empty batch with joined schema
+            # Need to create empty arrays for each column
+            empty_data = {field.name: pa.array([], type=field.type) for field in joined_table.schema}
+            return pa.RecordBatch.from_pydict(empty_data, schema=joined_table.schema)
+
+        # Return as a single batch (assuming batch sizes are manageable)
+        return joined_table.to_batches()[0]
 
     def __enter__(self) -> 'DataLoader':
         self.connect()
