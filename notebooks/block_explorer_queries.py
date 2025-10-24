@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.11.31"
+__generated_with = "0.17.0"
 app = marimo.App(width="medium")
 
 
@@ -8,9 +8,9 @@ app = marimo.App(width="medium")
 def _(mo):
     mo.md(
         r"""
-        # Block explorer queries
-        Testing the queries that would be used in a block explorer application
-        """
+    # Block explorer queries
+    Testing the queries that would be used in a block explorer application
+    """
     )
     return
 
@@ -18,7 +18,8 @@ def _(mo):
 @app.cell
 def _():
     import marimo as mo
-    return (mo,)
+    from amp.util import decode_arrow_data
+    return decode_arrow_data, mo
 
 
 @app.cell
@@ -29,7 +30,7 @@ def _():
 
 @app.cell
 def _(Client):
-    client = Client('grpc://127.0.0.1:80')
+    client = Client('grpc://34.27.238.174:80')
     return (client,)
 
 
@@ -50,8 +51,14 @@ def _(client):
 
 
 @app.cell
-def _(blocks_columns):
-    blocks_columns
+def _(blocks_columns, decode_arrow_data):
+    decoded = decode_arrow_data(blocks_columns)
+    return (decoded,)
+
+
+@app.cell
+def _(decoded):
+    decoded
     return
 
 
@@ -67,7 +74,7 @@ def _(client):
     # return: number
     latest_block = client.get_sql("select max(block_num) as latest_block from eth_firehose.blocks", read_all=True)
     latest_block_num = latest_block[0][0].as_py()
-    return latest_block, latest_block_num
+    return (latest_block_num,)
 
 
 @app.cell
@@ -97,8 +104,9 @@ def _(client, latest_block_num):
 
 
 @app.cell
-def _(latest_blocks_simple):
-    latest_blocks_simple.to_pandas()
+def _(decode_arrow_data, latest_blocks_simple):
+    miners = decode_arrow_data(latest_blocks_simple)
+    miners
     return
 
 
@@ -123,8 +131,8 @@ def _(client, latest_block_num):
 
 
 @app.cell
-def _(latest_blocks_detail):
-    latest_blocks_detail.to_pandas()
+def _(decode_arrow_data, latest_blocks_detail):
+    decode_arrow_data(latest_blocks_detail)
     return
 
 
@@ -149,8 +157,8 @@ def _(client, latest_block_num):
 
 
 @app.cell
-def _(block):
-    block.to_pandas()
+def _(block, decode_arrow_data):
+    decode_arrow_data(block)
     return
 
 
@@ -171,8 +179,8 @@ def _(client):
 
 
 @app.cell
-def _(tx_columns):
-    tx_columns
+def _(decode_arrow_data, tx_columns):
+    decode_arrow_data(tx_columns)
     return
 
 
@@ -208,8 +216,8 @@ def _(client):
 
 
 @app.cell
-def _(txs_in_block):
-    txs_in_block
+def _(decode_arrow_data, txs_in_block):
+    decode_arrow_data(txs_in_block)
     return
 
 
@@ -227,10 +235,10 @@ def _(client, txs_block_num, txs_in_block):
     tx_details = client.get_sql(f"""
         select 
             block_num,
-            tx_hash, 
+            tx_hash, # bytes
             tx_index, 
-            to, 
-            "from", 
+            to, # bytes
+            "from", # bytes
             gas_used, 
             type,
             input,
@@ -241,7 +249,7 @@ def _(client, txs_block_num, txs_in_block):
         from eth_firehose.transactions
         where block_num = {txs_block_num} and tx_index = {tx_index}
         LIMIT 100""", read_all=True)
-    return tx_details, tx_index
+    return (tx_details,)
 
 
 @app.cell
@@ -251,7 +259,8 @@ def _(tx_details):
 
 
 @app.cell
-def _():
+def _(decode_arrow_data, tx_details):
+    decode_arrow_data(tx_details)
     return
 
 

@@ -1,4 +1,5 @@
 import marimo
+import os
 
 __generated_with = '0.11.31'
 app = marimo.App(width='medium')
@@ -22,7 +23,8 @@ def _():
 
 @app.cell
 def _(Client):
-    client = Client('grpc://127.0.0.1:80')
+    server_url = os.getenv('AMP_SERVER_URL', 'grpc://127.0.0.1:80')
+    client = Client(server_url)
     return (client,)
 
 

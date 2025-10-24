@@ -4,11 +4,12 @@ import os
 import os.path
 import time
 from collections import defaultdict
-
+from typing import Union, Iterator
 import base58
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+
 import requests
 from eth_utils import keccak
 from google.cloud import bigquery, storage
@@ -336,3 +337,51 @@ class Event:
     def signature(self):
         sig = self.name + '(' + ','.join(self.inputs) + ')'
         return sig
+
+def decode_arrow_data(data: Union[pa.Table, pa.RecordBatch, Iterator[pa.RecordBatch]]) -> Union[pa.Table, pa.RecordBatch, Iterator[pa.RecordBatch]]:
+    """
+    Decode bytes-like columns in Arrow data to '0x'-prefixed hex strings using to_hex.
+    
+    Handles standard binary, fixed-size binary, and custom/extension types that contain bytes.
+    Dynamically updates the schema for decoded columns to string type.
+    Preserves the input type (Table -> Table, RecordBatch -> RecordBatch, iterator -> iterator).
+    
+    Args:
+        data: Arrow Table, RecordBatch, or iterator of RecordBatches.
+    
+    Returns: Decoded data in the same format/type as input.
+    """
+    def decode_batch(batch: pa.RecordBatch) -> pa.RecordBatch:
+        new_arrays = []
+        new_fields = []  # Build new schema fields
+        for field, array in zip(batch.schema, batch):
+            # Broader check for any binary-like type (standard, fixed-size, or custom/extension)
+            if pa.types.is_binary(field.type) or pa.types.is_large_binary(field.type) or pa.types.is_fixed_size_binary(field.type):
+                # Apply to_hex to each value (handles nulls and converts to hex string)
+                decoded = [to_hex(val.as_py()) if val is not None else None for val in array]
+                new_arrays.append(pa.array(decoded, type=pa.string()))
+                # Update field to string type in new schema
+                new_fields.append(field.with_type(pa.string()))
+            else:
+                new_arrays.append(array)
+                new_fields.append(field)  # Keep original
+        # Create new schema from updated fields
+        new_schema = pa.schema(new_fields)
+        return pa.RecordBatch.from_arrays(new_arrays, schema=new_schema)
+
+    if isinstance(data, pa.Table):
+        # Decode as batches and reconstruct Table with new schema
+        batches = [decode_batch(b) for b in data.to_batches()]
+        if batches:
+            return pa.Table.from_batches(batches, schema=batches[0].schema)
+        else:
+            return pa.Table.from_batches([], schema=data.schema)  # Handle empty
+    elif isinstance(data, pa.RecordBatch):
+        return decode_batch(data)
+    elif hasattr(data, '__iter__'):  # Iterator of batches
+        def generator():
+            for batch in data:
+                yield decode_batch(batch)
+        return generator()
+    else:
+        raise ValueError(f"Unsupported data type: {type(data)}. Expected Table, RecordBatch, or iterator.")

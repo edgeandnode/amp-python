@@ -1,4 +1,5 @@
 import marimo
+import os
 
 __generated_with = "0.14.16"
 app = marimo.App(width="full")
@@ -20,7 +21,8 @@ def _():
 
 @app.cell
 def _(Client):
-    client = Client('grpc://127.0.0.1')
+    server_url = os.getenv('AMP_SERVER_URL', 'grpc://127.0.0.1:80')
+    client = Client(server_url)
     client.configure_connection('my_pg', 'postgresql', {'host': 'localhost', 'database': 'loaders_testing', 'user': 'username', 'password': 'pass', 'port': '5432'})
     client.configure_connection('my_redis', 'redis', {'host': 'localhost', 'port': 6379, 'password': 'mypassword'})
     return (client,)
