@@ -17,7 +17,7 @@ app = typer.Typer()
 
 
 @app.command()
-def query(table: str, columns: Optional[List[str]] = None, where: Optional[List[str]] = None, limit: Optional[int] = 1):
+def query(table: str, columns: Optional[List[str]] = None, where: Optional[List[str]] = None, limit: Optional[int] = 1, decode_bytes: bool = typer.Option(False, "--decode-bytes", help="Automatically decode bytes columns to hex strings")):
     server_url = os.getenv('AMP_SERVER_URL')
     if server_url:
         logger.info(f"Using AMP_SERVER_URL from environment: {server_url}")
@@ -35,9 +35,15 @@ def query(table: str, columns: Optional[List[str]] = None, where: Optional[List[
     print(f'... {query_body}\n')
 
     df = client.get_sql(query_body, read_all=True).to_pandas()
+    # Optional: decode bytes columns to hex strings
+    if decode_bytes:
+        print('decoding bytes columns to hex strings')
+        for col in df.columns:
+            if df[col].dtype == 'object' and df[col].apply(lambda x: isinstance(x, bytes)).any():
+                df[col] = df[col].apply(lambda x: '0x' + x.hex() if isinstance(x, bytes) else x)
+                
     print('results:')
     print(df)
-
 
 if __name__ == '__main__':
     app()
