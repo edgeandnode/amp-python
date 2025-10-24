@@ -74,6 +74,7 @@ class ReorgAwareStream:
                 return ResponseBatchWithReorg.reorg_batch(invalidation_ranges)
 
             # Check if we have a pending batch from a previous reorg detection
+            # REVIEW: I think we should remove this
             if hasattr(self, '_pending_batch'):
                 pending = self._pending_batch
                 delattr(self, '_pending_batch')

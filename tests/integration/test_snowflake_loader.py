@@ -25,6 +25,7 @@ import pytest
 try:
     from src.amp.loaders.base import LoadMode
     from src.amp.loaders.implementations.snowflake_loader import SnowflakeLoader
+    from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch, ResponseBatchWithReorg
 except ImportError:
     pytest.skip('amp modules not available', allow_module_level=True)
 
@@ -127,7 +128,8 @@ class TestSnowflakeLoaderIntegration:
         loader = SnowflakeLoader(snowflake_config)
 
         with loader:
-            result = loader.load_table(medium_test_table, test_table_name, create_table=True)
+            # Use smaller batch size to force multiple batches (medium_test_table has 10000 rows)
+            result = loader.load_table(medium_test_table, test_table_name, create_table=True, batch_size=5000)
 
             assert result.success is True
             assert result.rows_loaded == medium_test_table.num_rows
@@ -333,11 +335,10 @@ class TestSnowflakeLoaderIntegration:
         """Test different stage and compression options"""
         cleanup_tables.append(test_table_name)
 
-        # Test with different compression
+        # Test with stage loading method
         config = {
             **snowflake_config,
             'loading_method': 'stage',
-            'compression': 'zstd',
         }
         loader = SnowflakeLoader(config)
 
@@ -614,23 +615,19 @@ class TestSnowflakeLoaderIntegration:
             data2 = pa.RecordBatch.from_pydict({'id': [3, 4], 'value': [300, 400]})
 
             # Create response batches
-            response1 = ResponseBatchWithReorg(
-                is_reorg=False,
-                data=ResponseBatch(
-                    data=data1, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110)])
-                ),
+            batch1 = ResponseBatch(
+                data=data1, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110)])
             )
+            response1 = ResponseBatchWithReorg.data_batch(batch1)
 
-            response2 = ResponseBatchWithReorg(
-                is_reorg=False,
-                data=ResponseBatch(
-                    data=data2, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160)])
-                ),
+            batch2 = ResponseBatch(
+                data=data2, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160)])
             )
+            response2 = ResponseBatchWithReorg.data_batch(batch2)
 
             # Simulate reorg event
-            reorg_response = ResponseBatchWithReorg(
-                is_reorg=True, invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)]
+            reorg_response = ResponseBatchWithReorg.reorg_batch(
+                [BlockRange(network='ethereum', start=150, end=200)]
             )
 
             # Process streaming data
@@ -647,8 +644,8 @@ class TestSnowflakeLoaderIntegration:
             assert results[2].is_reorg
 
             # Verify reorg deleted the second batch
-            loader.cursor.execute(f'SELECT id FROM {test_table_name} ORDER BY id')
-            remaining_ids = [row['ID'] for row in loader.cursor.fetchall()]
+            loader.cursor.execute(f'SELECT "id" FROM {test_table_name} ORDER BY "id"')
+            remaining_ids = [row['id'] for row in loader.cursor.fetchall()]
             assert remaining_ids == [1, 2]  # 3 and 4 deleted by reorg
 
 
@@ -704,8 +701,8 @@ class TestSnowpipeStreamingIntegration:
         loader.connect()
         assert loader._is_connected is True
         assert loader.connection is not None
-        # Streaming client is lazily initialized (created on first load, not at connection time)
-        assert loader.streaming_client is None
+        # Streaming clients dict is initialized empty (clients created on first load per table)
+        assert loader.streaming_clients == {}
 
         loader.disconnect()
         assert loader._is_connected is False

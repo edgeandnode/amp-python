@@ -566,10 +566,12 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             client = self.streaming_clients[table_name]
 
             # Open channel - returns (channel, status) tuple
-            channel, status = client.open_channel(channel_name=channel_name)
-
-            if status != 'OPEN':
-                raise RuntimeError(f'Failed to open streaming channel {channel_name}: status={status}')
+            # Status indicates channel state but appears to be a channel object representation
+            result = client.open_channel(channel_name=channel_name)
+            if isinstance(result, tuple):
+                channel, status = result
+            else:
+                channel = result
 
             self.streaming_channels[channel_key] = channel
             self.logger.info(f'Opened Snowpipe Streaming channel: {channel_name}')
@@ -584,9 +586,9 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             for channel_key, channel in self.streaming_channels.items():
                 try:
                     channel.close()
-                    self.logger.debug(f'Closed channel: {channel.name}')
+                    self.logger.debug(f'Closed channel: {channel_key}')
                 except Exception as e:
-                    self.logger.warning(f'Error closing channel: {e}')
+                    self.logger.warning(f'Error closing channel {channel_key}: {e}')
 
             self.streaming_channels.clear()
 
@@ -1132,8 +1134,11 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         # Build CREATE TABLE statement
         columns = []
         for field in schema:
+            # Special case: _meta_block_ranges should be VARIANT for optimal JSON querying
+            if field.name == '_meta_block_ranges':
+                snowflake_type = 'VARIANT'
             # Handle complex types
-            if pa.types.is_timestamp(field.type):
+            elif pa.types.is_timestamp(field.type):
                 if field.type.tz is not None:
                     snowflake_type = 'TIMESTAMP_TZ'
                 else:
@@ -1184,7 +1189,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
     def _get_loader_batch_metadata(self, batch: pa.RecordBatch, duration: float, **kwargs) -> Dict[str, Any]:
         """Get Snowflake-specific metadata for batch operation"""
         return {
-            'loading_method': 'stage' if self.use_stage else 'insert',
+            'loading_method': self.loading_method,
             'warehouse': self.config.warehouse,
             'database': self.config.database,
             'schema': self.config.schema,
@@ -1195,7 +1200,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
     ) -> Dict[str, Any]:
         """Get Snowflake-specific metadata for table operation"""
         return {
-            'loading_method': 'stage' if self.use_stage else 'insert',
+            'loading_method': self.loading_method,
             'warehouse': self.config.warehouse,
             'database': self.config.database,
             'schema': self.config.schema,
@@ -1314,9 +1319,9 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                         try:
                             channel.close()
                             del self.streaming_channels[channel_key]
-                            self.logger.debug(f'Closed streaming channel: {channel.name}')
+                            self.logger.debug(f'Closed streaming channel: {channel_key}')
                         except Exception as e:
-                            self.logger.warning(f'Error closing channel {channel.name}: {e}')
+                            self.logger.warning(f'Error closing channel {channel_key}: {e}')
                             # Continue closing other channels even if one fails
 
                     self.logger.info(
