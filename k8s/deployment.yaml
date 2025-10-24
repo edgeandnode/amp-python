@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: amp-erc20-loader
+  labels:
+    app: amp-erc20-loader
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: amp-erc20-loader
+  template:
+    metadata:
+      labels:
+        app: amp-erc20-loader
+        version: v1
+    spec:
+      containers:
+      - name: loader
+        image: ghcr.io/edgeandnode/amp-python:latest
+        imagePullPolicy: Always
+
+        # Command line arguments for the loader
+        args:
+          - "--blocks"
+          - "10000000"
+          - "--workers"
+          - "8"
+          - "--flush-interval"
+          - "0.5"
+
+        # Environment variables from secrets
+        env:
+        - name: AMP_SERVER_URL
+          valueFrom:
+            secretKeyRef:
+              name: amp-secrets
+              key: amp-server-url
+        - name: SNOWFLAKE_ACCOUNT
+          valueFrom:
+            secretKeyRef:
+              name: amp-secrets
+              key: snowflake-account
+        - name: SNOWFLAKE_USER
+          valueFrom:
+            secretKeyRef:
+              name: amp-secrets
+              key: snowflake-user
+        - name: SNOWFLAKE_WAREHOUSE
+          valueFrom:
+            secretKeyRef:
+              name: amp-secrets
+              key: snowflake-warehouse
+        - name: SNOWFLAKE_DATABASE
+          valueFrom:
+            secretKeyRef:
+              name: amp-secrets
+              key: snowflake-database
+        - name: SNOWFLAKE_PRIVATE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: amp-secrets
+              key: snowflake-private-key
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: PYTHONPATH
+          value: "/app"
+
+        # Resource allocation
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "4"
+          limits:
+            memory: "4Gi"
+            cpu: "12"
+
+        # Security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+
+      # Image pull secrets for private GitHub Container Registry
+      imagePullSecrets:
+        - name: docker-registry
+
+      # Tolerations to allow scheduling on tainted nodes
+      tolerations:
+        - key: "app"
+          operator: "Equal"
+          value: "nozzle"
+          effect: "NoSchedule"
+
+      # Restart policy
+      restartPolicy: Always
