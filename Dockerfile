@@ -18,7 +18,8 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 
 # Install dependencies using UV (much faster than pip)
-# Install just the dependencies, not the package itself yet
+# Install ALL dependencies including all loader dependencies
+# This ensures optional dependencies don't cause import errors
 RUN uv pip install --system --no-cache \
     pandas>=2.3.1 \
     pyarrow>=20.0.0 \
@@ -33,8 +34,14 @@ RUN uv pip install --system --no-cache \
     google-cloud-storage>=3.1.0 \
     arro3-core>=0.5.1 \
     arro3-compute>=0.5.1 \
+    psycopg2-binary>=2.9.0 \
+    redis>=4.5.0 \
+    deltalake>=1.0.2 \
+    pyiceberg[sql-sqlite]>=0.10.0 \
+    pydantic>=2.0,<2.12 \
     snowflake-connector-python>=4.0.0 \
-    snowpipe-streaming>=1.0.0
+    snowpipe-streaming>=1.0.0 \
+    lmdb>=1.4.0
 
 # Stage 2: Runtime image
 FROM python:3.12-slim
@@ -64,8 +71,8 @@ COPY --chown=amp:amp apps/ ./apps/
 COPY --chown=amp:amp data/ ./data/
 COPY --chown=amp:amp pyproject.toml README.md ./
 
-# Install the amp package in the system Python
-RUN uv pip install --system --no-cache -e .
+# Install the amp package in the system Python (NOT editable for Docker)
+RUN uv pip install --system --no-cache .
 
 # Switch to non-root user
 USER amp

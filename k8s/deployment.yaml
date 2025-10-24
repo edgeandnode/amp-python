@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
       - name: loader
-        image: ghcr.io/edgeandnode/amp-python:sha-b2b10aa
+        image: ghcr.io/edgeandnode/amp-python:pr-13
         imagePullPolicy: Always
 
         # Command line arguments for the loader
