@@ -55,11 +55,17 @@ WORKDIR /app
 # Copy Python packages from builder
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 
+# Copy UV from builder for package installation
+COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
+
 # Copy application code
 COPY --chown=amp:amp src/ ./src/
 COPY --chown=amp:amp apps/ ./apps/
 COPY --chown=amp:amp data/ ./data/
-COPY --chown=amp:amp pyproject.toml ./
+COPY --chown=amp:amp pyproject.toml README.md ./
+
+# Install the amp package in the system Python
+RUN uv pip install --system --no-cache -e .
 
 # Switch to non-root user
 USER amp
