@@ -28,7 +28,7 @@ RUN uv pip install --system --no-cache \
     adbc-driver-postgresql>=1.5.0 \
     protobuf>=4.21.0 \
     base58>=2.1.1 \
-    eth-hash[pysha3]>=0.7.1 \
+    'eth-hash[pysha3]>=0.7.1' \
     eth-utils>=5.2.0 \
     google-cloud-bigquery>=3.30.0 \
     google-cloud-storage>=3.1.0 \
@@ -37,8 +37,8 @@ RUN uv pip install --system --no-cache \
     psycopg2-binary>=2.9.0 \
     redis>=4.5.0 \
     deltalake>=1.0.2 \
-    pyiceberg[sql-sqlite]>=0.10.0 \
-    pydantic>=2.0,<2.12 \
+    'pyiceberg[sql-sqlite]>=0.10.0' \
+    'pydantic>=2.0,<2.12' \
     snowflake-connector-python>=4.0.0 \
     snowpipe-streaming>=1.0.0 \
     lmdb>=1.4.0
