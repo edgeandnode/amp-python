@@ -1,7 +1,6 @@
 import marimo
-import os
 
-__generated_with = "0.14.16"
+__generated_with = "0.17.0"
 app = marimo.App(width="full")
 
 
@@ -14,14 +13,15 @@ def _(mo):
 @app.cell
 def _():
     import marimo as mo
+    import os
 
     from amp.client import Client
-    return Client, mo
+    return Client, mo, os
 
 
 @app.cell
-def _(Client):
-    server_url = os.getenv('AMP_SERVER_URL', 'grpc://127.0.0.1:80')
+def _(Client, os):
+    server_url = os.getenv('AMP_SERVER_URL', 'grpc://34.27.238.174:80')
     client = Client(server_url)
     client.configure_connection('my_pg', 'postgresql', {'host': 'localhost', 'database': 'loaders_testing', 'user': 'username', 'password': 'pass', 'port': '5432'})
     client.configure_connection('my_redis', 'redis', {'host': 'localhost', 'port': 6379, 'password': 'mypassword'})
@@ -91,7 +91,7 @@ app._unparsable_cell(
             create_table=True,
         )
     """,
-    name='_',
+    name="_"
 )
 
 
@@ -99,7 +99,7 @@ app._unparsable_cell(
 def _(psql_load_results):
     for p_result in psql_load_results:
         print(p_result)
-    return (p_result,)
+    return
 
 
 @app.cell(hide_code=True)
@@ -122,7 +122,7 @@ def _(client):
 def _(redis_load_results):
     for r_result in redis_load_results:
         print(r_result)
-    return (r_result,)
+    return
 
 
 @app.cell(hide_code=True)
@@ -151,7 +151,7 @@ def _(client):
     else:
         # Single result
         print(f'Total: {result.rows_loaded} rows')
-    return batch_result, result
+    return (batch_result,)
 
 
 @app.cell
@@ -293,7 +293,7 @@ def _(lmdb_load_result):
 def _(batch_result, lmdb_load_result):
     for lmdb_batch_result in lmdb_load_result:
             print(f'Batch: {batch_result.rows_loaded} rows')
-    return (lmdb_batch_result,)
+    return
 
 
 @app.cell
@@ -327,7 +327,7 @@ def _(env):
        myList = [ key for key, _ in txn.cursor() ]
        print(myList)
        print(len(myList))
-    return myList, txn
+    return
 
 
 @app.cell
@@ -342,7 +342,7 @@ def _(env, pa):
             batch = reader.read_next_batch()
 
             print(batch)
-    return batch, key, open_txn, reader, value
+    return
 
 
 @app.cell
