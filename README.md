@@ -9,6 +9,10 @@
 
 Client for issuing queries to an Amp server and working with the returned data.
 
+## Dependencies
+1. Rust
+   `brew install rust`
+
 ## Installation
  
 1. Ensure you have [`uv`](https://docs.astral.sh/uv/getting-started/installation/) installed locally.
@@ -16,9 +20,11 @@ Client for issuing queries to an Amp server and working with the returned data.
     ```bash
     uv build 
    ```
-3. Activate a virtual environment 
+3. Activate a virtual environment
+
+   Python 3.13 is the highest version supported `brew install python@3.13`
     ```bash
-    uv venv
+    uv venv --python 3.13
    ```
 
 ## Useage 
