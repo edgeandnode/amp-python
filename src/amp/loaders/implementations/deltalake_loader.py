@@ -80,11 +80,11 @@ class DeltaLakeLoader(DataLoader[DeltaStorageConfig]):
     REQUIRES_SCHEMA_MATCH = False
     SUPPORTS_TRANSACTIONS = True
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], label_manager=None):
         if not DELTALAKE_AVAILABLE:
             raise ImportError("Delta Lake support requires 'deltalake' package. Install with: pip install deltalake")
 
-        super().__init__(config)
+        super().__init__(config, label_manager=label_manager)
 
         # Performance settings
         self.batch_size = config.get('batch_size', 10000)
@@ -644,17 +644,16 @@ class DeltaLakeLoader(DataLoader[DeltaStorageConfig]):
             self.logger.error(f'Query failed: {e}')
             raise
 
-    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str) -> None:
+    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str, connection_name: str) -> None:
         """
         Handle blockchain reorganization by deleting affected rows from Delta Lake.
 
-        Delta Lake's versioning and transaction capabilities make this operation
-        particularly powerful - we can precisely delete affected data and even
-        roll back if needed using time travel features.
+        Uses the _amp_batch_id column for fast, indexed deletion of affected batches.
 
         Args:
             invalidation_ranges: List of block ranges to invalidate (reorg points)
             table_name: The table containing the data to invalidate (not used but kept for API consistency)
+            connection_name: The connection name (for state invalidation)
         """
         if not invalidation_ranges:
             return
@@ -665,51 +664,41 @@ class DeltaLakeLoader(DataLoader[DeltaStorageConfig]):
                 self.logger.warning('No Delta table connected, skipping reorg handling')
                 return
 
+            # Get affected batch IDs from state store
+            all_affected_batch_ids = []
+            for range_obj in invalidation_ranges:
+                affected_batch_ids = self.state_store.invalidate_from_block(
+                    connection_name, table_name, range_obj.network, range_obj.start
+                )
+                all_affected_batch_ids.extend(affected_batch_ids)
+
+            if not all_affected_batch_ids:
+                self.logger.info('No batches found to invalidate')
+                return
+
             # Load the current table data
             current_table = self._delta_table.to_pyarrow_table()
 
-            # Check if the table has metadata column
-            if '_meta_block_ranges' not in current_table.schema.names:
-                self.logger.warning("Delta table doesn't have '_meta_block_ranges' column, skipping reorg handling")
+            # Check if the table has batch_id column
+            if '_amp_batch_id' not in current_table.schema.names:
+                self.logger.warning("Delta table doesn't have '_amp_batch_id' column, skipping reorg handling")
                 return
 
             # Build a mask to identify rows to keep
+            batch_id_column = current_table['_amp_batch_id']
             keep_mask = pa.array([True] * current_table.num_rows)
 
-            # Process each row to check if it should be invalidated
-            meta_column = current_table['_meta_block_ranges']
-
+            # Mark rows for deletion if their batch_id matches any affected batch
+            batch_id_set = {bid.unique_id for bid in all_affected_batch_ids}
             for i in range(current_table.num_rows):
-                meta_json = meta_column[i].as_py()
-
-                if meta_json:
-                    try:
-                        ranges_data = json.loads(meta_json)
-
-                        # Ensure ranges_data is a list
-                        if not isinstance(ranges_data, list):
-                            continue
-
-                        # Check each invalidation range
-                        for range_obj in invalidation_ranges:
-                            network = range_obj.network
-                            reorg_start = range_obj.start
-
-                            # Check if any range for this network should be invalidated
-                            for range_info in ranges_data:
-                                if (
-                                    isinstance(range_info, dict)
-                                    and range_info.get('network') == network
-                                    and range_info.get('end', 0) >= reorg_start
-                                ):
-                                    # Mark this row for deletion
-                                    # Create a mask for this specific row
-                                    row_mask = pa.array([j == i for j in range(current_table.num_rows)])
-                                    keep_mask = pa.compute.and_(keep_mask, pa.compute.invert(row_mask))
-                                    break
-
-                    except (json.JSONDecodeError, KeyError):
-                        pass
+                batch_id_str = batch_id_column[i].as_py()
+                if batch_id_str:
+                    # Check if any of the batch IDs in this row match affected batches
+                    for batch_id in batch_id_str.split('|'):
+                        if batch_id in batch_id_set:
+                            row_mask = pa.array([j == i for j in range(current_table.num_rows)])
+                            keep_mask = pa.compute.and_(keep_mask, pa.compute.invert(row_mask))
+                            break
 
             # Filter the table to keep only valid rows
             filtered_table = current_table.filter(keep_mask)
@@ -717,10 +706,9 @@ class DeltaLakeLoader(DataLoader[DeltaStorageConfig]):
 
             if deleted_count > 0:
                 # Overwrite the table with filtered data
-                # This creates a new version in Delta Lake, preserving history
                 self.logger.info(
                     f'Executing blockchain reorg deletion for {len(invalidation_ranges)} networks '
-                    f'in Delta Lake table. Deleting {deleted_count} rows.'
+                    f'in Delta Lake table. Deleting {deleted_count} rows affected by {len(all_affected_batch_ids)} batches.'
                 )
 
                 # Use overwrite mode to replace table contents

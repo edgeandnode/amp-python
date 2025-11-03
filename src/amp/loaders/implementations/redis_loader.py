@@ -95,8 +95,8 @@ class RedisLoader(DataLoader[RedisConfig]):
     REQUIRES_SCHEMA_MATCH = False
     SUPPORTS_TRANSACTIONS = False
 
-    def __init__(self, config: Dict[str, Any]):
-        super().__init__(config)
+    def __init__(self, config: Dict[str, Any], label_manager=None):
+        super().__init__(config, label_manager=label_manager)
 
         # Core Redis configuration
         self.redis_client = None
@@ -754,62 +754,70 @@ class RedisLoader(DataLoader[RedisConfig]):
 
         return str(id_value)
 
-    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str) -> None:
+    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str, connection_name: str) -> None:
         """
-        Handle blockchain reorganization by efficiently deleting affected data using secondary indexes.
+        Handle blockchain reorganization by deleting affected data using batch ID tracking.
 
-        Uses the block range indexes to quickly find and delete all data that overlaps
-        with the invalidation ranges, supporting multi-network scenarios.
+        Uses the unified state store to identify affected batches, then scans Redis
+        keys to find and delete entries with matching batch IDs.
+
+        Args:
+            invalidation_ranges: List of block ranges to invalidate (reorg points)
+            table_name: The table containing the data to invalidate
+            connection_name: The connection name (for state invalidation)
         """
         if not invalidation_ranges:
             return
 
         try:
+            # Get affected batch IDs from state store
+            all_affected_batch_ids = []
+            for range_obj in invalidation_ranges:
+                affected_batch_ids = self.state_store.invalidate_from_block(
+                    connection_name, table_name, range_obj.network, range_obj.start
+                )
+                all_affected_batch_ids.extend(affected_batch_ids)
+
+            if not all_affected_batch_ids:
+                self.logger.info(f'No batches found to invalidate in Redis for table {table_name}')
+                return
+
+            batch_id_set = {bid.unique_id for bid in all_affected_batch_ids}
+
+            # Scan all keys for this table
+            pattern = f'{table_name}:*'
             pipe = self.redis_client.pipeline()
             total_deleted = 0
 
-            for invalidation_range in invalidation_ranges:
-                network = invalidation_range.network
-                reorg_start = invalidation_range.start
-
-                # Find all index keys for this network
-                index_pattern = f'block_index:{table_name}:{network}:*'
-
-                for index_key in self.redis_client.scan_iter(match=index_pattern, count=1000):
-                    # Parse the range from the index key
-                    # Format: block_index:{table}:{network}:{start}-{end}
-                    try:
-                        key_parts = index_key.decode('utf-8').split(':')
-                        range_part = key_parts[-1]  # "{start}-{end}"
-                        _start_str, end_str = range_part.split('-')
-                        range_end = int(end_str)
-
-                        # Check if this range should be invalidated
-                        # In blockchain reorgs: if reorg starts at block N, delete all data where range_end >= N
-                        if range_end >= reorg_start:
-                            # Get all affected primary keys from this index
-                            affected_keys = self.redis_client.smembers(index_key)
-
-                            # Delete the primary data keys
-                            for key_id in affected_keys:
-                                key_id_str = key_id.decode('utf-8') if isinstance(key_id, bytes) else str(key_id)
-                                primary_key = self._construct_primary_key(key_id_str, table_name)
-                                pipe.delete(primary_key)
-                                total_deleted += 1
-
-                            # Delete the index entry itself
-                            pipe.delete(index_key)
-
-                    except (ValueError, IndexError) as e:
-                        self.logger.warning(f'Failed to parse index key {index_key}: {e}')
+            for key in self.redis_client.scan_iter(match=pattern, count=1000):
+                try:
+                    # Skip block index keys
+                    key_str = key.decode('utf-8') if isinstance(key, bytes) else str(key)
+                    if key_str.startswith('block_index:'):
                         continue
+
+                    # Get batch_id from the hash
+                    batch_id_value = self.redis_client.hget(key, '_amp_batch_id')
+                    if batch_id_value:
+                        batch_id_str = batch_id_value.decode('utf-8') if isinstance(batch_id_value, bytes) else str(batch_id_value)
+
+                        # Check if any of the batch IDs match affected batches
+                        for batch_id in batch_id_str.split('|'):
+                            if batch_id in batch_id_set:
+                                pipe.delete(key)
+                                total_deleted += 1
+                                break
+
+                except Exception as e:
+                    self.logger.debug(f'Failed to check key {key}: {e}')
+                    continue
 
             # Execute all deletions
             if total_deleted > 0:
                 pipe.execute()
-                self.logger.info(f"Blockchain reorg deleted {total_deleted} keys from table '{table_name}'")
+                self.logger.info(f"Blockchain reorg deleted {total_deleted} keys from Redis table '{table_name}'")
             else:
-                self.logger.info(f"No data to delete for reorg in table '{table_name}'")
+                self.logger.info(f"No keys to delete for reorg in Redis table '{table_name}'")
 
         except Exception as e:
             self.logger.error(f"Failed to handle blockchain reorg for table '{table_name}': {str(e)}")

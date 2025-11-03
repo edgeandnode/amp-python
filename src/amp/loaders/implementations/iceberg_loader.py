@@ -76,13 +76,13 @@ class IcebergLoader(DataLoader[IcebergStorageConfig]):
     REQUIRES_SCHEMA_MATCH = False
     SUPPORTS_TRANSACTIONS = True
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], label_manager=None):
         if not ICEBERG_AVAILABLE:
             raise ImportError(
                 "Apache Iceberg support requires 'pyiceberg' package. Install with: pip install pyiceberg"
             )
 
-        super().__init__(config)
+        super().__init__(config, label_manager=label_manager)
 
         self._catalog: Optional[IcebergCatalog] = None
         self._current_table: Optional[IcebergTable] = None
@@ -283,7 +283,7 @@ class IcebergLoader(DataLoader[IcebergStorageConfig]):
             # Evolution mode: evolve schema to accommodate new fields
             self._evolve_schema_if_needed(iceberg_table, iceberg_schema, arrow_schema)
 
-    def _validate_schema_strict(self, iceberg_schema: IcebergSchema, arrow_schema: pa.Schema) -> None:
+    def _validate_schema_strict(self, iceberg_schema: 'IcebergSchema', arrow_schema: pa.Schema) -> None:
         """Validate schema compatibility in strict mode (no evolution)"""
         iceberg_field_names = {field.name for field in iceberg_schema.fields}
         arrow_field_names = {field.name for field in arrow_schema}
@@ -304,7 +304,7 @@ class IcebergLoader(DataLoader[IcebergStorageConfig]):
         self.logger.debug('Schema validation passed in strict mode')
 
     def _evolve_schema_if_needed(
-        self, iceberg_table: IcebergTable, iceberg_schema: IcebergSchema, arrow_schema: pa.Schema
+        self, iceberg_table: 'IcebergTable', iceberg_schema: 'IcebergSchema', arrow_schema: pa.Schema
     ) -> None:
         """Evolve the Iceberg table schema to accommodate new Arrow schema fields"""
         try:
@@ -506,7 +506,7 @@ class IcebergLoader(DataLoader[IcebergStorageConfig]):
             self.logger.error(f'Failed to get table info for {table_name}: {e}')
             return {'exists': False, 'error': str(e), 'table_name': table_name}
 
-    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str) -> None:
+    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str, connection_name: str) -> None:
         """
         Handle blockchain reorganization by deleting affected rows from Iceberg table.
 
@@ -518,6 +518,7 @@ class IcebergLoader(DataLoader[IcebergStorageConfig]):
         Args:
             invalidation_ranges: List of block ranges to invalidate (reorg points)
             table_name: The table containing the data to invalidate
+            connection_name: The connection name (for state invalidation)
         """
         if not invalidation_ranges:
             return
