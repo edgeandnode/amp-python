@@ -659,7 +659,7 @@ class SnowflakeConnectionPool:
 
             return connection
         except Empty:
-            raise RuntimeError(f'Failed to acquire connection from pool within {timeout}s')
+            raise RuntimeError(f'Failed to acquire connection from pool within {timeout}s') from None
 
     def release(self, connection: SnowflakeConnection) -> None:
         """
@@ -772,13 +772,6 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             else:
                 # Create dedicated connection (legacy behavior)
                 # Set defaults for connection parameters
-                default_params = {
-                    'login_timeout': 60,
-                    'network_timeout': 300,
-                    'socket_timeout': 300,
-                    'validate_default_parameters': True,
-                    'paramstyle': 'qmark',
-                }
 
                 conn_params = {
                     'account': self.config.account,
@@ -920,7 +913,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             raise ImportError(
                 'snowpipe-streaming package required for Snowpipe Streaming. '
                 'Install with: pip install snowpipe-streaming'
-            )
+            ) from None
         except Exception as e:
             self.logger.error(f'Failed to initialize Snowpipe Streaming client for {table_name}: {e}')
             raise
@@ -971,7 +964,8 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             """
             self.cursor.execute(create_pipe_sql)
             self.logger.info(
-                f"Created or verified Snowpipe Streaming pipe '{pipe_name}' for table {table_name} with {len(column_info)} columns"
+                f"Created or verified Snowpipe Streaming pipe '{pipe_name}' for table {table_name} "
+                f'with {len(column_info)} columns'
             )
         except Exception as e:
             # Pipe creation might fail if it already exists or if we don't have permissions
@@ -1237,7 +1231,8 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
 
         t_end = time.time()
         self.logger.info(
-            f'Total _load_via_stage took {t_end - t_start:.2f}s for {rows_loaded} rows ({rows_loaded / (t_end - t_start):.0f} rows/sec)'
+            f'Total _load_via_stage took {t_end - t_start:.2f}s for {rows_loaded} rows '
+            f'({rows_loaded / (t_end - t_start):.0f} rows/sec)'
         )
 
         return rows_loaded
@@ -1334,7 +1329,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             raise ImportError(
                 'pandas and snowflake.connector.pandas_tools are required for pandas loading. '
                 'Install with: pip install pandas'
-            )
+            ) from None
 
         t_start = time.time()
         max_retries = 3  # Retry on transient errors
@@ -1575,7 +1570,10 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                 import sys
 
                 append_time_ms = (t_append_end - t_append_start) * 1000
-                timing_msg = f'⏱️  Snowpipe append: {len(rows)} rows in {append_time_ms:.2f}ms ({len(rows) / append_time_ms * 1000:.0f} rows/sec)\n'
+                rows_per_sec = len(rows) / append_time_ms * 1000
+                timing_msg = (
+                    f'⏱️  Snowpipe append: {len(rows)} rows in {append_time_ms:.2f}ms ({rows_per_sec:.0f} rows/sec)\n'
+                )
                 sys.stderr.write(timing_msg)
                 sys.stderr.flush()
 
@@ -1649,7 +1647,11 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             t_batch_end = time.perf_counter()
             batch_time_ms = (t_batch_end - t_batch_start) * 1000
             num_chunks = (batch.num_rows + MAX_ROWS_PER_CHUNK - 1) // MAX_ROWS_PER_CHUNK
-            timing_msg = f'⏱️  Batch load complete: {total_loaded} rows in {batch_time_ms:.2f}ms ({total_loaded / batch_time_ms * 1000:.0f} rows/sec) [{num_chunks} chunks]\n'
+            rows_per_sec = total_loaded / batch_time_ms * 1000
+            timing_msg = (
+                f'⏱️  Batch load complete: {total_loaded} rows in {batch_time_ms:.2f}ms '
+                f'({rows_per_sec:.0f} rows/sec) [{num_chunks} chunks]\n'
+            )
             sys.stderr.write(timing_msg)
             sys.stderr.flush()
 
@@ -1661,7 +1663,10 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
 
             t_batch_end = time.perf_counter()
             batch_time_ms = (t_batch_end - t_batch_start) * 1000
-            timing_msg = f'⏱️  Batch load complete: {len(rows)} rows in {batch_time_ms:.2f}ms ({len(rows) / batch_time_ms * 1000:.0f} rows/sec)\n'
+            rows_per_sec = len(rows) / batch_time_ms * 1000
+            timing_msg = (
+                f'⏱️  Batch load complete: {len(rows)} rows in {batch_time_ms:.2f}ms ({rows_per_sec:.0f} rows/sec)\n'
+            )
             sys.stderr.write(timing_msg)
             sys.stderr.flush()
 

@@ -1075,7 +1075,8 @@ class TestSnowpipeStreamingIntegration:
             print(f'  Throughput: {rows_per_second:,.0f} rows/sec')
             print(f'  Loading method: {result.metadata.get("loading_method")}')
 
-            # Wait for Snowpipe streaming data to become queryable (eventual consistency, larger dataset may take longer)
+            # Wait for Snowpipe streaming data to become queryable
+            # (eventual consistency, larger dataset may take longer)
             count = wait_for_snowpipe_data(loader, test_table_name, performance_test_data.num_rows, max_wait=60)
             assert count == performance_test_data.num_rows
 

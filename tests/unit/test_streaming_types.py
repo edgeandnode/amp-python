@@ -276,7 +276,7 @@ class TestBatchMetadata:
 
 @pytest.mark.unit
 class TestResponseBatch:
-    """Test ResponseBatch properties"""
+    """Test ResponseBatch factory methods and properties"""
 
     def test_num_rows_property(self):
         """Test num_rows property delegates to data"""
@@ -304,11 +304,6 @@ class TestResponseBatch:
         networks = rb.networks
         assert len(networks) == 2
         assert set(networks) == {'ethereum', 'polygon'}
-
-
-@pytest.mark.unit
-class TestResponseBatch:
-    """Test ResponseBatch factory methods and properties"""
 
     def test_data_batch_creation(self):
         """Test creating a data batch response"""

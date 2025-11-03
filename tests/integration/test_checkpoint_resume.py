@@ -406,7 +406,7 @@ class TestIdempotencyExactlyOnce:
             enabled=True,
             table_prefix='test_amp_',
         )
-        store = DatabaseProcessedRangesStore(config, checkpoint_db_connection)
+        DatabaseProcessedRangesStore(config, checkpoint_db_connection)
 
         cursor = checkpoint_db_connection.cursor()
         cursor.execute("""

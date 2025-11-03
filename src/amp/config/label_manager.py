@@ -123,7 +123,7 @@ class LabelManager:
             )
 
         except FileNotFoundError:
-            raise FileNotFoundError(f'Label CSV file not found: {csv_path}')
+            raise FileNotFoundError(f'Label CSV file not found: {csv_path}') from None
         except Exception as e:
             raise ValueError(f"Failed to load label CSV '{csv_path}': {e}") from e
 

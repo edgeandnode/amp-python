@@ -362,7 +362,7 @@ class TestResilienceIntegration:
         batch = pa.record_batch([[1]], schema=schema)
 
         # Multiple successful loads with retries
-        for i in range(3):
+        for _i in range(3):
             # Reset failure mode for each iteration
             loader.current_attempt = 0
 
