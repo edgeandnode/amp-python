@@ -61,9 +61,7 @@ def configure_logging(verbose: bool = False):
     """
     # Configure root logger first
     logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s | %(levelname)s | %(name)s | %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        level=logging.INFO, format='%(asctime)s | %(levelname)s | %(name)s | %(message)s', datefmt='%Y-%m-%d %H:%M:%S'
     )
 
     if not verbose:
@@ -223,8 +221,16 @@ def print_configuration(args, min_block: int, max_block: int, has_labels: bool):
         print(f'🏷️  Label Joining: ENABLED ({args.label_name})')
 
 
-def print_results(results, table_name: str, min_block: int, max_block: int,
-                  duration: float, num_workers: int, has_labels: bool, label_columns: str = ''):
+def print_results(
+    results,
+    table_name: str,
+    min_block: int,
+    max_block: int,
+    duration: float,
+    num_workers: int,
+    has_labels: bool,
+    label_columns: str = '',
+):
     """Print execution results and sample queries."""
     # Calculate statistics
     total_rows = sum(r.rows_loaded for r in results if r.success)
@@ -268,131 +274,81 @@ def main():
     parser = argparse.ArgumentParser(
         description='Load data into Snowflake using parallel streaming with custom SQL queries',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__
+        epilog=__doc__,
     )
 
     # Required arguments
     required = parser.add_argument_group('required arguments')
-    required.add_argument(
-        '--query-file',
-        required=True,
-        help='Path to SQL query file to execute'
-    )
-    required.add_argument(
-        '--table-name',
-        required=True,
-        help='Destination Snowflake table name'
-    )
+    required.add_argument('--query-file', required=True, help='Path to SQL query file to execute')
+    required.add_argument('--table-name', required=True, help='Destination Snowflake table name')
 
     # Block range arguments (mutually exclusive groups)
     block_range = parser.add_argument_group('block range')
-    block_range.add_argument(
-        '--blocks',
-        type=int,
-        help='Number of recent blocks to load (auto-detect range)'
-    )
-    block_range.add_argument(
-        '--min-block',
-        type=int,
-        help='Explicit start block (requires --max-block)'
-    )
-    block_range.add_argument(
-        '--max-block',
-        type=int,
-        help='Explicit end block (requires --min-block)'
-    )
+    block_range.add_argument('--blocks', type=int, help='Number of recent blocks to load (auto-detect range)')
+    block_range.add_argument('--min-block', type=int, help='Explicit start block (requires --max-block)')
+    block_range.add_argument('--max-block', type=int, help='Explicit end block (requires --min-block)')
     block_range.add_argument(
         '--source-table',
         default='eth_firehose.logs',
-        help='Table for block range detection (default: eth_firehose.logs)'
+        help='Table for block range detection (default: eth_firehose.logs)',
     )
     block_range.add_argument(
-        '--block-column',
-        default='block_num',
-        help='Column name for block partitioning (default: block_num)'
+        '--block-column', default='block_num', help='Column name for block partitioning (default: block_num)'
     )
 
     # Label configuration (all optional)
     labels = parser.add_argument_group('label configuration (optional)')
-    labels.add_argument(
-        '--label-csv',
-        help='Path to CSV file with label data'
-    )
-    labels.add_argument(
-        '--label-name',
-        help='Label identifier (required if --label-csv provided)'
-    )
-    labels.add_argument(
-        '--label-key',
-        help='CSV column for joining (required if --label-csv provided)'
-    )
-    labels.add_argument(
-        '--stream-key',
-        help='Stream column for joining (required if --label-csv provided)'
-    )
+    labels.add_argument('--label-csv', help='Path to CSV file with label data')
+    labels.add_argument('--label-name', help='Label identifier (required if --label-csv provided)')
+    labels.add_argument('--label-key', help='CSV column for joining (required if --label-csv provided)')
+    labels.add_argument('--stream-key', help='Stream column for joining (required if --label-csv provided)')
 
     # Snowflake configuration
     snowflake = parser.add_argument_group('snowflake configuration')
     snowflake.add_argument(
-        '--connection-name',
-        help='Snowflake connection name (default: auto-generated from table name)'
+        '--connection-name', help='Snowflake connection name (default: auto-generated from table name)'
     )
     snowflake.add_argument(
         '--loading-method',
         choices=['snowpipe_streaming', 'stage', 'insert'],
         default='snowpipe_streaming',
-        help='Snowflake loading method (default: snowpipe_streaming)'
+        help='Snowflake loading method (default: snowpipe_streaming)',
     )
     snowflake.add_argument(
         '--preserve-reorg-history',
         action='store_true',
         default=True,
-        help='Enable reorg history preservation (default: enabled)'
+        help='Enable reorg history preservation (default: enabled)',
     )
     snowflake.add_argument(
         '--no-preserve-reorg-history',
         action='store_false',
         dest='preserve_reorg_history',
-        help='Disable reorg history preservation'
+        help='Disable reorg history preservation',
     )
-    snowflake.add_argument(
-        '--disable-state',
-        action='store_true',
-        help='Disable state management (job resumption)'
-    )
-    snowflake.add_argument(
-        '--pool-size',
-        type=int,
-        help='Connection pool size (default: workers + 2)'
-    )
+    snowflake.add_argument('--disable-state', action='store_true', help='Disable state management (job resumption)')
+    snowflake.add_argument('--pool-size', type=int, help='Connection pool size (default: workers + 2)')
 
     # Parallel execution configuration
     parallel = parser.add_argument_group('parallel execution')
-    parallel.add_argument(
-        '--workers',
-        type=int,
-        default=4,
-        help='Number of parallel workers (default: 4)'
-    )
+    parallel.add_argument('--workers', type=int, default=4, help='Number of parallel workers (default: 4)')
     parallel.add_argument(
         '--flush-interval',
         type=float,
         default=1.0,
-        help='Snowpipe Streaming buffer flush interval in seconds (default: 1.0)'
+        help='Snowpipe Streaming buffer flush interval in seconds (default: 1.0)',
     )
 
     # Server configuration
     parser.add_argument(
         '--server',
         default=os.getenv('AMP_SERVER_URL', 'grpc://34.27.238.174:80'),
-        help='AMP server URL (default: from AMP_SERVER_URL env or grpc://34.27.238.174:80)'
+        help='AMP server URL (default: from AMP_SERVER_URL env or grpc://34.27.238.174:80)',
     )
 
     # Logging configuration
     parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Enable verbose logging from Snowflake libraries (default: suppressed)'
+        '--verbose', action='store_true', help='Enable verbose logging from Snowflake libraries (default: suppressed)'
     )
 
     args = parser.parse_args()
@@ -445,8 +401,7 @@ def main():
 
         # Print results
         label_columns = f'{args.label_key} joined columns' if has_labels else ''
-        print_results(results, args.table_name, min_block, max_block, duration,
-                     args.workers, has_labels, label_columns)
+        print_results(results, args.table_name, min_block, max_block, duration, args.workers, has_labels, label_columns)
 
         return args.table_name, sum(r.rows_loaded for r in results if r.success), duration
 
@@ -456,6 +411,7 @@ def main():
     except Exception as e:
         print(f'\n\n❌ Error: {e}')
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 

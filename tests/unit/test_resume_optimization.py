@@ -5,8 +5,8 @@ Tests the logic that adjusts min_block based on persistent state to skip
 already-processed partitions during job resumption.
 """
 
-import pytest
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, patch
+
 from amp.streaming.parallel import ParallelConfig, ParallelStreamExecutor
 from amp.streaming.types import BlockRange, ResumeWatermark
 
@@ -17,9 +17,7 @@ def test_resume_optimization_adjusts_min_block():
     mock_client = Mock()
     mock_client.connection_manager.get_connection_info.return_value = {
         'loader': 'snowflake',
-        'config': {
-            'state': {'enabled': True, 'storage': 'snowflake'}
-        }
+        'config': {'state': {'enabled': True, 'storage': 'snowflake'}},
     }
 
     # Mock loader with state store that has resume position
@@ -50,9 +48,7 @@ def test_resume_optimization_adjusts_min_block():
 
         # Call resume optimization
         adjusted_config, resume_watermark, message = executor._get_resume_adjusted_config(
-            connection_name='test_conn',
-            destination='test_table',
-            config=original_config
+            connection_name='test_conn', destination='test_table', config=original_config
         )
 
         # Verify min_block was adjusted to 500,001 (max processed + 1)
@@ -70,7 +66,7 @@ def test_resume_optimization_no_adjustment_when_disabled():
         'loader': 'snowflake',
         'config': {
             'state': {'enabled': False}  # State disabled
-        }
+        },
     }
 
     original_config = ParallelConfig(
@@ -83,9 +79,7 @@ def test_resume_optimization_no_adjustment_when_disabled():
     executor = ParallelStreamExecutor(mock_client, original_config)
 
     adjusted_config, resume_watermark, message = executor._get_resume_adjusted_config(
-        connection_name='test_conn',
-        destination='test_table',
-        config=original_config
+        connection_name='test_conn', destination='test_table', config=original_config
     )
 
     # No adjustment when state disabled
@@ -99,9 +93,7 @@ def test_resume_optimization_no_adjustment_when_no_resume_position():
     mock_client = Mock()
     mock_client.connection_manager.get_connection_info.return_value = {
         'loader': 'snowflake',
-        'config': {
-            'state': {'enabled': True, 'storage': 'snowflake'}
-        }
+        'config': {'state': {'enabled': True, 'storage': 'snowflake'}},
     }
 
     mock_loader = Mock()
@@ -120,9 +112,7 @@ def test_resume_optimization_no_adjustment_when_no_resume_position():
         executor = ParallelStreamExecutor(mock_client, original_config)
 
         adjusted_config, resume_watermark, message = executor._get_resume_adjusted_config(
-            connection_name='test_conn',
-            destination='test_table',
-            config=original_config
+            connection_name='test_conn', destination='test_table', config=original_config
         )
 
         # No adjustment when no resume position
@@ -136,9 +126,7 @@ def test_resume_optimization_no_adjustment_when_resume_behind_min():
     mock_client = Mock()
     mock_client.connection_manager.get_connection_info.return_value = {
         'loader': 'snowflake',
-        'config': {
-            'state': {'enabled': True, 'storage': 'snowflake'}
-        }
+        'config': {'state': {'enabled': True, 'storage': 'snowflake'}},
     }
 
     mock_loader = Mock()
@@ -165,9 +153,7 @@ def test_resume_optimization_no_adjustment_when_resume_behind_min():
         executor = ParallelStreamExecutor(mock_client, original_config)
 
         adjusted_config, resume_watermark, message = executor._get_resume_adjusted_config(
-            connection_name='test_conn',
-            destination='test_table',
-            config=original_config
+            connection_name='test_conn', destination='test_table', config=original_config
         )
 
         # No adjustment when resume position is behind min_block

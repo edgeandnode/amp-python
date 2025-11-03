@@ -1,6 +1,5 @@
 # src/amp/loaders/implementations/deltalake_loader.py
 
-import json
 import os
 import time
 from dataclasses import dataclass, field

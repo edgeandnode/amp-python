@@ -65,6 +65,7 @@ def wait_for_snowpipe_data(loader, table_name, expected_count, max_wait=30, poll
     assert count == expected_count, f'Expected {expected_count} rows after {max_wait}s, but found {count}'
     return count
 
+
 # Skip all Snowflake tests
 # pytestmark = pytest.mark.skip(reason='Requires active Snowflake account - see module docstring for details')
 
@@ -296,7 +297,7 @@ class TestSnowflakeLoaderIntegration:
 
             # Verify _amp_batch_id column exists
             batch_id_col = next((col for col in info['columns'] if col['name'].lower() == '_amp_batch_id'), None)
-            assert batch_id_col is not None, "Expected _amp_batch_id metadata column"
+            assert batch_id_col is not None, 'Expected _amp_batch_id metadata column'
 
             # In Snowflake, quoted column names are case-sensitive but INFORMATION_SCHEMA may return them differently
             # Let's find the ID column by looking for either case variant
@@ -455,13 +456,16 @@ class TestSnowflakeLoaderIntegration:
 
             # Create streaming responses with block ranges
             response1 = ResponseBatch.data_batch(
-                data=batch1, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc')])
+                data=batch1,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc')]),
             )
             response2 = ResponseBatch.data_batch(
-                data=batch2, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef')])
+                data=batch2,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef')]),
             )
             response3 = ResponseBatch.data_batch(
-                data=batch3, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=200, end=210, hash='0xghi')])
+                data=batch3,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=200, end=210, hash='0xghi')]),
             )
 
             # Load data via streaming API
@@ -478,7 +482,9 @@ class TestSnowflakeLoaderIntegration:
             assert count == 3
 
             # Trigger reorg from block 155 - should delete rows 2 and 3
-            reorg_response = ResponseBatch.reorg_batch(invalidation_ranges=[BlockRange(network='ethereum', start=155, end=300)])
+            reorg_response = ResponseBatch.reorg_batch(
+                invalidation_ranges=[BlockRange(network='ethereum', start=155, end=300)]
+            )
             reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), test_table_name))
 
             # Verify reorg processed
@@ -509,16 +515,20 @@ class TestSnowflakeLoaderIntegration:
 
             # Create streaming responses with block ranges
             response1 = ResponseBatch.data_batch(
-                data=batch1, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xa')])
+                data=batch1,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xa')]),
             )
             response2 = ResponseBatch.data_batch(
-                data=batch2, metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=100, end=110, hash='0xb')])
+                data=batch2,
+                metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=100, end=110, hash='0xb')]),
             )
             response3 = ResponseBatch.data_batch(
-                data=batch3, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xc')])
+                data=batch3,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xc')]),
             )
             response4 = ResponseBatch.data_batch(
-                data=batch4, metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=150, end=160, hash='0xd')])
+                data=batch4,
+                metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=150, end=160, hash='0xd')]),
             )
 
             # Load data via streaming API
@@ -530,7 +540,9 @@ class TestSnowflakeLoaderIntegration:
             assert all(r.success for r in results)
 
             # Trigger reorg for ethereum only from block 150
-            reorg_response = ResponseBatch.reorg_batch(invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)])
+            reorg_response = ResponseBatch.reorg_batch(
+                invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)]
+            )
             reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), test_table_name))
 
             # Verify reorg processed
@@ -556,13 +568,22 @@ class TestSnowflakeLoaderIntegration:
 
             # Create streaming responses with block ranges
             response1 = ResponseBatch.data_batch(
-                data=batch1, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=90, end=110, hash='0xa')])  # Before reorg
+                data=batch1,
+                metadata=BatchMetadata(
+                    ranges=[BlockRange(network='ethereum', start=90, end=110, hash='0xa')]
+                ),  # Before reorg
             )
             response2 = ResponseBatch.data_batch(
-                data=batch2, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=140, end=160, hash='0xb')])  # Overlaps
+                data=batch2,
+                metadata=BatchMetadata(
+                    ranges=[BlockRange(network='ethereum', start=140, end=160, hash='0xb')]
+                ),  # Overlaps
             )
             response3 = ResponseBatch.data_batch(
-                data=batch3, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=170, end=190, hash='0xc')])  # Overlaps
+                data=batch3,
+                metadata=BatchMetadata(
+                    ranges=[BlockRange(network='ethereum', start=170, end=190, hash='0xc')]
+                ),  # Overlaps
             )
 
             # Load data via streaming API
@@ -574,7 +595,9 @@ class TestSnowflakeLoaderIntegration:
             assert all(r.success for r in results)
 
             # Trigger reorg from block 150 - should delete rows where end >= 150
-            reorg_response = ResponseBatch.reorg_batch(invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)])
+            reorg_response = ResponseBatch.reorg_batch(
+                invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)]
+            )
             reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), test_table_name))
 
             # Verify reorg processed
@@ -609,13 +632,16 @@ class TestSnowflakeLoaderIntegration:
 
             # Create streaming responses with block ranges
             response1 = ResponseBatch.data_batch(
-                data=batch1, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc')])
+                data=batch1,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc')]),
             )
             response2 = ResponseBatch.data_batch(
-                data=batch2, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef')])
+                data=batch2,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef')]),
             )
             response3 = ResponseBatch.data_batch(
-                data=batch3, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=200, end=210, hash='0xghi')])
+                data=batch3,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=200, end=210, hash='0xghi')]),
             )
 
             # Load data via streaming API
@@ -642,7 +668,9 @@ class TestSnowflakeLoaderIntegration:
             assert view_count == 3
 
             # Trigger reorg from block 155 - should UPDATE rows 2 and 3, not delete them
-            reorg_response = ResponseBatch.reorg_batch(invalidation_ranges=[BlockRange(network='ethereum', start=155, end=300)])
+            reorg_response = ResponseBatch.reorg_batch(
+                invalidation_ranges=[BlockRange(network='ethereum', start=155, end=300)]
+            )
             reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), test_table_name))
 
             # Verify reorg processed
@@ -696,11 +724,7 @@ class TestSnowflakeLoaderIntegration:
 
         with loader:
             # Create table first
-            initial_batch = pa.RecordBatch.from_pydict({
-                'id': [1],
-                'partition': ['partition_0'],
-                'value': [100]
-            })
+            initial_batch = pa.RecordBatch.from_pydict({'id': [1], 'partition': ['partition_0'], 'value': [100]})
             loader.load_batch(initial_batch, test_table_name, create_table=True)
 
             # Thread lock for serializing access to shared Snowflake connection
@@ -712,15 +736,17 @@ class TestSnowflakeLoaderIntegration:
                 """Simulate a stream partition loading data"""
                 for batch_num in range(3):
                     batch_start = start_id + (batch_num * 10)
-                    batch = pa.RecordBatch.from_pydict({
-                        'id': list(range(batch_start, batch_start + 10)),
-                        'partition': [f'partition_{partition_id}'] * 10,
-                        'value': list(range(batch_start * 100, (batch_start + 10) * 100, 100))
-                    })
+                    batch = pa.RecordBatch.from_pydict(
+                        {
+                            'id': list(range(batch_start, batch_start + 10)),
+                            'partition': [f'partition_{partition_id}'] * 10,
+                            'value': list(range(batch_start * 100, (batch_start + 10) * 100, 100)),
+                        }
+                    )
                     # Use lock to ensure thread-safe access to shared connection
                     with load_lock:
                         result = loader.load_batch(batch, test_table_name, create_table=False)
-                        assert result.success, f"Partition {partition_id} batch {batch_num} failed: {result.error}"
+                        assert result.success, f'Partition {partition_id} batch {batch_num} failed: {result.error}'
 
             # Launch 3 parallel "streams" (threads simulating parallel streaming)
             threads = []
@@ -766,12 +792,12 @@ class TestSnowflakeLoaderIntegration:
             # Create response batches using factory methods (with hashes for proper state management)
             response1 = ResponseBatch.data_batch(
                 data=data1,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc123')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc123')]),
             )
 
             response2 = ResponseBatch.data_batch(
                 data=data2,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef456')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef456')]),
             )
 
             # Simulate reorg event using factory method
@@ -856,7 +882,9 @@ class TestSnowpipeStreamingIntegration:
         loader.disconnect()
         assert loader._is_connected is False
 
-    def test_basic_streaming_batch_load(self, snowflake_streaming_config, small_test_table, test_table_name, cleanup_tables):
+    def test_basic_streaming_batch_load(
+        self, snowflake_streaming_config, small_test_table, test_table_name, cleanup_tables
+    ):
         """Test basic batch loading via Snowpipe Streaming"""
         cleanup_tables.append(test_table_name)
         loader = SnowflakeLoader(snowflake_streaming_config)
@@ -875,7 +903,9 @@ class TestSnowpipeStreamingIntegration:
             count = wait_for_snowpipe_data(loader, test_table_name, batch.num_rows)
             assert count == batch.num_rows
 
-    def test_streaming_multiple_batches(self, snowflake_streaming_config, medium_test_table, test_table_name, cleanup_tables):
+    def test_streaming_multiple_batches(
+        self, snowflake_streaming_config, medium_test_table, test_table_name, cleanup_tables
+    ):
         """Test loading multiple batches via Snowpipe Streaming"""
         cleanup_tables.append(test_table_name)
         loader = SnowflakeLoader(snowflake_streaming_config)
@@ -894,7 +924,9 @@ class TestSnowpipeStreamingIntegration:
             count = wait_for_snowpipe_data(loader, test_table_name, medium_test_table.num_rows)
             assert count == medium_test_table.num_rows
 
-    def test_streaming_channel_management(self, snowflake_streaming_config, small_test_table, test_table_name, cleanup_tables):
+    def test_streaming_channel_management(
+        self, snowflake_streaming_config, small_test_table, test_table_name, cleanup_tables
+    ):
         """Test that channels are created and reused properly"""
         cleanup_tables.append(test_table_name)
         loader = SnowflakeLoader(snowflake_streaming_config)
@@ -917,7 +949,9 @@ class TestSnowpipeStreamingIntegration:
             count = wait_for_snowpipe_data(loader, test_table_name, batch.num_rows * 2)
             assert count == batch.num_rows * 2
 
-    def test_streaming_multiple_partitions(self, snowflake_streaming_config, small_test_table, test_table_name, cleanup_tables):
+    def test_streaming_multiple_partitions(
+        self, snowflake_streaming_config, small_test_table, test_table_name, cleanup_tables
+    ):
         """Test parallel streaming with multiple partition channels"""
         cleanup_tables.append(test_table_name)
         loader = SnowflakeLoader(snowflake_streaming_config)
@@ -939,7 +973,9 @@ class TestSnowpipeStreamingIntegration:
             count = wait_for_snowpipe_data(loader, test_table_name, batch.num_rows * 3)
             assert count == batch.num_rows * 3
 
-    def test_streaming_data_types(self, snowflake_streaming_config, comprehensive_test_data, test_table_name, cleanup_tables):
+    def test_streaming_data_types(
+        self, snowflake_streaming_config, comprehensive_test_data, test_table_name, cleanup_tables
+    ):
         """Test Snowpipe Streaming with various data types"""
         cleanup_tables.append(test_table_name)
         loader = SnowflakeLoader(snowflake_streaming_config)
@@ -986,11 +1022,13 @@ class TestSnowpipeStreamingIntegration:
 
         with loader:
             # Load initial data with multiple channels
-            batch = pa.RecordBatch.from_pydict({
-                'id': [1, 2, 3],
-                'value': [100, 200, 300],
-                '_meta_block_ranges': [json.dumps([{'network': 'ethereum', 'start': 100, 'end': 110}])] * 3
-            })
+            batch = pa.RecordBatch.from_pydict(
+                {
+                    'id': [1, 2, 3],
+                    'value': [100, 200, 300],
+                    '_meta_block_ranges': [json.dumps([{'network': 'ethereum', 'start': 100, 'end': 110}])] * 3,
+                }
+            )
 
             loader.load_batch(batch, test_table_name, create_table=True, channel_suffix='partition_0')
             loader.load_batch(batch, test_table_name, channel_suffix='partition_1')
@@ -1014,7 +1052,9 @@ class TestSnowpipeStreamingIntegration:
             assert count == 0
 
     @pytest.mark.slow
-    def test_streaming_performance(self, snowflake_streaming_config, performance_test_data, test_table_name, cleanup_tables):
+    def test_streaming_performance(
+        self, snowflake_streaming_config, performance_test_data, test_table_name, cleanup_tables
+    ):
         """Test Snowpipe Streaming performance with larger dataset"""
         cleanup_tables.append(test_table_name)
         loader = SnowflakeLoader(snowflake_streaming_config)
@@ -1052,10 +1092,12 @@ class TestSnowpipeStreamingIntegration:
 
             # Try to load data with extra column (Snowpipe streaming handles gracefully)
             # Note: Snowpipe streaming accepts data with extra columns and silently ignores them
-            incompatible_data = pa.RecordBatch.from_pydict({
-                'id': [4, 5],
-                'different_column': ['a', 'b']  # Extra column not in table schema
-            })
+            incompatible_data = pa.RecordBatch.from_pydict(
+                {
+                    'id': [4, 5],
+                    'different_column': ['a', 'b'],  # Extra column not in table schema
+                }
+            )
 
             result = loader.load_batch(incompatible_data, test_table_name)
             # Snowpipe streaming handles this gracefully - it loads the matching columns

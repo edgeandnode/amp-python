@@ -194,9 +194,11 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
         """Copy Arrow data to PostgreSQL using optimal method based on data types."""
         # Use INSERT for data with binary columns OR metadata columns
         # Check for both old and new metadata column names for backward compatibility
-        has_metadata = ('_meta_block_ranges' in data.schema.names or
-                       '_amp_batch_id' in data.schema.names or
-                       '_amp_block_ranges' in data.schema.names)
+        has_metadata = (
+            '_meta_block_ranges' in data.schema.names
+            or '_amp_batch_id' in data.schema.names
+            or '_amp_block_ranges' in data.schema.names
+        )
         if has_binary_columns(data.schema) or has_metadata:
             self._insert_arrow_data(cursor, data, table_name)
         else:
@@ -360,12 +362,14 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
                 # Create index on batch_id for fast reorg queries
                 if '_amp_batch_id' not in schema_field_names:
                     try:
-                        index_sql = f'CREATE INDEX IF NOT EXISTS idx_{table_name}_amp_batch_id ON {table_name}("_amp_batch_id")'
+                        index_sql = (
+                            f'CREATE INDEX IF NOT EXISTS idx_{table_name}_amp_batch_id ON {table_name}("_amp_batch_id")'
+                        )
                         cursor.execute(index_sql)
                         conn.commit()
                         self.logger.debug(f"Created index on _amp_batch_id for table '{table_name}'")
                     except Exception as e:
-                        self.logger.warning(f"Could not create index on _amp_batch_id: {e}")
+                        self.logger.warning(f'Could not create index on _amp_batch_id: {e}')
 
                 self.logger.debug(f"Successfully created table '{table_name}'")
         except Exception as e:
@@ -480,7 +484,7 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
                 total_deleted = 0
 
                 for i in range(0, len(unique_batch_ids), chunk_size):
-                    chunk = unique_batch_ids[i:i + chunk_size]
+                    chunk = unique_batch_ids[i : i + chunk_size]
 
                     # Use LIKE with ANY for multi-batch deletion (handles "|"-separated IDs)
                     # This matches rows where _amp_batch_id contains any of the affected IDs
@@ -494,13 +498,12 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
 
                     deleted_count = cur.rowcount
                     total_deleted += deleted_count
-                    self.logger.debug(f'Deleted {deleted_count} rows for reorg (chunk {i//chunk_size + 1})')
+                    self.logger.debug(f'Deleted {deleted_count} rows for reorg (chunk {i // chunk_size + 1})')
 
                 conn.commit()
 
                 self.logger.info(
-                    f'Deleted {total_deleted} rows for reorg in {table_name} '
-                    f'({len(all_affected_batch_ids)} batch IDs)'
+                    f'Deleted {total_deleted} rows for reorg in {table_name} ({len(all_affected_batch_ids)} batch IDs)'
                 )
 
         except Exception as e:

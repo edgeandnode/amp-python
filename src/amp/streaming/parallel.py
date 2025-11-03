@@ -508,7 +508,7 @@ class ParallelStreamExecutor:
                             partition_id=partition_id,
                             start_block=current_start,
                             end_block=end,
-                            block_column=config.block_column
+                            block_column=config.block_column,
                         )
                     )
                     partition_id += 1
@@ -535,7 +535,7 @@ class ParallelStreamExecutor:
                 stop_on_error=config.stop_on_error,
                 reorg_buffer=config.reorg_buffer,
                 retry_config=config.retry_config,
-                back_pressure_config=config.back_pressure_config
+                back_pressure_config=config.back_pressure_config,
             )
 
             # Only create partitions if there's a range to process
@@ -692,7 +692,7 @@ class ParallelStreamExecutor:
             # Insert LIMIT 1 at the correct position
             sample_query = sample_query[:insert_pos].rstrip() + ' LIMIT 1' + sample_query[insert_pos:]
 
-            self.logger.debug(f"Fetching schema with sample query: {sample_query[:100]}...")
+            self.logger.debug(f'Fetching schema with sample query: {sample_query[:100]}...')
             sample_table = self.client.get_sql(sample_query, read_all=True)
 
             if sample_table.num_rows > 0:
@@ -711,8 +711,8 @@ class ParallelStreamExecutor:
                     label_config = load_config.get('label_config')
                     if label_config:
                         self.logger.info(
-                            f"Applying label join to sample batch for table creation "
-                            f"(label={label_config.label_name}, join_key={label_config.stream_key_column})"
+                            f'Applying label join to sample batch for table creation '
+                            f'(label={label_config.label_name}, join_key={label_config.stream_key_column})'
                         )
                         sample_batch = loader_instance._join_with_labels(
                             sample_batch,
@@ -720,7 +720,7 @@ class ParallelStreamExecutor:
                             label_config.label_key_column,
                             label_config.stream_key_column,
                         )
-                        self.logger.info(f"Label join applied: schema now has {len(sample_batch.schema)} columns")
+                        self.logger.info(f'Label join applied: schema now has {len(sample_batch.schema)} columns')
 
                     effective_schema = sample_batch.schema
 
@@ -893,6 +893,7 @@ class ParallelStreamExecutor:
             # Note: We don't have block hashes for regular queries, so the loader will use
             # position-based IDs (network:start:end) instead of hash-based IDs
             from ..streaming.types import BlockRange
+
             partition_block_range = BlockRange(
                 network=self.config.table_name,  # Use table name as network identifier
                 start=partition.start_block,

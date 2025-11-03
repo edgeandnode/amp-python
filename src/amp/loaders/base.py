@@ -6,7 +6,6 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import fields, is_dataclass
-from datetime import UTC, datetime
 from logging import Logger
 from typing import Any, Dict, Generic, Iterator, List, Optional, Set, TypeVar
 
@@ -261,10 +260,7 @@ class DataLoader(ABC, Generic[TConfig]):
             if label_config:
                 # Perform the join
                 batch = self._join_with_labels(
-                    batch,
-                    label_config.label_name,
-                    label_config.label_key_column,
-                    label_config.stream_key_column
+                    batch, label_config.label_name, label_config.label_key_column, label_config.stream_key_column
                 )
                 self.logger.debug(
                     f'Joined batch with label {label_config.label_name}: {batch.num_rows} rows after join '
@@ -478,9 +474,7 @@ class DataLoader(ABC, Generic[TConfig]):
 
                     # Choose processing strategy: transactional vs non-transactional
                     use_transactional = (
-                        hasattr(self, 'load_batch_transactional')
-                        and self.state_enabled
-                        and response.metadata.ranges
+                        hasattr(self, 'load_batch_transactional') and self.state_enabled and response.metadata.ranges
                     )
 
                     if use_transactional:
@@ -636,9 +630,7 @@ class DataLoader(ABC, Generic[TConfig]):
         try:
             # Delegate to loader-specific transactional implementation
             # Loaders that support transactions implement load_batch_transactional()
-            rows_loaded_batch = self.load_batch_transactional(
-                batch_data, table_name, connection_name, ranges
-            )
+            rows_loaded_batch = self.load_batch_transactional(batch_data, table_name, connection_name, ranges)
             duration = time.time() - start_time
 
             # Mark batches as processed in state store after successful transaction
@@ -703,7 +695,9 @@ class DataLoader(ABC, Generic[TConfig]):
 
                 if is_duplicate:
                     # Skip this batch - already processed
-                    self.logger.info(f'Skipping duplicate batch: {len(ranges)} ranges already processed for {table_name}')
+                    self.logger.info(
+                        f'Skipping duplicate batch: {len(ranges)} ranges already processed for {table_name}'
+                    )
                     return LoadResult(
                         rows_loaded=0,
                         duration=0.0,
@@ -730,7 +724,6 @@ class DataLoader(ABC, Generic[TConfig]):
                 # Continue anyway - state store provides resume capability
 
         return result
-
 
     def _augment_streaming_result(
         self, result: LoadResult, batch_count: int, ranges: Optional[List[BlockRange]], ranges_complete: bool
@@ -808,23 +801,26 @@ class DataLoader(ABC, Generic[TConfig]):
             # Convert BlockRanges to BatchIdentifiers and get compact unique IDs
             batch_ids = [BatchIdentifier.from_block_range(br) for br in block_ranges]
             # Combine multiple batch IDs with "|" separator for multi-network batches
-            batch_id_str = "|".join(bid.unique_id for bid in batch_ids)
+            batch_id_str = '|'.join(bid.unique_id for bid in batch_ids)
             batch_id_array = pa.array([batch_id_str] * num_rows, type=pa.string())
             result = result.append_column('_amp_batch_id', batch_id_array)
 
         # Optionally add full JSON for debugging/auditing
         if self.store_full_metadata:
             import json
-            ranges_json = json.dumps([
-                {
-                    'network': br.network,
-                    'start': br.start,
-                    'end': br.end,
-                    'hash': br.hash,
-                    'prev_hash': br.prev_hash
-                }
-                for br in block_ranges
-            ])
+
+            ranges_json = json.dumps(
+                [
+                    {
+                        'network': br.network,
+                        'start': br.start,
+                        'end': br.end,
+                        'hash': br.hash,
+                        'prev_hash': br.prev_hash,
+                    }
+                    for br in block_ranges
+                ]
+            )
             ranges_array = pa.array([ranges_json] * num_rows, type=pa.string())
             result = result.append_column('_amp_block_ranges', ranges_array)
 
@@ -966,7 +962,6 @@ class DataLoader(ABC, Generic[TConfig]):
 
         # If types don't match, cast one to match the other
         # Prefer casting to binary since that's more efficient
-        import pyarrow.compute as pc
 
         type_conversion_time_ms = 0.0
         if stream_key_type != label_key_type:
@@ -1032,14 +1027,14 @@ class DataLoader(ABC, Generic[TConfig]):
             timing_msg = (
                 f'⏱️  Label join: {input_rows} → {output_rows} rows in {total_time_ms:.2f}ms '
                 f'(type_conv={type_conversion_time_ms:.2f}ms, join={join_time_ms:.2f}ms, '
-                f'{output_rows/total_time_ms*1000:.0f} rows/sec) '
-                f'[label={label_name}, retained={output_rows/input_rows*100:.1f}%]\n'
+                f'{output_rows / total_time_ms * 1000:.0f} rows/sec) '
+                f'[label={label_name}, retained={output_rows / input_rows * 100:.1f}%]\n'
             )
         else:
             timing_msg = (
                 f'⏱️  Label join: {input_rows} → {output_rows} rows in {total_time_ms:.2f}ms '
-                f'(join={join_time_ms:.2f}ms, {output_rows/total_time_ms*1000:.0f} rows/sec) '
-                f'[label={label_name}, retained={output_rows/input_rows*100:.1f}%]\n'
+                f'(join={join_time_ms:.2f}ms, {output_rows / total_time_ms * 1000:.0f} rows/sec) '
+                f'[label={label_name}, retained={output_rows / input_rows * 100:.1f}%]\n'
             )
 
         sys.stderr.write(timing_msg)

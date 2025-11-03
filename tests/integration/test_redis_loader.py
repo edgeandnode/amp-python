@@ -675,10 +675,7 @@ class TestRedisLoaderStreaming:
 
         with loader:
             # Load via streaming API
-            response = ResponseBatch.data_batch(
-                data=batch,
-                metadata=BatchMetadata(ranges=block_ranges)
-            )
+            response = ResponseBatch.data_batch(data=batch, metadata=BatchMetadata(ranges=block_ranges))
             results = list(loader.load_stream_continuous(iter([response]), table_name))
             assert len(results) == 1
             assert results[0].success == True
@@ -709,27 +706,33 @@ class TestRedisLoaderStreaming:
 
         with loader:
             # Create streaming batches with metadata
-            batch1 = pa.RecordBatch.from_pydict({
-                'id': [1, 2, 3],  # Required for Redis key generation
-                'tx_hash': ['0x100', '0x101', '0x102'],
-                'block_num': [100, 101, 102],
-                'value': [10.0, 11.0, 12.0],
-            })
-            batch2 = pa.RecordBatch.from_pydict({'id': [4, 5], 'tx_hash': ['0x200', '0x201'], 'block_num': [103, 104], 'value': [13.0, 14.0]})
-            batch3 = pa.RecordBatch.from_pydict({'id': [6, 7], 'tx_hash': ['0x300', '0x301'], 'block_num': [105, 106], 'value': [15.0, 16.0]})
+            batch1 = pa.RecordBatch.from_pydict(
+                {
+                    'id': [1, 2, 3],  # Required for Redis key generation
+                    'tx_hash': ['0x100', '0x101', '0x102'],
+                    'block_num': [100, 101, 102],
+                    'value': [10.0, 11.0, 12.0],
+                }
+            )
+            batch2 = pa.RecordBatch.from_pydict(
+                {'id': [4, 5], 'tx_hash': ['0x200', '0x201'], 'block_num': [103, 104], 'value': [13.0, 14.0]}
+            )
+            batch3 = pa.RecordBatch.from_pydict(
+                {'id': [6, 7], 'tx_hash': ['0x300', '0x301'], 'block_num': [105, 106], 'value': [15.0, 16.0]}
+            )
 
             # Create response batches with hashes
             response1 = ResponseBatch.data_batch(
                 data=batch1,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=102, hash='0xaaa')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=102, hash='0xaaa')]),
             )
             response2 = ResponseBatch.data_batch(
                 data=batch2,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=103, end=104, hash='0xbbb')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=103, end=104, hash='0xbbb')]),
             )
             response3 = ResponseBatch.data_batch(
                 data=batch3,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=105, end=106, hash='0xccc')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=105, end=106, hash='0xccc')]),
             )
 
             # Load via streaming API
@@ -775,16 +778,18 @@ class TestRedisLoaderStreaming:
 
         with loader:
             # Load data with overlapping ranges that should be invalidated
-            batch = pa.RecordBatch.from_pydict({
-                'id': [1, 2, 3],
-                'tx_hash': ['0x150', '0x175', '0x250'],
-                'block_num': [150, 175, 250],
-                'value': [15.0, 17.5, 25.0],
-            })
+            batch = pa.RecordBatch.from_pydict(
+                {
+                    'id': [1, 2, 3],
+                    'tx_hash': ['0x150', '0x175', '0x250'],
+                    'block_num': [150, 175, 250],
+                    'value': [15.0, 17.5, 25.0],
+                }
+            )
 
             response = ResponseBatch.data_batch(
                 data=batch,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=175, hash='0xaaa')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=175, hash='0xaaa')]),
             )
 
             # Load via streaming API
@@ -830,28 +835,32 @@ class TestRedisLoaderStreaming:
 
         with loader:
             # Load data from multiple networks with same block ranges
-            batch_eth = pa.RecordBatch.from_pydict({
-                'id': [1],
-                'tx_hash': ['0x100_eth'],
-                'network_id': ['ethereum'],
-                'block_num': [100],
-                'value': [10.0],
-            })
-            batch_poly = pa.RecordBatch.from_pydict({
-                'id': [2],
-                'tx_hash': ['0x100_poly'],
-                'network_id': ['polygon'],
-                'block_num': [100],
-                'value': [10.0],
-            })
+            batch_eth = pa.RecordBatch.from_pydict(
+                {
+                    'id': [1],
+                    'tx_hash': ['0x100_eth'],
+                    'network_id': ['ethereum'],
+                    'block_num': [100],
+                    'value': [10.0],
+                }
+            )
+            batch_poly = pa.RecordBatch.from_pydict(
+                {
+                    'id': [2],
+                    'tx_hash': ['0x100_poly'],
+                    'network_id': ['polygon'],
+                    'block_num': [100],
+                    'value': [10.0],
+                }
+            )
 
             response_eth = ResponseBatch.data_batch(
                 data=batch_eth,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=100, hash='0xaaa')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=100, hash='0xaaa')]),
             )
             response_poly = ResponseBatch.data_batch(
                 data=batch_poly,
-                metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=100, end=100, hash='0xbbb')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=100, end=100, hash='0xbbb')]),
             )
 
             # Load both batches via streaming API
@@ -912,10 +921,7 @@ class TestRedisLoaderStreaming:
             block_ranges = [BlockRange(network='polygon', start=200, end=202, hash='0xabc')]
 
             # Load via streaming API
-            response = ResponseBatch.data_batch(
-                data=batch,
-                metadata=BatchMetadata(ranges=block_ranges)
-            )
+            response = ResponseBatch.data_batch(data=batch, metadata=BatchMetadata(ranges=block_ranges))
             results = list(loader.load_stream_continuous(iter([response]), table_name))
             assert len(results) == 1
             assert results[0].success == True

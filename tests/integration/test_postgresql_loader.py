@@ -329,7 +329,9 @@ class TestPostgreSQLLoaderIntegration:
             assert schema is not None
 
             # Filter out metadata columns added by PostgreSQL loader
-            non_meta_fields = [field for field in schema if not (field.name.startswith('_meta_') or field.name.startswith('_amp_'))]
+            non_meta_fields = [
+                field for field in schema if not (field.name.startswith('_meta_') or field.name.startswith('_amp_'))
+            ]
 
             assert len(non_meta_fields) == len(small_test_data.schema)
 
@@ -488,7 +490,10 @@ class TestPostgreSQLLoaderStreaming:
 
                     # Verify metadata column types
                     column_types = {col[0]: col[1] for col in columns}
-                    assert 'text' in column_types['_amp_batch_id'].lower() or 'varchar' in column_types['_amp_batch_id'].lower()
+                    assert (
+                        'text' in column_types['_amp_batch_id'].lower()
+                        or 'varchar' in column_types['_amp_batch_id'].lower()
+                    )
 
                     # Verify data was stored correctly
                     cur.execute(f'SELECT "_amp_batch_id" FROM {test_table_name} LIMIT 1')
@@ -513,14 +518,22 @@ class TestPostgreSQLLoaderStreaming:
 
         with loader:
             # Create streaming batches with metadata
-            batch1 = pa.RecordBatch.from_pydict({
-                'tx_hash': ['0x100', '0x101', '0x102'],
-                'block_num': [100, 101, 102],
-                'value': [10.0, 11.0, 12.0],
-            })
-            batch2 = pa.RecordBatch.from_pydict({'tx_hash': ['0x200', '0x201'], 'block_num': [103, 104], 'value': [12.0, 33.0]})
-            batch3 = pa.RecordBatch.from_pydict({'tx_hash': ['0x300', '0x301'], 'block_num': [105, 106], 'value': [7.0, 9.0]})
-            batch4 = pa.RecordBatch.from_pydict({'tx_hash': ['0x400', '0x401'], 'block_num': [107, 108], 'value': [6.0, 73.0]})
+            batch1 = pa.RecordBatch.from_pydict(
+                {
+                    'tx_hash': ['0x100', '0x101', '0x102'],
+                    'block_num': [100, 101, 102],
+                    'value': [10.0, 11.0, 12.0],
+                }
+            )
+            batch2 = pa.RecordBatch.from_pydict(
+                {'tx_hash': ['0x200', '0x201'], 'block_num': [103, 104], 'value': [12.0, 33.0]}
+            )
+            batch3 = pa.RecordBatch.from_pydict(
+                {'tx_hash': ['0x300', '0x301'], 'block_num': [105, 106], 'value': [7.0, 9.0]}
+            )
+            batch4 = pa.RecordBatch.from_pydict(
+                {'tx_hash': ['0x400', '0x401'], 'block_num': [107, 108], 'value': [6.0, 73.0]}
+            )
 
             # Create table from first batch schema
             loader._create_table_from_schema(batch1.schema, test_table_name)
@@ -528,19 +541,19 @@ class TestPostgreSQLLoaderStreaming:
             # Create response batches with hashes
             response1 = ResponseBatch.data_batch(
                 data=batch1,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=102, hash='0xaaa')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=102, hash='0xaaa')]),
             )
             response2 = ResponseBatch.data_batch(
                 data=batch2,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=103, end=104, hash='0xbbb')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=103, end=104, hash='0xbbb')]),
             )
             response3 = ResponseBatch.data_batch(
                 data=batch3,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=105, end=106, hash='0xccc')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=105, end=106, hash='0xccc')]),
             )
             response4 = ResponseBatch.data_batch(
                 data=batch4,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=107, end=108, hash='0xddd')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=107, end=108, hash='0xddd')]),
             )
 
             # Load via streaming API
@@ -583,14 +596,16 @@ class TestPostgreSQLLoaderStreaming:
 
         with loader:
             # Load data with overlapping ranges that should be invalidated
-            batch = pa.RecordBatch.from_pydict({'tx_hash': ['0x150', '0x175', '0x250'], 'block_num': [150, 175, 250], 'value': [15.0, 17.5, 25.0]})
+            batch = pa.RecordBatch.from_pydict(
+                {'tx_hash': ['0x150', '0x175', '0x250'], 'block_num': [150, 175, 250], 'value': [15.0, 17.5, 25.0]}
+            )
 
             # Create table from batch schema
             loader._create_table_from_schema(batch.schema, test_table_name)
 
             response = ResponseBatch.data_batch(
                 data=batch,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=175, hash='0xaaa')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=175, hash='0xaaa')]),
             )
 
             # Load via streaming API
@@ -631,19 +646,23 @@ class TestPostgreSQLLoaderStreaming:
 
         with loader:
             # Load data from multiple networks with same block ranges
-            batch_eth = pa.RecordBatch.from_pydict({'tx_hash': ['0x100_eth'], 'network_id': ['ethereum'], 'block_num': [100], 'value': [10.0]})
-            batch_poly = pa.RecordBatch.from_pydict({'tx_hash': ['0x100_poly'], 'network_id': ['polygon'], 'block_num': [100], 'value': [10.0]})
+            batch_eth = pa.RecordBatch.from_pydict(
+                {'tx_hash': ['0x100_eth'], 'network_id': ['ethereum'], 'block_num': [100], 'value': [10.0]}
+            )
+            batch_poly = pa.RecordBatch.from_pydict(
+                {'tx_hash': ['0x100_poly'], 'network_id': ['polygon'], 'block_num': [100], 'value': [10.0]}
+            )
 
             # Create table from batch schema
             loader._create_table_from_schema(batch_eth.schema, test_table_name)
 
             response_eth = ResponseBatch.data_batch(
                 data=batch_eth,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=100, hash='0xaaa')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=100, hash='0xaaa')]),
             )
             response_poly = ResponseBatch.data_batch(
                 data=batch_poly,
-                metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=100, end=100, hash='0xbbb')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=100, end=100, hash='0xbbb')]),
             )
 
             # Load both batches via streaming API

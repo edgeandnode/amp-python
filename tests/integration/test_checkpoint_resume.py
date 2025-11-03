@@ -644,10 +644,7 @@ class TestIdempotencyExactlyOnce:
             batch = small_test_data.to_batches()[0]
             ranges = [BlockRange(network='ethereum', start=100, end=200, hash='0xabc')]
 
-            response1 = ResponseBatch.data_batch(
-                data=batch,
-                metadata=BatchMetadata(ranges=ranges)
-            )
+            response1 = ResponseBatch.data_batch(data=batch, metadata=BatchMetadata(ranges=ranges))
 
             # First load - should succeed
             results = list(loader.load_stream_continuous(iter([response1]), test_table))
@@ -666,10 +663,7 @@ class TestIdempotencyExactlyOnce:
                 loader.pool.putconn(conn)
 
             # Second load with same ranges - should detect duplicate and skip
-            response2 = ResponseBatch.data_batch(
-                data=batch,
-                metadata=BatchMetadata(ranges=ranges)
-            )
+            response2 = ResponseBatch.data_batch(data=batch, metadata=BatchMetadata(ranges=ranges))
             results2 = list(loader.load_stream_continuous(iter([response2]), test_table))
             assert len(results2) == 1
             assert results2[0].success

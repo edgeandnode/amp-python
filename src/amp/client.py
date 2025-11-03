@@ -34,7 +34,7 @@ class QueryBuilder:
         destination: str,
         config: Dict[str, Any] = None,
         label_config: Optional[LabelJoinConfig] = None,
-        **kwargs
+        **kwargs,
     ) -> Union[LoadResult, Iterator[LoadResult]]:
         """
         Load query results to specified destination

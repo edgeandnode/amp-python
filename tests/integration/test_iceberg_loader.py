@@ -718,12 +718,12 @@ class TestIcebergLoaderAdvanced:
             # Create response batches using factory methods (with hashes for proper state management)
             response1 = ResponseBatch.data_batch(
                 data=data1,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc123')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc123')]),
             )
 
             response2 = ResponseBatch.data_batch(
                 data=data2,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef456')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef456')]),
             )
 
             # Simulate reorg event using factory method
