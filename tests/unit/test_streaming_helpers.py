@@ -6,14 +6,12 @@ ensuring each piece of logic works correctly in isolation.
 """
 
 import time
-from datetime import datetime
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pyarrow as pa
 import pytest
 
 from src.amp.loaders.base import LoadResult
-from src.amp.streaming.checkpoint import CheckpointState
 from src.amp.streaming.types import BlockRange
 from tests.fixtures.mock_clients import MockDataLoader
 
@@ -66,7 +64,9 @@ class TestProcessReorgEvent:
         """Test successful reorg event processing"""
         # Setup
         mock_loader._handle_reorg = Mock()
-        mock_loader.state_store.invalidate_from_block = Mock(return_value=[])  # Return empty list of invalidated batches
+        mock_loader.state_store.invalidate_from_block = Mock(
+            return_value=[]
+        )  # Return empty list of invalidated batches
 
         response = Mock()
         response.invalidation_ranges = sample_ranges

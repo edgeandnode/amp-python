@@ -153,15 +153,13 @@ class SnowflakeStreamStateStore(StreamStateStore):
             """)
 
             self.connection.commit()
-            self.logger.debug("Ensured amp_stream_state table exists")
+            self.logger.debug('Ensured amp_stream_state table exists')
 
         except Exception as e:
-            self.logger.warning(f"Failed to ensure state table exists: {e}")
+            self.logger.warning(f'Failed to ensure state table exists: {e}')
             # Don't fail - table might already exist
 
-    def is_processed(
-        self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]
-    ) -> bool:
+    def is_processed(self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]) -> bool:
         """Check if all given batches have already been processed."""
         if not batch_ids:
             return False
@@ -199,9 +197,7 @@ class SnowflakeStreamStateStore(StreamStateStore):
 
         return True
 
-    def mark_processed(
-        self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]
-    ) -> None:
+    def mark_processed(self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]) -> None:
         """Mark batches as processed by inserting into state table."""
         if not batch_ids:
             return
@@ -230,7 +226,7 @@ class SnowflakeStreamStateStore(StreamStateStore):
             except Exception as e:
                 # Ignore duplicate key errors (batch already marked)
                 if 'Duplicate' not in str(e) and 'unique' not in str(e).lower():
-                    self.logger.warning(f"Failed to mark batch as processed: {e}")
+                    self.logger.warning(f'Failed to mark batch as processed: {e}')
 
         self.connection.commit()
 
@@ -281,7 +277,7 @@ class SnowflakeStreamStateStore(StreamStateStore):
                     start=gap['gap_start'],
                     end=gap['gap_end'],
                     hash=None,  # Position-based for historical gaps
-                    prev_hash=None
+                    prev_hash=None,
                 )
             )
 
@@ -295,15 +291,13 @@ class SnowflakeStreamStateStore(StreamStateStore):
                         start=br.end + 1,
                         end=br.end + 1,  # Same value = marker for remaining unprocessed range
                         hash=br.hash,
-                        prev_hash=br.prev_hash
+                        prev_hash=br.prev_hash,
                     )
                 )
 
         return ResumeWatermark(ranges=all_ranges) if all_ranges else None
 
-    def _get_max_processed_position(
-        self, connection_name: str, table_name: str
-    ) -> Optional[ResumeWatermark]:
+    def _get_max_processed_position(self, connection_name: str, table_name: str) -> Optional[ResumeWatermark]:
         """
         Get max processed position for each network (simple mode).
 
@@ -359,9 +353,7 @@ class SnowflakeStreamStateStore(StreamStateStore):
 
         return ResumeWatermark(ranges=ranges) if ranges else None
 
-    def _detect_all_gaps(
-        self, connection_name: str, table_name: str
-    ) -> List[Dict[str, any]]:
+    def _detect_all_gaps(self, connection_name: str, table_name: str) -> List[Dict[str, any]]:
         """
         Detect all gaps in processed batch ranges using window functions.
 
@@ -407,16 +399,12 @@ class SnowflakeStreamStateStore(StreamStateStore):
             # Convert to list of dicts with lowercase keys
             gaps = []
             for row in results:
-                gaps.append({
-                    'network': row['NETWORK'],
-                    'gap_start': row['GAP_START'],
-                    'gap_end': row['GAP_END']
-                })
+                gaps.append({'network': row['NETWORK'], 'gap_start': row['GAP_START'], 'gap_end': row['GAP_END']})
 
             return gaps
 
         except Exception as e:
-            self.logger.warning(f"Failed to detect gaps: {e}")
+            self.logger.warning(f'Failed to detect gaps: {e}')
             return []
 
     def invalidate_from_block(
@@ -442,7 +430,7 @@ class SnowflakeStreamStateStore(StreamStateStore):
                 start_block=row['START_BLOCK'],
                 end_block=row['END_BLOCK'],
                 end_hash=row['END_HASH'],
-                start_parent_hash=row['START_PARENT_HASH'] or "",
+                start_parent_hash=row['START_PARENT_HASH'] or '',
             )
             for row in results
         ]
@@ -463,9 +451,7 @@ class SnowflakeStreamStateStore(StreamStateStore):
 
         return affected
 
-    def cleanup_before_block(
-        self, connection_name: str, table_name: str, network: str, before_block: int
-    ) -> None:
+    def cleanup_before_block(self, connection_name: str, table_name: str, network: str, before_block: int) -> None:
         """Remove old batches before a given block."""
         self.cursor.execute(
             """
@@ -524,7 +510,7 @@ class SnowflakeConnectionPool:
         with the same configuration.
         """
         # Create a hashable key from config
-        key = f"{config.account}:{config.user}:{config.database}:{config.schema}"
+        key = f'{config.account}:{config.user}:{config.database}:{config.schema}'
 
         with cls._pools_lock:
             if key not in cls._pools:
@@ -547,7 +533,7 @@ class SnowflakeConnectionPool:
         try:
             # Execute a simple query with timeout to verify connection is responsive
             cursor = connection.cursor()
-            cursor.execute("SELECT 1", timeout=self.CONNECTION_VALIDATION_TIMEOUT)
+            cursor.execute('SELECT 1', timeout=self.CONNECTION_VALIDATION_TIMEOUT)
             cursor.fetchone()
             cursor.close()
             return True
@@ -612,7 +598,7 @@ class SnowflakeConnectionPool:
             RuntimeError: If pool is closed or timeout exceeded
         """
         if self._closed:
-            raise RuntimeError("Connection pool is closed")
+            raise RuntimeError('Connection pool is closed')
 
         try:
             # Try to get an existing connection from the pool
@@ -673,7 +659,7 @@ class SnowflakeConnectionPool:
 
             return connection
         except Empty:
-            raise RuntimeError(f"Failed to acquire connection from pool within {timeout}s")
+            raise RuntimeError(f'Failed to acquire connection from pool within {timeout}s')
 
     def release(self, connection: SnowflakeConnection) -> None:
         """
@@ -883,8 +869,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             # Add authentication - Snowpipe Streaming requires key-pair auth
             if not self.config.private_key:
                 raise ValueError(
-                    'Snowpipe Streaming requires private_key authentication. '
-                    'Password authentication is not supported.'
+                    'Snowpipe Streaming requires private_key authentication. Password authentication is not supported.'
                 )
 
             from cryptography.hazmat.primitives import serialization
@@ -967,11 +952,11 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             column_info = [(row['COLUMN_NAME'], row['DATA_TYPE']) for row in self.cursor.fetchall()]
 
             if not column_info:
-                raise RuntimeError(f"Table {table_name} does not exist or has no columns")
+                raise RuntimeError(f'Table {table_name} does not exist or has no columns')
 
             # Build SELECT clause: map $1:column_name::TYPE for each column
             # The streaming data comes in as VARIANT ($1) and needs to be parsed
-            select_columns = [f"$1:{col}::{dtype}" for col, dtype in column_info]
+            select_columns = [f'$1:{col}::{dtype}' for col, dtype in column_info]
             column_names = [col for col, _ in column_info]
 
             # Create streaming pipe using DATA_SOURCE(TYPE => 'STREAMING')
@@ -985,7 +970,9 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             )
             """
             self.cursor.execute(create_pipe_sql)
-            self.logger.info(f"Created or verified Snowpipe Streaming pipe '{pipe_name}' for table {table_name} with {len(column_info)} columns")
+            self.logger.info(
+                f"Created or verified Snowpipe Streaming pipe '{pipe_name}' for table {table_name} with {len(column_info)} columns"
+            )
         except Exception as e:
             # Pipe creation might fail if it already exists or if we don't have permissions
             # Log warning but continue - the SDK will validate if the pipe is accessible
@@ -1153,7 +1140,11 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                 variant_columns.add(field.name)
 
             # Check if this is a binary type that needs hex encoding
-            if pa.types.is_binary(field.type) or pa.types.is_large_binary(field.type) or pa.types.is_fixed_size_binary(field.type):
+            if (
+                pa.types.is_binary(field.type)
+                or pa.types.is_large_binary(field.type)
+                or pa.types.is_fixed_size_binary(field.type)
+            ):
                 binary_columns[field.name] = field.type
 
                 # Convert binary data to hex strings using list comprehension (faster)
@@ -1169,7 +1160,9 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                 # Convert to Python list and format as ISO strings (faster)
                 pylist = col_array.to_pylist()
                 timestamp_values = [
-                    dt.strftime('%Y-%m-%d %H:%M:%S.%f') if isinstance(dt, datetime.datetime) else (str(dt) if dt is not None else None)
+                    dt.strftime('%Y-%m-%d %H:%M:%S.%f')
+                    if isinstance(dt, datetime.datetime)
+                    else (str(dt) if dt is not None else None)
                     for dt in pylist
                 ]
 
@@ -1182,7 +1175,9 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                 modified_fields.append(field)
 
         t_conversion_end = time.time()
-        self.logger.debug(f'Data conversion took {t_conversion_end - t_conversion_start:.2f}s for {batch.num_rows} rows')
+        self.logger.debug(
+            f'Data conversion took {t_conversion_end - t_conversion_start:.2f}s for {batch.num_rows} rows'
+        )
 
         # Create modified batch with hex-encoded binary columns
         t_batch_start = time.time()
@@ -1215,7 +1210,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         for i, field in enumerate(batch.schema, start=1):
             if field.name in binary_columns:
                 # Use TO_BINARY to convert hex string back to binary
-                final_column_specs.append(f'TO_BINARY(${i}, \'HEX\')')
+                final_column_specs.append(f"TO_BINARY(${i}, 'HEX')")
             elif field.name in variant_columns:
                 # Use PARSE_JSON to convert JSON string to VARIANT
                 final_column_specs.append(f'PARSE_JSON(${i})')
@@ -1241,7 +1236,9 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         self.logger.debug(f'COPY INTO took {t_copy_end - t_copy_start:.2f}s ({rows_loaded} rows)')
 
         t_end = time.time()
-        self.logger.info(f'Total _load_via_stage took {t_end - t_start:.2f}s for {rows_loaded} rows ({rows_loaded/(t_end - t_start):.0f} rows/sec)')
+        self.logger.info(
+            f'Total _load_via_stage took {t_end - t_start:.2f}s for {rows_loaded} rows ({rows_loaded / (t_end - t_start):.0f} rows/sec)'
+        )
 
         return rows_loaded
 
@@ -1292,7 +1289,11 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                         # Shouldn't reach here after as_py() conversion
                         row.append(str(value) if value is not None else None)
                 # Keep binary data as bytes (Snowflake handles bytes directly)
-                elif pa.types.is_binary(field_type) or pa.types.is_large_binary(field_type) or pa.types.is_fixed_size_binary(field_type):
+                elif (
+                    pa.types.is_binary(field_type)
+                    or pa.types.is_large_binary(field_type)
+                    or pa.types.is_fixed_size_binary(field_type)
+                ):
                     row.append(value)
                 else:
                     row.append(value)
@@ -1352,7 +1353,9 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             # Fallback to regular pandas if PyArrow backend not available
             df = batch.to_pandas()
         t_conversion_end = time.time()
-        self.logger.debug(f'Pandas conversion took {t_conversion_end - t_conversion_start:.2f}s for {batch.num_rows} rows')
+        self.logger.debug(
+            f'Pandas conversion took {t_conversion_end - t_conversion_start:.2f}s for {batch.num_rows} rows'
+        )
 
         # Use Snowflake's write_pandas to load data with retry logic
         # This handles all type conversions internally and is optimized for bulk loading
@@ -1398,14 +1401,24 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             except Exception as e:
                 error_str = str(e).lower()
                 # Check if error is transient (connection reset, credential expiration, timeout)
-                is_transient = any(pattern in error_str for pattern in [
-                    'connection reset', 'econnreset', '403', 'forbidden',
-                    'timeout', 'credential', 'expired', 'connection aborted',
-                    'jwt', 'invalid'  # JWT token expiration
-                ])
+                is_transient = any(
+                    pattern in error_str
+                    for pattern in [
+                        'connection reset',
+                        'econnreset',
+                        '403',
+                        'forbidden',
+                        'timeout',
+                        'credential',
+                        'expired',
+                        'connection aborted',
+                        'jwt',
+                        'invalid',  # JWT token expiration
+                    ]
+                )
 
                 if attempt < max_retries and is_transient:
-                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    wait_time = 2**attempt  # Exponential backoff: 1s, 2s, 4s
                     self.logger.warning(
                         f'Pandas loading error (attempt {attempt + 1}/{max_retries + 1}), '
                         f'refreshing connection and retrying in {wait_time}s: {e}'
@@ -1431,7 +1444,9 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         throughput = num_rows / total_time if total_time > 0 else 0
 
         self.logger.debug(f'write_pandas took {write_time:.2f}s for {num_rows} rows in {num_chunks} chunks')
-        self.logger.info(f'Total _load_via_pandas took {total_time:.2f}s for {num_rows} rows ({throughput:.0f} rows/sec)')
+        self.logger.info(
+            f'Total _load_via_pandas took {total_time:.2f}s for {num_rows} rows ({throughput:.0f} rows/sec)'
+        )
 
         return num_rows
 
@@ -1447,7 +1462,6 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         - Converts timestamps (datetime → ISO string)
         - Converts binary data (bytes → hex string)
         """
-        import datetime
         import sys
 
         t_start = time.perf_counter()
@@ -1458,7 +1472,11 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         for field in batch.schema:
             if pa.types.is_timestamp(field.type) or pa.types.is_date(field.type):
                 timestamp_columns.add(field.name)
-            elif pa.types.is_binary(field.type) or pa.types.is_large_binary(field.type) or pa.types.is_fixed_size_binary(field.type):
+            elif (
+                pa.types.is_binary(field.type)
+                or pa.types.is_large_binary(field.type)
+                or pa.types.is_fixed_size_binary(field.type)
+            ):
                 binary_columns.add(field.name)
 
         # Use to_pydict() for Python type conversion
@@ -1468,19 +1486,13 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         t_timestamp_start = time.perf_counter()
         for col_name in timestamp_columns:
             if col_name in columns:
-                columns[col_name] = [
-                    v.isoformat() if v is not None else None
-                    for v in columns[col_name]
-                ]
+                columns[col_name] = [v.isoformat() if v is not None else None for v in columns[col_name]]
         t_timestamp_end = time.perf_counter()
 
         t_binary_start = time.perf_counter()
         for col_name in binary_columns:
             if col_name in columns:
-                columns[col_name] = [
-                    v.hex() if v is not None else None
-                    for v in columns[col_name]
-                ]
+                columns[col_name] = [v.hex() if v is not None else None for v in columns[col_name]]
         t_binary_end = time.perf_counter()
 
         # Transpose from columnar format to row-oriented format
@@ -1509,10 +1521,10 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
 
         timing_msg = (
             f'⏱️  Row conversion timing for {batch.num_rows} rows: '
-            f'total={total_time*1000:.2f}ms '
-            f'(timestamp={timestamp_conversion_time*1000:.2f}ms, '
-            f'binary={binary_conversion_time*1000:.2f}ms, '
-            f'transpose={transpose_time*1000:.2f}ms)\n'
+            f'total={total_time * 1000:.2f}ms '
+            f'(timestamp={timestamp_conversion_time * 1000:.2f}ms, '
+            f'binary={binary_conversion_time * 1000:.2f}ms, '
+            f'transpose={transpose_time * 1000:.2f}ms)\n'
         )
         sys.stderr.write(timing_msg)
         sys.stderr.flush()
@@ -1561,8 +1573,9 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
 
                 # Log timing to stderr for visibility
                 import sys
+
                 append_time_ms = (t_append_end - t_append_start) * 1000
-                timing_msg = f'⏱️  Snowpipe append: {len(rows)} rows in {append_time_ms:.2f}ms ({len(rows)/append_time_ms*1000:.0f} rows/sec)\n'
+                timing_msg = f'⏱️  Snowpipe append: {len(rows)} rows in {append_time_ms:.2f}ms ({len(rows) / append_time_ms * 1000:.0f} rows/sec)\n'
                 sys.stderr.write(timing_msg)
                 sys.stderr.flush()
 
@@ -1604,6 +1617,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             RuntimeError: If insertion fails after all retries
         """
         import sys
+
         t_batch_start = time.perf_counter()
 
         # Initialize streaming client for this table if needed (lazy initialization, one client per table)
@@ -1635,7 +1649,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             t_batch_end = time.perf_counter()
             batch_time_ms = (t_batch_end - t_batch_start) * 1000
             num_chunks = (batch.num_rows + MAX_ROWS_PER_CHUNK - 1) // MAX_ROWS_PER_CHUNK
-            timing_msg = f'⏱️  Batch load complete: {total_loaded} rows in {batch_time_ms:.2f}ms ({total_loaded/batch_time_ms*1000:.0f} rows/sec) [{num_chunks} chunks]\n'
+            timing_msg = f'⏱️  Batch load complete: {total_loaded} rows in {batch_time_ms:.2f}ms ({total_loaded / batch_time_ms * 1000:.0f} rows/sec) [{num_chunks} chunks]\n'
             sys.stderr.write(timing_msg)
             sys.stderr.flush()
 
@@ -1647,7 +1661,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
 
             t_batch_end = time.perf_counter()
             batch_time_ms = (t_batch_end - t_batch_start) * 1000
-            timing_msg = f'⏱️  Batch load complete: {len(rows)} rows in {batch_time_ms:.2f}ms ({len(rows)/batch_time_ms*1000:.0f} rows/sec)\n'
+            timing_msg = f'⏱️  Batch load complete: {len(rows)} rows in {batch_time_ms:.2f}ms ({len(rows) / batch_time_ms * 1000:.0f} rows/sec)\n'
             sys.stderr.write(timing_msg)
             sys.stderr.flush()
 
@@ -1921,30 +1935,28 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
 
         try:
             # Create _current view for active data only
-            current_view_name = f"{table_name}_current"
+            current_view_name = f'{table_name}_current'
             current_view_sql = f"""
             CREATE OR REPLACE VIEW {current_view_name} AS
             SELECT * FROM {table_name}
             WHERE "_amp_is_current" = TRUE
             """
 
-            self.logger.debug(f"Creating current data view: {current_view_name}")
+            self.logger.debug(f'Creating current data view: {current_view_name}')
             self.cursor.execute(current_view_sql)
 
             # Create _history view for all data (including invalidated)
-            history_view_name = f"{table_name}_history"
+            history_view_name = f'{table_name}_history'
             history_view_sql = f"""
             CREATE OR REPLACE VIEW {history_view_name} AS
             SELECT * FROM {table_name}
             """
 
-            self.logger.debug(f"Creating history view: {history_view_name}")
+            self.logger.debug(f'Creating history view: {history_view_name}')
             self.cursor.execute(history_view_sql)
 
             self.connection.commit()
-            self.logger.info(
-                f"Created reorg history views: {current_view_name}, {history_view_name}"
-            )
+            self.logger.info(f'Created reorg history views: {current_view_name}, {history_view_name}')
 
         except Exception as e:
             self.logger.error(f"Failed to create history views for '{table_name}': {str(e)}")
@@ -2001,7 +2013,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                             # Continue closing other channels even if one fails
 
                     self.logger.info(
-                        f'All streaming channels for table \'{table_name}\' closed. '
+                        f"All streaming channels for table '{table_name}' closed. "
                         'Channels will be recreated on next insert with new offset tokens.'
                     )
 
@@ -2021,6 +2033,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                     # Create a batch identifier from the reorg invalidation range
                     # This batch represents the "new corrected data" that will replace the old data
                     from ...streaming.state import BatchIdentifier
+
                     reorg_batch = BatchIdentifier.from_block_range(range_obj)
                     reorg_batch_ids[range_obj.network] = reorg_batch.unique_id
 
@@ -2037,7 +2050,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             total_affected = 0
 
             for i in range(0, len(unique_batch_ids), chunk_size):
-                chunk = unique_batch_ids[i:i + chunk_size]
+                chunk = unique_batch_ids[i : i + chunk_size]
 
                 # Use LIKE with OR for multi-batch matching (handles "|"-separated IDs)
                 # Snowflake doesn't have LIKE ANY, so we build OR conditions
@@ -2055,7 +2068,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                     WHERE ({like_conditions}) AND "_amp_is_current" = TRUE
                     """
 
-                    self.logger.debug(f'Updating chunk {i//chunk_size + 1} with {len(chunk)} batch IDs')
+                    self.logger.debug(f'Updating chunk {i // chunk_size + 1} with {len(chunk)} batch IDs')
                     self.cursor.execute(update_sql)
                     affected_count = self.cursor.rowcount
                     total_affected += affected_count
@@ -2066,7 +2079,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                     WHERE {like_conditions}
                     """
 
-                    self.logger.debug(f'Deleting chunk {i//chunk_size + 1} with {len(chunk)} batch IDs')
+                    self.logger.debug(f'Deleting chunk {i // chunk_size + 1} with {len(chunk)} batch IDs')
                     self.cursor.execute(delete_sql)
                     affected_count = self.cursor.rowcount
                     total_affected += affected_count

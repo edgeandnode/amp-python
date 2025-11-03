@@ -55,9 +55,7 @@ def get_recent_block_range(client: Client, num_blocks: int = 100_000):
     return min_block, max_block
 
 
-def load_erc20_transfers_with_labels(
-    num_blocks: int = 100_000, num_workers: int = 4, flush_interval: float = 1.0
-):
+def load_erc20_transfers_with_labels(num_blocks: int = 100_000, num_workers: int = 4, flush_interval: float = 1.0):
     """Load ERC20 transfers with token labels using Snowpipe Streaming and parallel streaming."""
 
     # Initialize client

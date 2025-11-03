@@ -1,7 +1,6 @@
 # amp/loaders/implementations/lmdb_loader.py
 
 import hashlib
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional

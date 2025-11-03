@@ -586,15 +586,15 @@ class TestDeltaLakeLoaderAdvanced:
             # Create response batches with hashes
             response1 = ResponseBatch.data_batch(
                 data=batch1,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc')]),
             )
             response2 = ResponseBatch.data_batch(
                 data=batch2,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef')]),
             )
             response3 = ResponseBatch.data_batch(
                 data=batch3,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=200, end=210, hash='0x123')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=200, end=210, hash='0x123')]),
             )
 
             # Load via streaming API
@@ -637,19 +637,19 @@ class TestDeltaLakeLoaderAdvanced:
             # Create response batches with network-specific ranges
             response1 = ResponseBatch.data_batch(
                 data=batch1,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xaaa')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xaaa')]),
             )
             response2 = ResponseBatch.data_batch(
                 data=batch2,
-                metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=100, end=110, hash='0xbbb')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=100, end=110, hash='0xbbb')]),
             )
             response3 = ResponseBatch.data_batch(
                 data=batch3,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xccc')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xccc')]),
             )
             response4 = ResponseBatch.data_batch(
                 data=batch4,
-                metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=150, end=160, hash='0xddd')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=150, end=160, hash='0xddd')]),
             )
 
             # Load via streaming API
@@ -689,15 +689,15 @@ class TestDeltaLakeLoaderAdvanced:
             # Batch 3: 170-190 (after reorg, but should be deleted as 170 >= 150)
             response1 = ResponseBatch.data_batch(
                 data=batch1,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=90, end=110, hash='0xaaa')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=90, end=110, hash='0xaaa')]),
             )
             response2 = ResponseBatch.data_batch(
                 data=batch2,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=140, end=160, hash='0xbbb')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=140, end=160, hash='0xbbb')]),
             )
             response3 = ResponseBatch.data_batch(
                 data=batch3,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=170, end=190, hash='0xccc')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=170, end=190, hash='0xccc')]),
             )
 
             # Load via streaming API
@@ -733,15 +733,15 @@ class TestDeltaLakeLoaderAdvanced:
 
             response1 = ResponseBatch.data_batch(
                 data=batch1,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=0, end=10, hash='0xaaa')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=0, end=10, hash='0xaaa')]),
             )
             response2 = ResponseBatch.data_batch(
                 data=batch2,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=50, end=60, hash='0xbbb')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=50, end=60, hash='0xbbb')]),
             )
             response3 = ResponseBatch.data_batch(
                 data=batch3,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xccc')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xccc')]),
             )
 
             # Load via streaming API
@@ -792,12 +792,12 @@ class TestDeltaLakeLoaderAdvanced:
             # Create response batches using factory methods (with hashes for proper state management)
             response1 = ResponseBatch.data_batch(
                 data=data1,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc123')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc123')]),
             )
 
             response2 = ResponseBatch.data_batch(
                 data=data2,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef456')])
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef456')]),
             )
 
             # Simulate reorg event using factory method

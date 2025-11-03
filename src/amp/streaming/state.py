@@ -6,7 +6,6 @@ single unified mechanism that provides both resumability and idempotency.
 """
 
 import hashlib
-import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -33,7 +32,7 @@ class BatchIdentifier:
     start_block: int
     end_block: int
     end_hash: str  # Hash of the end block (required for uniqueness)
-    start_parent_hash: str = ""  # Hash of block before start (optional for chain validation)
+    start_parent_hash: str = ''  # Hash of block before start (optional for chain validation)
 
     @property
     def unique_id(self) -> str:
@@ -45,11 +44,7 @@ class BatchIdentifier:
         - Collision-resistant (extremely unlikely to have duplicates)
         - Compact (16 hex chars = 64 bits, suitable for indexing)
         """
-        canonical = (
-            f"{self.network}:"
-            f"{self.start_block}:{self.end_block}:"
-            f"{self.end_hash}:{self.start_parent_hash}"
-        )
+        canonical = f'{self.network}:{self.start_block}:{self.end_block}:{self.end_hash}:{self.start_parent_hash}'
         return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
     @property
@@ -58,7 +53,7 @@ class BatchIdentifier:
         return (self.network, self.start_block, self.end_block)
 
     @classmethod
-    def from_block_range(cls, br: BlockRange) -> "BatchIdentifier":
+    def from_block_range(cls, br: BlockRange) -> 'BatchIdentifier':
         """
         Create BatchIdentifier from a BlockRange metadata object.
 
@@ -76,7 +71,8 @@ class BatchIdentifier:
             # Position-based ID: Generate synthetic hash from block range coordinates
             # This provides same compact format without requiring server-provided hashes
             import hashlib
-            canonical = f"{br.network}:{br.start}:{br.end}"
+
+            canonical = f'{br.network}:{br.start}:{br.end}'
             end_hash = hashlib.sha256(canonical.encode('utf-8')).hexdigest()
 
         return cls(
@@ -84,7 +80,7 @@ class BatchIdentifier:
             start_block=br.start,
             end_block=br.end,
             end_hash=end_hash,
-            start_parent_hash=br.prev_hash or "",
+            start_parent_hash=br.prev_hash or '',
         )
 
     def to_block_range(self) -> BlockRange:
@@ -118,30 +114,30 @@ class ProcessedBatch:
     def to_dict(self) -> dict:
         """Serialize for database storage."""
         return {
-            "network": self.batch_id.network,
-            "start_block": self.batch_id.start_block,
-            "end_block": self.batch_id.end_block,
-            "end_hash": self.batch_id.end_hash,
-            "start_parent_hash": self.batch_id.start_parent_hash,
-            "unique_id": self.batch_id.unique_id,
-            "processed_at": self.processed_at.isoformat(),
-            "reorg_invalidation": self.reorg_invalidation,
+            'network': self.batch_id.network,
+            'start_block': self.batch_id.start_block,
+            'end_block': self.batch_id.end_block,
+            'end_hash': self.batch_id.end_hash,
+            'start_parent_hash': self.batch_id.start_parent_hash,
+            'unique_id': self.batch_id.unique_id,
+            'processed_at': self.processed_at.isoformat(),
+            'reorg_invalidation': self.reorg_invalidation,
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ProcessedBatch":
+    def from_dict(cls, data: dict) -> 'ProcessedBatch':
         """Deserialize from database storage."""
         batch_id = BatchIdentifier(
-            network=data["network"],
-            start_block=data["start_block"],
-            end_block=data["end_block"],
-            end_hash=data["end_hash"],
-            start_parent_hash=data.get("start_parent_hash", ""),
+            network=data['network'],
+            start_block=data['start_block'],
+            end_block=data['end_block'],
+            end_hash=data['end_hash'],
+            start_parent_hash=data.get('start_parent_hash', ''),
         )
         return cls(
             batch_id=batch_id,
-            processed_at=datetime.fromisoformat(data["processed_at"]),
-            reorg_invalidation=data.get("reorg_invalidation", False),
+            processed_at=datetime.fromisoformat(data['processed_at']),
+            reorg_invalidation=data.get('reorg_invalidation', False),
         )
 
 
@@ -157,9 +153,7 @@ class StreamStateStore(ABC):
     """
 
     @abstractmethod
-    def is_processed(
-        self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]
-    ) -> bool:
+    def is_processed(self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]) -> bool:
         """
         Check if all given batches have already been processed.
 
@@ -169,9 +163,7 @@ class StreamStateStore(ABC):
         pass
 
     @abstractmethod
-    def mark_processed(
-        self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]
-    ) -> None:
+    def mark_processed(self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]) -> None:
         """
         Mark the given batches as successfully processed.
 
@@ -216,9 +208,7 @@ class StreamStateStore(ABC):
         pass
 
     @abstractmethod
-    def cleanup_before_block(
-        self, connection_name: str, table_name: str, network: str, before_block: int
-    ) -> None:
+    def cleanup_before_block(self, connection_name: str, table_name: str, network: str, before_block: int) -> None:
         """
         Remove old batch records before a given block number.
 
@@ -251,15 +241,9 @@ class InMemoryStreamStateStore(StreamStateStore):
             return (connection_name, table_name, network)
         else:
             # Return all keys for this connection/table across all networks
-            return [
-                k
-                for k in self._state.keys()
-                if k[0] == connection_name and k[1] == table_name
-            ]
+            return [k for k in self._state.keys() if k[0] == connection_name and k[1] == table_name]
 
-    def is_processed(
-        self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]
-    ) -> bool:
+    def is_processed(self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]) -> bool:
         """Check if all batches have been processed."""
         if not batch_ids:
             return False
@@ -281,9 +265,7 @@ class InMemoryStreamStateStore(StreamStateStore):
 
         return True
 
-    def mark_processed(
-        self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]
-    ) -> None:
+    def mark_processed(self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]) -> None:
         """Mark batches as processed."""
         # Group by network
         by_network: Dict[str, List[BatchIdentifier]] = {}
@@ -341,7 +323,7 @@ class InMemoryStreamStateStore(StreamStateStore):
                         start=br.end + 1,
                         end=br.end + 1,  # Same value = marker for remaining unprocessed range
                         hash=br.hash,
-                        prev_hash=br.prev_hash
+                        prev_hash=br.prev_hash,
                     )
                 )
 
@@ -360,10 +342,7 @@ class InMemoryStreamStateStore(StreamStateStore):
                 # Find batch with highest end_block for this network
                 max_batch = max(batches, key=lambda b: b.end_block)
 
-                if (
-                    network not in max_by_network
-                    or max_batch.end_block > max_by_network[network].end_block
-                ):
+                if network not in max_by_network or max_batch.end_block > max_by_network[network].end_block:
                     max_by_network[network] = max_batch
 
         if not max_by_network:
@@ -400,7 +379,7 @@ class InMemoryStreamStateStore(StreamStateStore):
                             start=current_batch.end_block + 1,
                             end=next_batch.start_block - 1,
                             hash=None,  # Position-based for gaps
-                            prev_hash=None
+                            prev_hash=None,
                         )
                     )
 
@@ -422,9 +401,7 @@ class InMemoryStreamStateStore(StreamStateStore):
 
         return affected
 
-    def cleanup_before_block(
-        self, connection_name: str, table_name: str, network: str, before_block: int
-    ) -> None:
+    def cleanup_before_block(self, connection_name: str, table_name: str, network: str, before_block: int) -> None:
         """Remove old batches before a given block."""
         key = self._get_key(connection_name, table_name, network)
         batches = self._state.get(key, set())
@@ -444,15 +421,11 @@ class NullStreamStateStore(StreamStateStore):
     providing no resumability or idempotency guarantees.
     """
 
-    def is_processed(
-        self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]
-    ) -> bool:
+    def is_processed(self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]) -> bool:
         """Always return False (never skip processing)."""
         return False
 
-    def mark_processed(
-        self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]
-    ) -> None:
+    def mark_processed(self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]) -> None:
         """No-op."""
         pass
 
@@ -468,8 +441,6 @@ class NullStreamStateStore(StreamStateStore):
         """Return empty list (nothing to invalidate)."""
         return []
 
-    def cleanup_before_block(
-        self, connection_name: str, table_name: str, network: str, before_block: int
-    ) -> None:
+    def cleanup_before_block(self, connection_name: str, table_name: str, network: str, before_block: int) -> None:
         """No-op."""
         pass

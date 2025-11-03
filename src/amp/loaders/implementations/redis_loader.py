@@ -799,7 +799,9 @@ class RedisLoader(DataLoader[RedisConfig]):
                     # Get batch_id from the hash
                     batch_id_value = self.redis_client.hget(key, '_amp_batch_id')
                     if batch_id_value:
-                        batch_id_str = batch_id_value.decode('utf-8') if isinstance(batch_id_value, bytes) else str(batch_id_value)
+                        batch_id_str = (
+                            batch_id_value.decode('utf-8') if isinstance(batch_id_value, bytes) else str(batch_id_value)
+                        )
 
                         # Check if any of the batch IDs match affected batches
                         for batch_id in batch_id_str.split('|'):

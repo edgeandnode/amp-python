@@ -4,7 +4,6 @@ Core types for streaming data loading functionality.
 
 import json
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any, Dict, List, Optional
 
 import pyarrow as pa
@@ -157,12 +156,7 @@ class ResponseBatch:
         # Create empty batch for reorg notifications
         empty_batch = pa.record_batch([], schema=pa.schema([]))
         empty_metadata = BatchMetadata(ranges=[])
-        return cls(
-            data=empty_batch,
-            metadata=empty_metadata,
-            is_reorg=True,
-            invalidation_ranges=invalidation_ranges
-        )
+        return cls(data=empty_batch, metadata=empty_metadata, is_reorg=True, invalidation_ranges=invalidation_ranges)
 
 
 @dataclass
