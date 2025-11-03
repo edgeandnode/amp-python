@@ -536,7 +536,7 @@ class TestIcebergLoaderAdvanced:
             invalidation_ranges = [BlockRange(network='ethereum', start=100, end=200)]
 
             # Should not raise any errors
-            loader._handle_reorg(invalidation_ranges, 'test_reorg_empty')
+            loader._handle_reorg(invalidation_ranges, 'test_reorg_empty', 'test_connection')
 
             # Verify table still exists
             table_info = loader.get_table_info('test_reorg_empty')
@@ -557,7 +557,7 @@ class TestIcebergLoaderAdvanced:
             invalidation_ranges = [BlockRange(network='ethereum', start=150, end=250)]
 
             # Should log warning and not modify data
-            loader._handle_reorg(invalidation_ranges, 'test_reorg_no_meta')
+            loader._handle_reorg(invalidation_ranges, 'test_reorg_no_meta', 'test_connection')
 
             # Verify data unchanged
             table_info = loader.get_table_info('test_reorg_no_meta')
@@ -592,7 +592,7 @@ class TestIcebergLoaderAdvanced:
 
             # Reorg from block 155 - should delete rows 2 and 3
             invalidation_ranges = [BlockRange(network='ethereum', start=155, end=300)]
-            loader._handle_reorg(invalidation_ranges, 'test_reorg_single')
+            loader._handle_reorg(invalidation_ranges, 'test_reorg_single', 'test_connection')
 
             # Verify only first row remains
             # Since we can't easily query Iceberg tables in tests, we'll verify through table info
@@ -630,7 +630,7 @@ class TestIcebergLoaderAdvanced:
 
             # Reorg only ethereum from block 150
             invalidation_ranges = [BlockRange(network='ethereum', start=150, end=200)]
-            loader._handle_reorg(invalidation_ranges, 'test_reorg_multi')
+            loader._handle_reorg(invalidation_ranges, 'test_reorg_multi', 'test_connection')
 
             # Verify ethereum row 3 deleted, but polygon rows preserved
             table_info = loader.get_table_info('test_reorg_multi')
@@ -659,7 +659,7 @@ class TestIcebergLoaderAdvanced:
 
             # Reorg from block 150 - should delete rows where end >= 150
             invalidation_ranges = [BlockRange(network='ethereum', start=150, end=200)]
-            loader._handle_reorg(invalidation_ranges, 'test_reorg_overlap')
+            loader._handle_reorg(invalidation_ranges, 'test_reorg_overlap', 'test_connection')
 
             # Only first row should remain (ends at 110 < 150)
             table_info = loader.get_table_info('test_reorg_overlap')
@@ -693,7 +693,7 @@ class TestIcebergLoaderAdvanced:
                 BlockRange(network='ethereum', start=150, end=200),  # Affects row 4
                 BlockRange(network='polygon', start=250, end=300),  # Affects row 5
             ]
-            loader._handle_reorg(invalidation_ranges, 'test_reorg_multiple')
+            loader._handle_reorg(invalidation_ranges, 'test_reorg_multiple', 'test_connection')
 
             # Rows 1, 2, 3 should remain
             table_info = loader.get_table_info('test_reorg_multiple')
@@ -705,8 +705,6 @@ class TestIcebergLoaderAdvanced:
             BatchMetadata,
             BlockRange,
             ResponseBatch,
-            ResponseBatchType,
-            ResponseBatchWithReorg,
         )
 
         loader = IcebergLoader(iceberg_basic_config)
@@ -717,25 +715,20 @@ class TestIcebergLoaderAdvanced:
 
             data2 = pa.RecordBatch.from_pydict({'id': [3, 4], 'value': [300, 400]})
 
-            # Create response batches
-            response1 = ResponseBatchWithReorg(
-                batch_type=ResponseBatchType.DATA,
-                data=ResponseBatch(
-                    data=data1, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110)])
-                ),
+            # Create response batches using factory methods (with hashes for proper state management)
+            response1 = ResponseBatch.data_batch(
+                data=data1,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc123')])
             )
 
-            response2 = ResponseBatchWithReorg(
-                batch_type=ResponseBatchType.DATA,
-                data=ResponseBatch(
-                    data=data2, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160)])
-                ),
+            response2 = ResponseBatch.data_batch(
+                data=data2,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef456')])
             )
 
-            # Simulate reorg event
-            reorg_response = ResponseBatchWithReorg(
-                batch_type=ResponseBatchType.REORG,
-                invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)],
+            # Simulate reorg event using factory method
+            reorg_response = ResponseBatch.reorg_batch(
+                invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)]
             )
 
             # Process streaming data
