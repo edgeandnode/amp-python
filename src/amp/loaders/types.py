@@ -44,6 +44,15 @@ class LoadResult:
 
 
 @dataclass
+class LabelJoinConfig:
+    """Configuration for label joining operations"""
+
+    label_name: str
+    label_key_column: str
+    stream_key_column: str
+
+
+@dataclass
 class LoadConfig:
     """Configuration for data loading operations"""
 
