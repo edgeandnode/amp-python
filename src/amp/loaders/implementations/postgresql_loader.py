@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Union
 import pyarrow as pa
 from psycopg2.pool import ThreadedConnectionPool
 
+from ...streaming.state import BatchIdentifier
 from ...streaming.types import BlockRange
 from ..base import DataLoader, LoadMode
 from ._postgres_helpers import has_binary_columns, prepare_csv_data, prepare_insert_data
@@ -35,8 +36,8 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
     REQUIRES_SCHEMA_MATCH = False
     SUPPORTS_TRANSACTIONS = True
 
-    def __init__(self, config: Dict[str, Any]) -> None:
-        super().__init__(config)
+    def __init__(self, config: Dict[str, Any], label_manager=None) -> None:
+        super().__init__(config, label_manager=label_manager)
         self.pool: Optional[ThreadedConnectionPool] = None
 
     def _get_required_config_fields(self) -> list[str]:
@@ -84,6 +85,9 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
                 finally:
                     self.pool.putconn(conn)
 
+            # State store is initialized in base class with in-memory storage by default
+            # Future: Add database-backed persistent state store for PostgreSQL
+            # For now, in-memory state provides idempotency and resumability within a session
             self._is_connected = True
 
         except Exception as e:
@@ -109,6 +113,73 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
         finally:
             self.pool.putconn(conn)
 
+    def load_batch_transactional(
+        self,
+        batch: pa.RecordBatch,
+        table_name: str,
+        connection_name: str,
+        ranges: List[BlockRange],
+    ) -> int:
+        """
+        Load a batch with transactional exactly-once semantics using in-memory state.
+
+        This method uses the in-memory state store for duplicate detection,
+        then loads data. The state check happens outside the transaction for simplicity,
+        as the in-memory store provides session-level idempotency.
+
+        For persistent transactional semantics across restarts, a future enhancement
+        would be to implement a PostgreSQL-backed StreamStateStore.
+
+        Args:
+            batch: PyArrow RecordBatch to load
+            table_name: Target table name
+            connection_name: Connection identifier for tracking
+            ranges: Block ranges covered by this batch
+
+        Returns:
+            Number of rows loaded (0 if duplicate)
+        """
+        if not self.state_enabled:
+            raise ValueError('Transactional loading requires state management to be enabled')
+
+        # Convert ranges to batch identifiers
+        try:
+            batch_ids = [BatchIdentifier.from_block_range(br) for br in ranges]
+        except ValueError as e:
+            self.logger.warning(f'Cannot create batch identifiers: {e}. Loading without duplicate check.')
+            batch_ids = []
+
+        # Check if already processed (using in-memory state)
+        if batch_ids and self.state_store.is_processed(connection_name, table_name, batch_ids):
+            self.logger.info(
+                f'Batch already processed (ranges: {[f"{r.network}:{r.start}-{r.end}" for r in ranges]}), '
+                f'skipping (state check)'
+            )
+            return 0
+
+        # Load data
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                self._copy_arrow_data(cur, batch, table_name)
+                conn.commit()
+
+            # Mark as processed after successful load
+            if batch_ids:
+                self.state_store.mark_processed(connection_name, table_name, batch_ids)
+
+            self.logger.debug(
+                f'Batch load committed: {batch.num_rows} rows, '
+                f'ranges: {[f"{r.network}:{r.start}-{r.end}" for r in ranges]}'
+            )
+            return batch.num_rows
+
+        except Exception as e:
+            self.logger.error(f'Batch load failed: {e}')
+            raise
+        finally:
+            self.pool.putconn(conn)
+
     def _clear_table(self, table_name: str) -> None:
         """Clear table for overwrite mode"""
         conn = self.pool.getconn()
@@ -121,8 +192,12 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
 
     def _copy_arrow_data(self, cursor: Any, data: Union[pa.RecordBatch, pa.Table], table_name: str) -> None:
         """Copy Arrow data to PostgreSQL using optimal method based on data types."""
-        # Use INSERT for data with binary columns OR metadata columns (JSONB/range types need special handling)
-        if has_binary_columns(data.schema) or '_meta_block_ranges' in data.schema.names:
+        # Use INSERT for data with binary columns OR metadata columns
+        # Check for both old and new metadata column names for backward compatibility
+        has_metadata = ('_meta_block_ranges' in data.schema.names or
+                       '_amp_batch_id' in data.schema.names or
+                       '_amp_block_ranges' in data.schema.names)
+        if has_binary_columns(data.schema) or has_metadata:
             self._insert_arrow_data(cursor, data, table_name)
         else:
             self._csv_copy_arrow_data(cursor, data, table_name)
@@ -208,11 +283,9 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
 
                 # Build CREATE TABLE statement
                 columns = []
-                # Check if this is streaming data with metadata columns
-                has_metadata = any(field.name.startswith('_meta_') for field in schema)
 
                 for field in schema:
-                    # Skip generic metadata columns - we'll use _meta_block_range instead
+                    # Skip generic metadata columns - we'll use _meta_block_ranges instead
                     if field.name in ('_meta_range_start', '_meta_range_end'):
                         continue
                     # Special handling for JSONB metadata column
@@ -258,13 +331,20 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
                     # Quote column name for safety (important for blockchain field names)
                     columns.append(f'"{field.name}" {pg_type}{nullable}')
 
-                # Add metadata columns for streaming/reorg support if this is streaming data
-                # but only if they don't already exist in the schema
-                if has_metadata:
-                    schema_field_names = [field.name for field in schema]
-                    if '_meta_block_ranges' not in schema_field_names:
-                        # Use JSONB for multi-network block ranges with GIN index support
-                        columns.append('"_meta_block_ranges" JSONB')
+                # Always add metadata columns for streaming/reorg support
+                # This supports hybrid streaming (parallel catch-up → continuous streaming)
+                # where initial batches don't have metadata but later ones do
+                schema_field_names = [field.name for field in schema]
+
+                # Add compact batch_id column (primary metadata for fast reorg invalidation)
+                if '_amp_batch_id' not in schema_field_names:
+                    # Use TEXT for compact batch identifiers (16 hex chars per batch)
+                    # This column is optional and can be NULL for non-streaming loads
+                    columns.append('"_amp_batch_id" TEXT')
+
+                # Optionally add full metadata for debugging (if coming from base loader with store_full_metadata=True)
+                if '_amp_block_ranges' not in schema_field_names and '_amp_block_ranges' in [f.name for f in schema]:
+                    columns.append('"_amp_block_ranges" JSONB')
 
                 # Create the table - Fixed: use proper identifier quoting
                 create_sql = f"""
@@ -276,6 +356,17 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
                 self.logger.info(f"Creating table '{table_name}' with {len(columns)} columns")
                 cursor.execute(create_sql)
                 conn.commit()
+
+                # Create index on batch_id for fast reorg queries
+                if '_amp_batch_id' not in schema_field_names:
+                    try:
+                        index_sql = f'CREATE INDEX IF NOT EXISTS idx_{table_name}_amp_batch_id ON {table_name}("_amp_batch_id")'
+                        cursor.execute(index_sql)
+                        conn.commit()
+                        self.logger.debug(f"Created index on _amp_batch_id for table '{table_name}'")
+                    except Exception as e:
+                        self.logger.warning(f"Could not create index on _amp_batch_id: {e}")
+
                 self.logger.debug(f"Successfully created table '{table_name}'")
         except Exception as e:
             raise RuntimeError(f"Failed to create table '{table_name}': {str(e)}") from e
@@ -349,66 +440,68 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
 
         return type_mapping.get(pg_type, pa.string())  # Default to string
 
-    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str) -> None:
+    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str, connection_name: str) -> None:
         """
-        Handle blockchain reorganization by deleting affected rows using PostgreSQL JSONB operations.
+        Handle blockchain reorganization by deleting affected rows using batch IDs.
 
-        In blockchain reorgs, if block N gets reorganized, ALL blocks >= N become invalid
-        because the chain has forked from that point. This method deletes all data
-        from the reorg point forward for each affected network, including ranges that overlap.
+        This method uses the state_store to find affected batch IDs, then performs
+        fast indexed deletion using those IDs. This is much faster than JSON queries.
 
         Args:
             invalidation_ranges: List of block ranges to invalidate (reorg points)
             table_name: The table containing the data to invalidate
+            connection_name: Connection identifier for state lookup
         """
         if not invalidation_ranges:
             return
 
+        # Collect all affected batch IDs from state store
+        all_affected_batch_ids = []
+        for range_obj in invalidation_ranges:
+            # Get batch IDs that need to be deleted from state store
+            affected_batch_ids = self.state_store.invalidate_from_block(
+                connection_name, table_name, range_obj.network, range_obj.start
+            )
+            all_affected_batch_ids.extend(affected_batch_ids)
+
+        if not all_affected_batch_ids:
+            self.logger.info(f'No batches to delete for reorg in {table_name}')
+            return
+
+        # Delete rows using batch IDs (fast with index on _amp_batch_id)
         conn = self.pool.getconn()
         try:
             with conn.cursor() as cur:
-                # Build WHERE clause using JSONB operators for multi-network support
-                # For blockchain reorgs: if reorg starts at block N, delete all data that
-                # either starts >= N OR overlaps with N (range_end >= N)
-                where_conditions = []
-                params = []
+                # Build list of unique IDs to delete
+                unique_batch_ids = list(set(bid.unique_id for bid in all_affected_batch_ids))
 
-                for range_obj in invalidation_ranges:
-                    # Delete all data from reorg point forward for this network
-                    # Check if JSONB array contains any range where:
-                    # 1. Network matches
-                    # 2. Range end >= reorg start (catches both overlap and forward cases)
-                    where_conditions.append("""
-                        EXISTS (
-                            SELECT 1 FROM jsonb_array_elements("_meta_block_ranges") AS range_elem
-                            WHERE range_elem->>'network' = %s
-                            AND (range_elem->>'end')::int >= %s
-                        )
-                    """)
-                    params.extend(
-                        [
-                            range_obj.network,
-                            range_obj.start,  # Delete everything where range_end >= reorg_start
-                        ]
-                    )
+                # Delete in chunks to avoid query size limits
+                chunk_size = 1000
+                total_deleted = 0
 
-                # Combine conditions with OR (if any network has reorg, delete the row)
-                where_clause = ' OR '.join(where_conditions)
+                for i in range(0, len(unique_batch_ids), chunk_size):
+                    chunk = unique_batch_ids[i:i + chunk_size]
 
-                # Execute deletion
-                delete_sql = f'DELETE FROM {table_name} WHERE {where_clause}'
+                    # Use LIKE with ANY for multi-batch deletion (handles "|"-separated IDs)
+                    # This matches rows where _amp_batch_id contains any of the affected IDs
+                    delete_sql = f"""
+                        DELETE FROM {table_name}
+                        WHERE "_amp_batch_id" LIKE ANY(%s)
+                    """
+                    # Create patterns like '%batch_id%' to match multi-network batches
+                    patterns = [f'%{bid}%' for bid in chunk]
+                    cur.execute(delete_sql, (patterns,))
 
-                self.logger.info(
-                    f'Executing blockchain reorg deletion for {len(invalidation_ranges)} networks '
-                    f"in table '{table_name}'"
-                )
-                self.logger.debug(f'Delete SQL: {delete_sql} with params: {params}')
+                    deleted_count = cur.rowcount
+                    total_deleted += deleted_count
+                    self.logger.debug(f'Deleted {deleted_count} rows for reorg (chunk {i//chunk_size + 1})')
 
-                cur.execute(delete_sql, params)
-                deleted_rows = cur.rowcount
                 conn.commit()
 
-                self.logger.info(f"Blockchain reorg deleted {deleted_rows} rows from table '{table_name}'")
+                self.logger.info(
+                    f'Deleted {total_deleted} rows for reorg in {table_name} '
+                    f'({len(all_affected_batch_ids)} batch IDs)'
+                )
 
         except Exception as e:
             self.logger.error(f"Failed to handle blockchain reorg for table '{table_name}': {str(e)}")
