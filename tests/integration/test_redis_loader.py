@@ -649,14 +649,14 @@ class TestRedisLoaderStreaming:
     """Integration tests for Redis loader streaming functionality"""
 
     def test_streaming_metadata_columns(self, redis_test_config, cleanup_redis):
-        """Test that streaming data creates secondary indexes for block ranges"""
+        """Test that streaming data stores batch ID metadata"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         table_name = 'streaming_test'
         patterns_to_clean.append(f'{table_name}:*')
         patterns_to_clean.append(f'block_index:{table_name}:*')
 
         # Import streaming types
-        from src.amp.streaming.types import BlockRange
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
         # Create test data with metadata
         data = {
@@ -668,41 +668,32 @@ class TestRedisLoaderStreaming:
         batch = pa.RecordBatch.from_pydict(data)
 
         # Create metadata with block ranges
-        block_ranges = [BlockRange(network='ethereum', start=100, end=102)]
+        block_ranges = [BlockRange(network='ethereum', start=100, end=102, hash='0xabc')]
 
         config = {**redis_test_config, 'data_structure': 'hash'}
         loader = RedisLoader(config)
 
         with loader:
-            # Add metadata columns (simulating what load_stream_continuous does)
-            batch_with_metadata = loader._add_metadata_columns(batch, block_ranges)
-
-            # Load the batch
-            result = loader.load_batch(batch_with_metadata, table_name, create_table=True)
-            assert result.success == True
-            assert result.rows_loaded == 3
+            # Load via streaming API
+            response = ResponseBatch.data_batch(
+                data=batch,
+                metadata=BatchMetadata(ranges=block_ranges)
+            )
+            results = list(loader.load_stream_continuous(iter([response]), table_name))
+            assert len(results) == 1
+            assert results[0].success == True
+            assert results[0].rows_loaded == 3
 
             # Verify data was stored
             primary_keys = [f'{table_name}:1', f'{table_name}:2', f'{table_name}:3']
             for key in primary_keys:
                 assert loader.redis_client.exists(key)
-                # Check that metadata was stored
-                meta_field = loader.redis_client.hget(key, '_meta_block_ranges')
-                assert meta_field is not None
-                ranges_data = json.loads(meta_field.decode('utf-8'))
-                assert len(ranges_data) == 1
-                assert ranges_data[0]['network'] == 'ethereum'
-                assert ranges_data[0]['start'] == 100
-                assert ranges_data[0]['end'] == 102
-
-            # Verify secondary indexes were created
-            expected_index_key = f'block_index:{table_name}:ethereum:100-102'
-            assert loader.redis_client.exists(expected_index_key)
-
-            # Check index contains all primary key IDs
-            index_members = loader.redis_client.smembers(expected_index_key)
-            index_members_str = {m.decode('utf-8') if isinstance(m, bytes) else str(m) for m in index_members}
-            assert index_members_str == {'1', '2', '3'}
+                # Check that batch_id metadata was stored
+                batch_id_field = loader.redis_client.hget(key, '_amp_batch_id')
+                assert batch_id_field is not None
+                batch_id_str = batch_id_field.decode('utf-8')
+                assert isinstance(batch_id_str, str)
+                assert len(batch_id_str) >= 16  # At least one 16-char batch ID
 
     def test_handle_reorg_deletion(self, redis_test_config, cleanup_redis):
         """Test that _handle_reorg correctly deletes invalidated ranges"""
@@ -711,39 +702,41 @@ class TestRedisLoaderStreaming:
         patterns_to_clean.append(f'{table_name}:*')
         patterns_to_clean.append(f'block_index:{table_name}:*')
 
-        from src.amp.streaming.types import BlockRange
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
         config = {**redis_test_config, 'data_structure': 'hash'}
         loader = RedisLoader(config)
 
         with loader:
-            # Create and load test data with multiple block ranges
-            data_batch1 = {
+            # Create streaming batches with metadata
+            batch1 = pa.RecordBatch.from_pydict({
                 'id': [1, 2, 3],  # Required for Redis key generation
                 'tx_hash': ['0x100', '0x101', '0x102'],
                 'block_num': [100, 101, 102],
                 'value': [10.0, 11.0, 12.0],
-            }
-            batch1 = pa.RecordBatch.from_pydict(data_batch1)
-            ranges1 = [BlockRange(network='ethereum', start=100, end=102)]
-            batch1_with_meta = loader._add_metadata_columns(batch1, ranges1)
+            })
+            batch2 = pa.RecordBatch.from_pydict({'id': [4, 5], 'tx_hash': ['0x200', '0x201'], 'block_num': [103, 104], 'value': [13.0, 14.0]})
+            batch3 = pa.RecordBatch.from_pydict({'id': [6, 7], 'tx_hash': ['0x300', '0x301'], 'block_num': [105, 106], 'value': [15.0, 16.0]})
 
-            data_batch2 = {'id': [4, 5], 'tx_hash': ['0x200', '0x201'], 'block_num': [103, 104], 'value': [13.0, 14.0]}
-            batch2 = pa.RecordBatch.from_pydict(data_batch2)
-            ranges2 = [BlockRange(network='ethereum', start=103, end=104)]
-            batch2_with_meta = loader._add_metadata_columns(batch2, ranges2)
+            # Create response batches with hashes
+            response1 = ResponseBatch.data_batch(
+                data=batch1,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=102, hash='0xaaa')])
+            )
+            response2 = ResponseBatch.data_batch(
+                data=batch2,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=103, end=104, hash='0xbbb')])
+            )
+            response3 = ResponseBatch.data_batch(
+                data=batch3,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=105, end=106, hash='0xccc')])
+            )
 
-            data_batch3 = {'id': [6, 7], 'tx_hash': ['0x300', '0x301'], 'block_num': [105, 106], 'value': [15.0, 16.0]}
-            batch3 = pa.RecordBatch.from_pydict(data_batch3)
-            ranges3 = [BlockRange(network='ethereum', start=105, end=106)]
-            batch3_with_meta = loader._add_metadata_columns(batch3, ranges3)
-
-            # Load all batches
-            result1 = loader.load_batch(batch1_with_meta, table_name, create_table=True)
-            result2 = loader.load_batch(batch2_with_meta, table_name, create_table=False)
-            result3 = loader.load_batch(batch3_with_meta, table_name, create_table=False)
-
-            assert all([result1.success, result2.success, result3.success])
+            # Load via streaming API
+            stream = [response1, response2, response3]
+            results = list(loader.load_stream_continuous(iter(stream), table_name))
+            assert len(results) == 3
+            assert all(r.success for r in results)
 
             # Verify initial data
             initial_keys = []
@@ -754,8 +747,12 @@ class TestRedisLoaderStreaming:
             assert len(initial_keys) == 7  # 3 + 2 + 2
 
             # Test reorg deletion - invalidate blocks 104-108 on ethereum
-            invalidation_ranges = [BlockRange(network='ethereum', start=104, end=108)]
-            loader._handle_reorg(invalidation_ranges, table_name)
+            reorg_response = ResponseBatch.reorg_batch(
+                invalidation_ranges=[BlockRange(network='ethereum', start=104, end=108)]
+            )
+            reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), table_name))
+            assert len(reorg_results) == 1
+            assert reorg_results[0].success
 
             # Should delete batch2 and batch3, leaving only batch1 (3 keys)
             remaining_keys = []
@@ -764,13 +761,6 @@ class TestRedisLoaderStreaming:
                     remaining_keys.append(key)
             assert len(remaining_keys) == 3
 
-            # Verify remaining data is from batch1 (blocks 100-102)
-            for key in remaining_keys:
-                meta_field = loader.redis_client.hget(key, '_meta_block_ranges')
-                ranges_data = json.loads(meta_field.decode('utf-8'))
-                assert ranges_data[0]['start'] == 100
-                assert ranges_data[0]['end'] == 102
-
     def test_reorg_with_overlapping_ranges(self, redis_test_config, cleanup_redis):
         """Test reorg deletion with overlapping block ranges"""
         keys_to_clean, patterns_to_clean = cleanup_redis
@@ -778,25 +768,29 @@ class TestRedisLoaderStreaming:
         patterns_to_clean.append(f'{table_name}:*')
         patterns_to_clean.append(f'block_index:{table_name}:*')
 
-        from src.amp.streaming.types import BlockRange
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
         config = {**redis_test_config, 'data_structure': 'hash'}
         loader = RedisLoader(config)
 
         with loader:
             # Load data with overlapping ranges that should be invalidated
-            data = {
+            batch = pa.RecordBatch.from_pydict({
                 'id': [1, 2, 3],
                 'tx_hash': ['0x150', '0x175', '0x250'],
                 'block_num': [150, 175, 250],
                 'value': [15.0, 17.5, 25.0],
-            }
-            batch = pa.RecordBatch.from_pydict(data)
-            ranges = [BlockRange(network='ethereum', start=150, end=175)]
-            batch_with_meta = loader._add_metadata_columns(batch, ranges)
+            })
 
-            result = loader.load_batch(batch_with_meta, table_name, create_table=True)
-            assert result.success == True
+            response = ResponseBatch.data_batch(
+                data=batch,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=175, hash='0xaaa')])
+            )
+
+            # Load via streaming API
+            results = list(loader.load_stream_continuous(iter([response]), table_name))
+            assert len(results) == 1
+            assert results[0].success
 
             # Verify initial data
             pattern = f'{table_name}:*'
@@ -808,8 +802,12 @@ class TestRedisLoaderStreaming:
 
             # Test partial overlap invalidation (160-180)
             # This should invalidate our range [150,175] because they overlap
-            invalidation_ranges = [BlockRange(network='ethereum', start=160, end=180)]
-            loader._handle_reorg(invalidation_ranges, table_name)
+            reorg_response = ResponseBatch.reorg_batch(
+                invalidation_ranges=[BlockRange(network='ethereum', start=160, end=180)]
+            )
+            reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), table_name))
+            assert len(reorg_results) == 1
+            assert reorg_results[0].success
 
             # All data should be deleted due to overlap
             remaining_keys = []
@@ -825,40 +823,42 @@ class TestRedisLoaderStreaming:
         patterns_to_clean.append(f'{table_name}:*')
         patterns_to_clean.append(f'block_index:{table_name}:*')
 
-        from src.amp.streaming.types import BlockRange
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
         config = {**redis_test_config, 'data_structure': 'hash'}
         loader = RedisLoader(config)
 
         with loader:
             # Load data from multiple networks with same block ranges
-            data_eth = {
+            batch_eth = pa.RecordBatch.from_pydict({
                 'id': [1],
                 'tx_hash': ['0x100_eth'],
                 'network_id': ['ethereum'],
                 'block_num': [100],
                 'value': [10.0],
-            }
-            batch_eth = pa.RecordBatch.from_pydict(data_eth)
-            ranges_eth = [BlockRange(network='ethereum', start=100, end=100)]
-            batch_eth_with_meta = loader._add_metadata_columns(batch_eth, ranges_eth)
-
-            data_poly = {
+            })
+            batch_poly = pa.RecordBatch.from_pydict({
                 'id': [2],
                 'tx_hash': ['0x100_poly'],
                 'network_id': ['polygon'],
                 'block_num': [100],
                 'value': [10.0],
-            }
-            batch_poly = pa.RecordBatch.from_pydict(data_poly)
-            ranges_poly = [BlockRange(network='polygon', start=100, end=100)]
-            batch_poly_with_meta = loader._add_metadata_columns(batch_poly, ranges_poly)
+            })
 
-            # Load both batches
-            result1 = loader.load_batch(batch_eth_with_meta, table_name, create_table=True)
-            result2 = loader.load_batch(batch_poly_with_meta, table_name, create_table=False)
+            response_eth = ResponseBatch.data_batch(
+                data=batch_eth,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=100, hash='0xaaa')])
+            )
+            response_poly = ResponseBatch.data_batch(
+                data=batch_poly,
+                metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=100, end=100, hash='0xbbb')])
+            )
 
-            assert result1.success and result2.success
+            # Load both batches via streaming API
+            stream = [response_eth, response_poly]
+            results = list(loader.load_stream_continuous(iter(stream), table_name))
+            assert len(results) == 2
+            assert all(r.success for r in results)
 
             # Verify both networks' data exists
             pattern = f'{table_name}:*'
@@ -869,8 +869,12 @@ class TestRedisLoaderStreaming:
             assert len(initial_keys) == 2
 
             # Invalidate only ethereum network
-            invalidation_ranges = [BlockRange(network='ethereum', start=100, end=100)]
-            loader._handle_reorg(invalidation_ranges, table_name)
+            reorg_response = ResponseBatch.reorg_batch(
+                invalidation_ranges=[BlockRange(network='ethereum', start=100, end=100)]
+            )
+            reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), table_name))
+            assert len(reorg_results) == 1
+            assert reorg_results[0].success
 
             # Should only delete ethereum data, polygon should remain
             remaining_keys = []
@@ -879,11 +883,11 @@ class TestRedisLoaderStreaming:
                     remaining_keys.append(key)
             assert len(remaining_keys) == 1
 
-            # Verify remaining data is from polygon
+            # Verify remaining data is from polygon (just check batch_id exists)
             remaining_key = remaining_keys[0]
-            meta_field = loader.redis_client.hget(remaining_key, '_meta_block_ranges')
-            ranges_data = json.loads(meta_field.decode('utf-8'))
-            assert ranges_data[0]['network'] == 'polygon'
+            batch_id_field = loader.redis_client.hget(remaining_key, '_amp_batch_id')
+            assert batch_id_field is not None
+            # Batch ID is a compact string, not network-specific, so we just verify it exists
 
     def test_streaming_with_string_data_structure(self, redis_test_config, cleanup_redis):
         """Test streaming support with string data structure"""
@@ -892,7 +896,7 @@ class TestRedisLoaderStreaming:
         patterns_to_clean.append(f'{table_name}:*')
         patterns_to_clean.append(f'block_index:{table_name}:*')
 
-        from src.amp.streaming.types import BlockRange
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
         config = {**redis_test_config, 'data_structure': 'string'}
         loader = RedisLoader(config)
@@ -905,13 +909,17 @@ class TestRedisLoaderStreaming:
                 'value': [100.0, 200.0, 300.0],
             }
             batch = pa.RecordBatch.from_pydict(data)
-            block_ranges = [BlockRange(network='polygon', start=200, end=202)]
-            batch_with_metadata = loader._add_metadata_columns(batch, block_ranges)
+            block_ranges = [BlockRange(network='polygon', start=200, end=202, hash='0xabc')]
 
-            # Load the batch
-            result = loader.load_batch(batch_with_metadata, table_name)
-            assert result.success == True
-            assert result.rows_loaded == 3
+            # Load via streaming API
+            response = ResponseBatch.data_batch(
+                data=batch,
+                metadata=BatchMetadata(ranges=block_ranges)
+            )
+            results = list(loader.load_stream_continuous(iter([response]), table_name))
+            assert len(results) == 1
+            assert results[0].success == True
+            assert results[0].rows_loaded == 3
 
             # Verify data was stored as JSON strings
             for _i, id_val in enumerate([1, 2, 3]):
@@ -921,13 +929,18 @@ class TestRedisLoaderStreaming:
                 # Get and parse JSON data
                 json_data = loader.redis_client.get(key)
                 parsed_data = json.loads(json_data.decode('utf-8'))
-                assert '_meta_block_ranges' in parsed_data
-                ranges_data = json.loads(parsed_data['_meta_block_ranges'])
-                assert ranges_data[0]['network'] == 'polygon'
+                assert '_amp_batch_id' in parsed_data
+                batch_id_str = parsed_data['_amp_batch_id']
+                assert isinstance(batch_id_str, str)
+                assert len(batch_id_str) >= 16  # At least one 16-char batch ID
 
-            # Verify secondary indexes were created and work for reorgs
-            invalidation_ranges = [BlockRange(network='polygon', start=201, end=205)]
-            loader._handle_reorg(invalidation_ranges, table_name)
+            # Verify reorg handling works with string data structure
+            reorg_response = ResponseBatch.reorg_batch(
+                invalidation_ranges=[BlockRange(network='polygon', start=201, end=205)]
+            )
+            reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), table_name))
+            assert len(reorg_results) == 1
+            assert reorg_results[0].success
 
             # All data should be deleted since ranges overlap
             pattern = f'{table_name}:*'

@@ -64,21 +64,6 @@ def delta_partitioned_config(delta_test_env):
 
 
 @pytest.fixture
-def delta_temp_config(delta_test_env):
-    """Get temporary Delta Lake configuration with unique path"""
-    temp_path = str(Path(delta_test_env) / f'temp_table_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
-    return {
-        'table_path': temp_path,
-        'partition_by': ['year', 'month'],
-        'optimize_after_write': False,
-        'vacuum_after_write': False,
-        'schema_evolution': True,
-        'merge_schema': True,
-        'storage_options': {},
-    }
-
-
-@pytest.fixture
 def comprehensive_test_data():
     """Create comprehensive test data for Delta Lake testing"""
     base_date = datetime(2024, 1, 1)
@@ -555,7 +540,7 @@ class TestDeltaLakeLoaderAdvanced:
             invalidation_ranges = [BlockRange(network='ethereum', start=100, end=200)]
 
             # Should not raise any errors
-            loader._handle_reorg(invalidation_ranges, 'test_reorg_empty')
+            loader._handle_reorg(invalidation_ranges, 'test_reorg_empty', 'test_connection')
 
     def test_handle_reorg_no_metadata_column(self, delta_basic_config):
         """Test reorg handling when table lacks metadata column"""
@@ -580,87 +565,106 @@ class TestDeltaLakeLoaderAdvanced:
             invalidation_ranges = [BlockRange(network='ethereum', start=150, end=250)]
 
             # Should log warning and not modify data
-            loader._handle_reorg(invalidation_ranges, 'test_reorg_no_meta')
+            loader._handle_reorg(invalidation_ranges, 'test_reorg_no_meta', 'test_connection')
 
             # Verify data unchanged
             remaining_data = loader.query_table()
             assert remaining_data.num_rows == 3
 
-    def test_handle_reorg_single_network(self, delta_basic_config):
+    def test_handle_reorg_single_network(self, delta_temp_config):
         """Test reorg handling for single network data"""
-        from src.amp.streaming.types import BlockRange
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
-        loader = DeltaLakeLoader(delta_basic_config)
+        loader = DeltaLakeLoader(delta_temp_config)
 
         with loader:
-            # Create table with metadata
-            block_ranges = [
-                [{'network': 'ethereum', 'start': 100, 'end': 110}],
-                [{'network': 'ethereum', 'start': 150, 'end': 160}],
-                [{'network': 'ethereum', 'start': 200, 'end': 210}],
-            ]
+            # Create streaming batches with metadata
+            batch1 = pa.RecordBatch.from_pydict({'id': [1], 'block_num': [105], 'year': [2024], 'month': [1]})
+            batch2 = pa.RecordBatch.from_pydict({'id': [2], 'block_num': [155], 'year': [2024], 'month': [1]})
+            batch3 = pa.RecordBatch.from_pydict({'id': [3], 'block_num': [205], 'year': [2024], 'month': [1]})
 
-            data = pa.table(
-                {
-                    'id': [1, 2, 3],
-                    'block_num': [105, 155, 205],
-                    '_meta_block_ranges': [json.dumps(ranges) for ranges in block_ranges],
-                    'year': [2024, 2024, 2024],
-                    'month': [1, 1, 1],
-                }
+            # Create response batches with hashes
+            response1 = ResponseBatch.data_batch(
+                data=batch1,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc')])
+            )
+            response2 = ResponseBatch.data_batch(
+                data=batch2,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef')])
+            )
+            response3 = ResponseBatch.data_batch(
+                data=batch3,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=200, end=210, hash='0x123')])
             )
 
-            # Load initial data
-            result = loader.load_table(data, 'test_reorg_single', mode=LoadMode.OVERWRITE)
-            assert result.success
-            assert result.rows_loaded == 3
+            # Load via streaming API
+            stream = [response1, response2, response3]
+            results = list(loader.load_stream_continuous(iter(stream), 'test_reorg_single'))
+            assert len(results) == 3
+            assert all(r.success for r in results)
 
             # Verify all data exists
             initial_data = loader.query_table()
             assert initial_data.num_rows == 3
 
             # Reorg from block 155 - should delete rows 2 and 3
-            invalidation_ranges = [BlockRange(network='ethereum', start=155, end=300)]
-            loader._handle_reorg(invalidation_ranges, 'test_reorg_single')
+            reorg_response = ResponseBatch.reorg_batch(
+                invalidation_ranges=[BlockRange(network='ethereum', start=155, end=300)]
+            )
+            reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), 'test_reorg_single'))
+            assert len(reorg_results) == 1
+            assert reorg_results[0].success
+            assert reorg_results[0].is_reorg
 
             # Verify only first row remains
             remaining_data = loader.query_table()
             assert remaining_data.num_rows == 1
             assert remaining_data['id'][0].as_py() == 1
 
-    def test_handle_reorg_multi_network(self, delta_basic_config):
+    def test_handle_reorg_multi_network(self, delta_temp_config):
         """Test reorg handling preserves data from unaffected networks"""
-        from src.amp.streaming.types import BlockRange
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
-        loader = DeltaLakeLoader(delta_basic_config)
+        loader = DeltaLakeLoader(delta_temp_config)
 
         with loader:
-            # Create data from multiple networks
-            block_ranges = [
-                [{'network': 'ethereum', 'start': 100, 'end': 110}],
-                [{'network': 'polygon', 'start': 100, 'end': 110}],
-                [{'network': 'ethereum', 'start': 150, 'end': 160}],
-                [{'network': 'polygon', 'start': 150, 'end': 160}],
-            ]
+            # Create streaming batches from multiple networks
+            batch1 = pa.RecordBatch.from_pydict({'id': [1], 'network': ['ethereum'], 'year': [2024], 'month': [1]})
+            batch2 = pa.RecordBatch.from_pydict({'id': [2], 'network': ['polygon'], 'year': [2024], 'month': [1]})
+            batch3 = pa.RecordBatch.from_pydict({'id': [3], 'network': ['ethereum'], 'year': [2024], 'month': [1]})
+            batch4 = pa.RecordBatch.from_pydict({'id': [4], 'network': ['polygon'], 'year': [2024], 'month': [1]})
 
-            data = pa.table(
-                {
-                    'id': [1, 2, 3, 4],
-                    'network': ['ethereum', 'polygon', 'ethereum', 'polygon'],
-                    '_meta_block_ranges': [json.dumps(r) for r in block_ranges],
-                    'year': [2024, 2024, 2024, 2024],
-                    'month': [1, 1, 1, 1],
-                }
+            # Create response batches with network-specific ranges
+            response1 = ResponseBatch.data_batch(
+                data=batch1,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xaaa')])
+            )
+            response2 = ResponseBatch.data_batch(
+                data=batch2,
+                metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=100, end=110, hash='0xbbb')])
+            )
+            response3 = ResponseBatch.data_batch(
+                data=batch3,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xccc')])
+            )
+            response4 = ResponseBatch.data_batch(
+                data=batch4,
+                metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=150, end=160, hash='0xddd')])
             )
 
-            # Load initial data
-            result = loader.load_table(data, 'test_reorg_multi', mode=LoadMode.OVERWRITE)
-            assert result.success
-            assert result.rows_loaded == 4
+            # Load via streaming API
+            stream = [response1, response2, response3, response4]
+            results = list(loader.load_stream_continuous(iter(stream), 'test_reorg_multi'))
+            assert len(results) == 4
+            assert all(r.success for r in results)
 
             # Reorg only ethereum from block 150
-            invalidation_ranges = [BlockRange(network='ethereum', start=150, end=200)]
-            loader._handle_reorg(invalidation_ranges, 'test_reorg_multi')
+            reorg_response = ResponseBatch.reorg_batch(
+                invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)]
+            )
+            reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), 'test_reorg_multi'))
+            assert len(reorg_results) == 1
+            assert reorg_results[0].success
 
             # Verify ethereum row 3 deleted, but polygon rows preserved
             remaining_data = loader.query_table()
@@ -668,69 +672,92 @@ class TestDeltaLakeLoaderAdvanced:
             remaining_ids = sorted([id.as_py() for id in remaining_data['id']])
             assert remaining_ids == [1, 2, 4]  # Row 3 deleted
 
-    def test_handle_reorg_overlapping_ranges(self, delta_basic_config):
+    def test_handle_reorg_overlapping_ranges(self, delta_temp_config):
         """Test reorg with overlapping block ranges"""
-        from src.amp.streaming.types import BlockRange
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
-        loader = DeltaLakeLoader(delta_basic_config)
+        loader = DeltaLakeLoader(delta_temp_config)
 
         with loader:
-            # Create data with overlapping ranges
-            block_ranges = [
-                [{'network': 'ethereum', 'start': 90, 'end': 110}],  # Overlaps with reorg
-                [{'network': 'ethereum', 'start': 140, 'end': 160}],  # Overlaps with reorg
-                [{'network': 'ethereum', 'start': 170, 'end': 190}],  # After reorg
-            ]
+            # Create streaming batches with different ranges
+            batch1 = pa.RecordBatch.from_pydict({'id': [1], 'year': [2024], 'month': [1]})
+            batch2 = pa.RecordBatch.from_pydict({'id': [2], 'year': [2024], 'month': [1]})
+            batch3 = pa.RecordBatch.from_pydict({'id': [3], 'year': [2024], 'month': [1]})
 
-            data = pa.table(
-                {
-                    'id': [1, 2, 3],
-                    '_meta_block_ranges': [json.dumps(ranges) for ranges in block_ranges],
-                    'year': [2024, 2024, 2024],
-                    'month': [1, 1, 1],
-                }
+            # Batch 1: 90-110 (ends before reorg start of 150)
+            # Batch 2: 140-160 (overlaps with reorg)
+            # Batch 3: 170-190 (after reorg, but should be deleted as 170 >= 150)
+            response1 = ResponseBatch.data_batch(
+                data=batch1,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=90, end=110, hash='0xaaa')])
+            )
+            response2 = ResponseBatch.data_batch(
+                data=batch2,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=140, end=160, hash='0xbbb')])
+            )
+            response3 = ResponseBatch.data_batch(
+                data=batch3,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=170, end=190, hash='0xccc')])
             )
 
-            # Load initial data
-            result = loader.load_table(data, 'test_reorg_overlap', mode=LoadMode.OVERWRITE)
-            assert result.success
-            assert result.rows_loaded == 3
+            # Load via streaming API
+            stream = [response1, response2, response3]
+            results = list(loader.load_stream_continuous(iter(stream), 'test_reorg_overlap'))
+            assert len(results) == 3
+            assert all(r.success for r in results)
 
-            # Reorg from block 150 - should delete rows where end >= 150
-            invalidation_ranges = [BlockRange(network='ethereum', start=150, end=200)]
-            loader._handle_reorg(invalidation_ranges, 'test_reorg_overlap')
+            # Reorg from block 150 - should delete batches 2 and 3
+            reorg_response = ResponseBatch.reorg_batch(
+                invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)]
+            )
+            reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), 'test_reorg_overlap'))
+            assert len(reorg_results) == 1
+            assert reorg_results[0].success
 
             # Only first row should remain (ends at 110 < 150)
             remaining_data = loader.query_table()
             assert remaining_data.num_rows == 1
             assert remaining_data['id'][0].as_py() == 1
 
-    def test_handle_reorg_version_history(self, delta_basic_config):
+    def test_handle_reorg_version_history(self, delta_temp_config):
         """Test that reorg creates proper version history in Delta Lake"""
-        from src.amp.streaming.types import BlockRange
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
-        loader = DeltaLakeLoader(delta_basic_config)
+        loader = DeltaLakeLoader(delta_temp_config)
 
         with loader:
-            # Create initial data
-            data = pa.table(
-                {
-                    'id': [1, 2, 3],
-                    '_meta_block_ranges': [
-                        json.dumps([{'network': 'ethereum', 'start': i * 50, 'end': i * 50 + 10}]) for i in range(3)
-                    ],
-                    'year': [2024, 2024, 2024],
-                    'month': [1, 1, 1],
-                }
+            # Create streaming batches
+            batch1 = pa.RecordBatch.from_pydict({'id': [1], 'year': [2024], 'month': [1]})
+            batch2 = pa.RecordBatch.from_pydict({'id': [2], 'year': [2024], 'month': [1]})
+            batch3 = pa.RecordBatch.from_pydict({'id': [3], 'year': [2024], 'month': [1]})
+
+            response1 = ResponseBatch.data_batch(
+                data=batch1,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=0, end=10, hash='0xaaa')])
+            )
+            response2 = ResponseBatch.data_batch(
+                data=batch2,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=50, end=60, hash='0xbbb')])
+            )
+            response3 = ResponseBatch.data_batch(
+                data=batch3,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xccc')])
             )
 
-            # Load initial data
-            loader.load_table(data, 'test_reorg_history', mode=LoadMode.OVERWRITE)
+            # Load via streaming API
+            stream = [response1, response2, response3]
+            results = list(loader.load_stream_continuous(iter(stream), 'test_reorg_history'))
+            assert len(results) == 3
+
             initial_version = loader._delta_table.version()
 
             # Perform reorg
-            invalidation_ranges = [BlockRange(network='ethereum', start=50, end=200)]
-            loader._handle_reorg(invalidation_ranges, 'test_reorg_history')
+            reorg_response = ResponseBatch.reorg_batch(
+                invalidation_ranges=[BlockRange(network='ethereum', start=50, end=200)]
+            )
+            reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), 'test_reorg_history'))
+            assert len(reorg_results) == 1
+            assert reorg_results[0].success
 
             # Check that version increased
             final_version = loader._delta_table.version()
@@ -748,8 +775,6 @@ class TestDeltaLakeLoaderAdvanced:
             BatchMetadata,
             BlockRange,
             ResponseBatch,
-            ResponseBatchType,
-            ResponseBatchWithReorg,
         )
 
         loader = DeltaLakeLoader(delta_temp_config)
@@ -764,25 +789,20 @@ class TestDeltaLakeLoaderAdvanced:
                 {'id': [3, 4], 'value': [300, 400], 'year': [2024, 2024], 'month': [1, 1]}
             )
 
-            # Create response batches
-            response1 = ResponseBatchWithReorg(
-                batch_type=ResponseBatchType.DATA,
-                data=ResponseBatch(
-                    data=data1, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110)])
-                ),
+            # Create response batches using factory methods (with hashes for proper state management)
+            response1 = ResponseBatch.data_batch(
+                data=data1,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc123')])
             )
 
-            response2 = ResponseBatchWithReorg(
-                batch_type=ResponseBatchType.DATA,
-                data=ResponseBatch(
-                    data=data2, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160)])
-                ),
+            response2 = ResponseBatch.data_batch(
+                data=data2,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef456')])
             )
 
-            # Simulate reorg event
-            reorg_response = ResponseBatchWithReorg(
-                batch_type=ResponseBatchType.REORG,
-                invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)],
+            # Simulate reorg event using factory method
+            reorg_response = ResponseBatch.reorg_batch(
+                invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)]
             )
 
             # Process streaming data
