@@ -34,10 +34,10 @@ class LoaderRegistry:
         return cls._loaders[name]
 
     @classmethod
-    def create_loader(cls, name: str, config: Dict[str, Any]) -> DataLoader:
+    def create_loader(cls, name: str, config: Dict[str, Any], label_manager=None) -> DataLoader:
         """Create a loader instance"""
         loader_class = cls.get_loader_class(name)
-        return loader_class(config)
+        return loader_class(config, label_manager=label_manager)
 
     @classmethod
     def get_available_loaders(cls) -> List[str]:
@@ -97,8 +97,8 @@ def get_loader_class(name: str) -> Type[DataLoader]:
     return LoaderRegistry.get_loader_class(name)
 
 
-def create_loader(name: str, config: Dict[str, Any]) -> DataLoader:
-    return LoaderRegistry.create_loader(name, config)
+def create_loader(name: str, config: Dict[str, Any], label_manager=None) -> DataLoader:
+    return LoaderRegistry.create_loader(name, config, label_manager=label_manager)
 
 
 def get_available_loaders() -> List[str]:

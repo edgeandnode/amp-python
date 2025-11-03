@@ -23,7 +23,7 @@ Usage:
 
 from .base import DataLoader
 from .registry import LoaderRegistry, create_loader, get_available_loaders, get_loader_class
-from .types import LoadConfig, LoadMode, LoadResult
+from .types import LabelJoinConfig, LoadConfig, LoadMode, LoadResult
 
 # Trigger auto-discovery on import
 LoaderRegistry._ensure_auto_discovery()
@@ -32,6 +32,7 @@ __all__ = [
     'DataLoader',
     'LoadResult',
     'LoadConfig',
+    'LabelJoinConfig',
     'LoadMode',
     'LoaderRegistry',
     'get_loader_class',
