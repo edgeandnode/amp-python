@@ -12,8 +12,6 @@ from src.amp.streaming.types import (
     BatchMetadata,
     BlockRange,
     ResponseBatch,
-    ResponseBatchType,
-    ResponseBatchWithReorg,
     ResumeWatermark,
 )
 
@@ -116,6 +114,71 @@ class TestBlockRange:
         assert br2.start == br.start
         assert br2.end == br.end
 
+    def test_serialization_with_hashes(self):
+        """Test serialization with hash and prev_hash fields"""
+        br = BlockRange(
+            network='ethereum',
+            start=100,
+            end=200,
+            hash='0xabc123',
+            prev_hash='0xdef456',
+        )
+
+        # To dict
+        data = br.to_dict()
+        assert data['network'] == 'ethereum'
+        assert data['start'] == 100
+        assert data['end'] == 200
+        assert data['hash'] == '0xabc123'
+        assert data['prev_hash'] == '0xdef456'
+
+        # From dict
+        br2 = BlockRange.from_dict(data)
+        assert br2.network == br.network
+        assert br2.start == br.start
+        assert br2.end == br.end
+        assert br2.hash == '0xabc123'
+        assert br2.prev_hash == '0xdef456'
+
+    def test_from_dict_server_format(self):
+        """Test parsing server format with 'numbers' dict"""
+        server_data = {
+            'numbers': {'start': 100, 'end': 200},
+            'network': 'ethereum',
+            'hash': '0xabc123',
+            'prev_hash': '0xdef456',
+        }
+
+        br = BlockRange.from_dict(server_data)
+        assert br.network == 'ethereum'
+        assert br.start == 100
+        assert br.end == 200
+        assert br.hash == '0xabc123'
+        assert br.prev_hash == '0xdef456'
+
+    def test_merge_with_preserves_hashes(self):
+        """Test that merging ranges preserves hash information correctly"""
+        br1 = BlockRange(
+            network='ethereum',
+            start=100,
+            end=200,
+            hash='0xold',
+            prev_hash='0xolder',
+        )
+        br2 = BlockRange(
+            network='ethereum',
+            start=150,
+            end=300,
+            hash='0xnew',
+            prev_hash='0xold',
+        )
+
+        merged = br1.merge_with(br2)
+        assert merged.start == 100
+        assert merged.end == 300
+        assert merged.hash == '0xnew'  # Takes hash from range with higher end block
+        assert merged.prev_hash == '0xolder'  # Keeps original (first) range's prev_hash
+
 
 @pytest.mark.unit
 class TestBatchMetadata:
@@ -171,6 +234,45 @@ class TestBatchMetadata:
         assert len(bm.ranges) == 0
         assert 'parse_error' in bm.extra
 
+    def test_from_flight_data_with_ranges_complete(self):
+        """Test parsing metadata with ranges_complete flag"""
+        metadata_dict = {
+            'ranges': [
+                {'network': 'ethereum', 'start': 100, 'end': 200, 'hash': '0xabc'},
+            ],
+            'ranges_complete': True,
+        }
+        metadata_bytes = json.dumps(metadata_dict).encode('utf-8')
+
+        bm = BatchMetadata.from_flight_data(metadata_bytes)
+
+        assert len(bm.ranges) == 1
+        assert bm.ranges_complete == True
+        assert bm.ranges[0].hash == '0xabc'
+
+    def test_from_flight_data_ranges_complete_false(self):
+        """Test parsing metadata with ranges_complete=false"""
+        metadata_dict = {
+            'ranges': [{'network': 'ethereum', 'start': 100, 'end': 200}],
+            'ranges_complete': False,
+        }
+        metadata_bytes = json.dumps(metadata_dict).encode('utf-8')
+
+        bm = BatchMetadata.from_flight_data(metadata_bytes)
+
+        assert bm.ranges_complete == False
+
+    def test_from_flight_data_ranges_complete_default(self):
+        """Test that ranges_complete defaults to False if not in metadata"""
+        metadata_dict = {
+            'ranges': [{'network': 'ethereum', 'start': 100, 'end': 200}],
+        }
+        metadata_bytes = json.dumps(metadata_dict).encode('utf-8')
+
+        bm = BatchMetadata.from_flight_data(metadata_bytes)
+
+        assert bm.ranges_complete == False
+
 
 @pytest.mark.unit
 class TestResponseBatch:
@@ -205,34 +307,33 @@ class TestResponseBatch:
 
 
 @pytest.mark.unit
-class TestResponseBatchWithReorg:
-    """Test ResponseBatchWithReorg factory methods and properties"""
+class TestResponseBatch:
+    """Test ResponseBatch factory methods and properties"""
 
     def test_data_batch_creation(self):
         """Test creating a data batch response"""
         data = pa.record_batch([pa.array([1])], names=['id'])
-        metadata = BatchMetadata(ranges=[])
-        batch = ResponseBatch(data=data, metadata=metadata)
+        metadata = BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=200)])
 
-        response = ResponseBatchWithReorg.data_batch(batch)
+        response = ResponseBatch.data_batch(data=data, metadata=metadata)
 
-        assert response.batch_type == ResponseBatchType.DATA
-        assert response.is_data == True
         assert response.is_reorg == False
-        assert response.data == batch
+        assert response.data == data
+        assert response.metadata == metadata
         assert response.invalidation_ranges is None
+        assert response.num_rows == 1
+        assert response.networks == ['ethereum']
 
     def test_reorg_batch_creation(self):
         """Test creating a reorg notification response"""
         ranges = [BlockRange(network='ethereum', start=100, end=200), BlockRange(network='polygon', start=50, end=150)]
 
-        response = ResponseBatchWithReorg.reorg_batch(ranges)
+        response = ResponseBatch.reorg_batch(invalidation_ranges=ranges)
 
-        assert response.batch_type == ResponseBatchType.REORG
-        assert response.is_data == False
         assert response.is_reorg == True
-        assert response.data is None
+        assert response.data.num_rows == 0  # Empty batch for reorg
         assert response.invalidation_ranges == ranges
+        assert response.num_rows == 0
 
 
 @pytest.mark.unit
