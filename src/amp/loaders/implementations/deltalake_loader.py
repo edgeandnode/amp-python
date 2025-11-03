@@ -707,7 +707,8 @@ class DeltaLakeLoader(DataLoader[DeltaStorageConfig]):
                 # Overwrite the table with filtered data
                 self.logger.info(
                     f'Executing blockchain reorg deletion for {len(invalidation_ranges)} networks '
-                    f'in Delta Lake table. Deleting {deleted_count} rows affected by {len(all_affected_batch_ids)} batches.'
+                    f'in Delta Lake table. Deleting {deleted_count} rows affected by '
+                    f'{len(all_affected_batch_ids)} batches.'
                 )
 
                 # Use overwrite mode to replace table contents

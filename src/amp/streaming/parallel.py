@@ -408,8 +408,9 @@ class ParallelStreamExecutor:
                         total_gap_blocks = sum(br.end - br.start + 1 for br in gap_ranges)
 
                         log_message = (
-                            f'Resume optimization: Detected {len(gap_ranges)} gap(s) totaling {total_gap_blocks:,} blocks. '
-                            f'Will prioritize gap filling before processing remaining historical range.'
+                            f'Resume optimization: Detected {len(gap_ranges)} gap(s) totaling '
+                            f'{total_gap_blocks:,} blocks. Will prioritize gap filling before '
+                            f'processing remaining historical range.'
                         )
 
                         return config, resume_watermark, log_message
