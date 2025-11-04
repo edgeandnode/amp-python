@@ -41,6 +41,14 @@ and the `amp` package. For example, you can run the `execute_query` app with the
 uv run apps/execute_query.py
 ```
 
+## Documentation
+
+### Features
+- **[Parallel Streaming Usage Guide](docs/parallel_streaming_usage.md)** - User guide for high-throughput parallel data loading
+- **[Parallel Streaming Design](docs/parallel_streaming.md)** - Technical design documentation for parallel streaming architecture
+- **[Reorganization Handling](docs/reorg_handling.md)** - Guide for handling blockchain reorganizations
+- **[Implementing Data Loaders](docs/implementing_data_loaders.md)** - Guide for creating custom data loaders
+
 # Self-hosted Amp server
 
 In order to operate a local Amp server you will need to have the files 
@@ -132,6 +140,19 @@ make test-deltalake   # Delta Lake tests
 make test-iceberg     # Iceberg tests
 make test-lmdb        # LMDB tests
 ```
+
+## Feature-Specific Tests
+
+Run tests for specific features:
+```bash
+make test-parallel-streaming   # Parallel streaming integration tests (requires Amp server)
+```
+
+**Note**: Parallel streaming tests require an Amp server. Configure using environment variables in `.test.env`:
+- `AMP_SERVER_URL` - Amp server URL (e.g., `grpc://your-server:80`)
+- `AMP_TEST_TABLE` - Source table name (e.g., `eth_firehose.blocks`)
+- `AMP_TEST_BLOCK_COLUMN` - Block column name (default: `block_num`)
+- `AMP_TEST_MAX_BLOCK` - Max block for testing (default: `1000`)
 
 # Linting and formatting
 

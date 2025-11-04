@@ -182,7 +182,8 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
                     pa.uint8(): 'SMALLINT',
                     pa.uint16(): 'INTEGER',
                     pa.uint32(): 'BIGINT',
-                    pa.uint64(): 'BIGINT',
+                    # Use NUMERIC for uint64 to handle values > 2^63-1 (common in blockchain data)
+                    pa.uint64(): 'NUMERIC(20,0)',
                     # Floating point types
                     pa.float32(): 'REAL',
                     pa.float64(): 'DOUBLE PRECISION',

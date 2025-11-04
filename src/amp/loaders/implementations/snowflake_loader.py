@@ -163,8 +163,12 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                 'Please use APPEND mode or manually truncate/drop the table before loading.'
             )
 
+        # Table creation is now handled by base class or pre-flight creation in parallel mode
+        # For pandas loading, we skip manual table creation and let write_pandas handle it
         if create_table and table_name.upper() not in self._created_tables:
-            self._create_table_from_schema(batch.schema, table_name)
+            # For pandas, skip table creation - write_pandas will handle it
+            if self.loading_method != 'pandas':
+                self._create_table_from_schema(batch.schema, table_name)
             self._created_tables.add(table_name.upper())
 
         if self.use_stage:

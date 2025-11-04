@@ -44,6 +44,11 @@ test-lmdb:
 	@echo "⚡ Running LMDB tests..."
 	$(PYTHON) pytest tests/ -m "lmdb" -v --log-cli-level=ERROR
 
+# Parallel streaming integration tests
+test-parallel-streaming:
+	@echo "⚡ Running parallel streaming integration tests..."
+	$(PYTHON) pytest tests/integration/test_parallel_streaming.py -v -s --log-cli-level=INFO
+
 # Performance tests
 test-performance:
 	@echo "🏇 Running performance tests..."
@@ -109,16 +114,17 @@ clean:
 # Show available commands
 help:
 	@echo "Available commands:"
-	@echo "  make setup            - Setup development environment"
-	@echo "  make test-unit        - Run unit tests (fast)"
-	@echo "  make test-integration - Run integration tests"
-	@echo "  make test-all         - Run all tests with coverage"
-	@echo "  make test-postgresql  - Run PostgreSQL tests"
-	@echo "  make test-redis       - Run Redis tests"
-	@echo "  make test-snowflake   - Run Snowflake tests"
-	@echo "  make test-performance - Run performance tests"
-	@echo "  make lint             - Lint code with ruff"
-	@echo "  make format           - Format code with ruff"
-	@echo "  make test-setup       - Start test databases"
-	@echo "  make test-cleanup     - Stop test databases"
-	@echo "  make clean            - Clean test artifacts"
+	@echo "  make setup                    - Setup development environment"
+	@echo "  make test-unit                - Run unit tests (fast)"
+	@echo "  make test-integration         - Run integration tests"
+	@echo "  make test-parallel-streaming  - Run parallel streaming integration tests"
+	@echo "  make test-all                 - Run all tests with coverage"
+	@echo "  make test-postgresql          - Run PostgreSQL tests"
+	@echo "  make test-redis               - Run Redis tests"
+	@echo "  make test-snowflake           - Run Snowflake tests"
+	@echo "  make test-performance         - Run performance tests"
+	@echo "  make lint                     - Lint code with ruff"
+	@echo "  make format                   - Format code with ruff"
+	@echo "  make test-setup               - Start test databases"
+	@echo "  make test-cleanup             - Stop test databases"
+	@echo "  make clean                    - Clean test artifacts"

@@ -7,9 +7,15 @@ from pyarrow import flight
 
 from . import FlightSql_pb2
 from .config.connection_manager import ConnectionManager
-from .loaders.base import LoadConfig, LoadMode, LoadResult
 from .loaders.registry import create_loader, get_available_loaders
-from .streaming import ReorgAwareStream, ResumeWatermark, StreamingResultIterator
+from .loaders.types import LoadConfig, LoadMode, LoadResult
+from .streaming import (
+    ParallelConfig,
+    ParallelStreamExecutor,
+    ReorgAwareStream,
+    ResumeWatermark,
+    StreamingResultIterator,
+)
 
 
 class QueryBuilder:
@@ -54,6 +60,10 @@ class QueryBuilder:
             return self.client.query_and_load_streaming(
                 query=streaming_query, destination=destination, connection_name=connection, config=config, **kwargs
             )
+
+        # Validate that parallel_config is only used with stream=True
+        if kwargs.get('parallel_config'):
+            raise ValueError('parallel_config requires stream=True')
 
         # Default to batch streaming (read_all=False) for memory efficiency
         kwargs.setdefault('read_all', False)
@@ -228,7 +238,13 @@ class Client:
         except Exception as e:
             self.logger.error(f'Failed to load table: {e}')
             return LoadResult(
-                rows_loaded=0, duration=0.0, table_name=table_name, loader_type=loader, success=False, error=str(e)
+                rows_loaded=0,
+                duration=0.0,
+                ops_per_second=0.0,
+                table_name=table_name,
+                loader_type=loader,
+                success=False,
+                error=str(e),
             )
 
     def _load_stream(
@@ -248,7 +264,13 @@ class Client:
         except Exception as e:
             self.logger.error(f'Failed to load stream: {e}')
             yield LoadResult(
-                rows_loaded=0, duration=0.0, table_name=table_name, loader_type=loader, success=False, error=str(e)
+                rows_loaded=0,
+                duration=0.0,
+                ops_per_second=0.0,
+                table_name=table_name,
+                loader_type=loader,
+                success=False,
+                error=str(e),
             )
 
     def query_and_load_streaming(
@@ -259,6 +281,7 @@ class Client:
         config: Optional[Dict[str, Any]] = None,
         with_reorg_detection: bool = True,
         resume_watermark: Optional[ResumeWatermark] = None,
+        parallel_config: Optional[ParallelConfig] = None,
         **kwargs,
     ) -> Iterator[LoadResult]:
         """
@@ -271,6 +294,7 @@ class Client:
             config: Inline configuration dict (alternative to named connection)
             with_reorg_detection: Enable blockchain reorganization detection (default: True)
             resume_watermark: Optional watermark to resume streaming from a specific point
+            parallel_config: Configuration for parallel execution (enables parallel mode if provided)
             **kwargs: Additional load options
 
         Returns:
@@ -279,6 +303,21 @@ class Client:
         Yields:
             LoadResult for each batch loaded or reorg event detected
         """
+        # Handle parallel streaming mode (enabled by presence of parallel_config)
+        if parallel_config:
+            executor = ParallelStreamExecutor(self, parallel_config)
+
+            load_config_dict = {
+                'batch_size': kwargs.pop('batch_size', 10000),
+                'mode': kwargs.pop('mode', 'append'),
+                'create_table': kwargs.pop('create_table', True),
+                'schema_evolution': kwargs.pop('schema_evolution', False),
+                **{k: v for k, v in kwargs.items() if k in ['max_retries', 'retry_delay']},
+            }
+
+            yield from executor.execute_parallel_stream(query, destination, connection_name, load_config_dict)
+            return
+
         # Get connection configuration and determine loader type
         if connection_name:
             try:
