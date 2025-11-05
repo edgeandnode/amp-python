@@ -54,10 +54,8 @@ htmlcov/
 uv.lock
 
 # Data directories (local development)
-data/*.csv
-data/*.parquet
-data/*.db
-data/*.lmdb
+# Large datasets should be downloaded on-demand or mounted via ConfigMaps
+data/
 
 # Build artifacts
 *.tar.gz

@@ -68,8 +68,10 @@ COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
 # Copy application code
 COPY --chown=amp:amp src/ ./src/
 COPY --chown=amp:amp apps/ ./apps/
-COPY --chown=amp:amp data/ ./data/
 COPY --chown=amp:amp pyproject.toml README.md ./
+
+# Note: /data directory is created but empty by default
+# Mount data files at runtime using Kubernetes ConfigMaps or volumes
 
 # Install the amp package in the system Python (NOT editable for Docker)
 RUN uv pip install --system --no-cache .

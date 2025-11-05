@@ -7,7 +7,6 @@ on:
     paths:
       - 'src/**'
       - 'apps/**'
-      - 'data/**'
       - 'Dockerfile*'
       - 'pyproject.toml'
       - '.github/workflows/docker-publish.yml'
