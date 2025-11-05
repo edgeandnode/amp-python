@@ -796,8 +796,23 @@ class RedisLoader(DataLoader[RedisConfig]):
                     if key_str.startswith('block_index:'):
                         continue
 
-                    # Get batch_id from the hash
-                    batch_id_value = self.redis_client.hget(key, '_amp_batch_id')
+                    # Get batch_id - handle both hash and string data structures
+                    batch_id_value = None
+                    if self.config.data_structure == 'string':
+                        # For string data structure, parse JSON to get _amp_batch_id
+                        value = self.redis_client.get(key)
+                        if value:
+                            try:
+                                import json
+
+                                data = json.loads(value.decode('utf-8') if isinstance(value, bytes) else value)
+                                batch_id_value = data.get('_amp_batch_id')
+                            except (json.JSONDecodeError, KeyError):
+                                pass
+                    else:
+                        # For hash data structure, use HGET
+                        batch_id_value = self.redis_client.hget(key, '_amp_batch_id')
+
                     if batch_id_value:
                         batch_id_str = (
                             batch_id_value.decode('utf-8') if isinstance(batch_id_value, bytes) else str(batch_id_value)
