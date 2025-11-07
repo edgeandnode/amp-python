@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: test test-unit test-integration test-all clean setup lint format
+.PHONY: test test-unit test-integration test-all clean setup lint format generate-models
 
 # Use UV for all commands
 PYTHON = uv run --env-file .test.env
@@ -63,6 +63,11 @@ format:
 	@echo "✨ Formatting code..."
 	$(PYTHON) ruff format .
 
+# Generate Pydantic models from OpenAPI spec
+generate-models:
+	@echo "🏗️  Generating Pydantic models from OpenAPI spec..."
+	$(PYTHON) python scripts/generate_models.py
+
 # Setup development environment
 setup:
 	@echo "🚀 Setting up development environment..."
@@ -115,6 +120,7 @@ clean:
 help:
 	@echo "Available commands:"
 	@echo "  make setup                    - Setup development environment"
+	@echo "  make generate-models          - Generate Pydantic models from OpenAPI spec"
 	@echo "  make test-unit                - Run unit tests (fast)"
 	@echo "  make test-integration         - Run integration tests"
 	@echo "  make test-parallel-streaming  - Run parallel streaming integration tests"
