@@ -20,12 +20,17 @@ from .streaming import (
 
 
 class QueryBuilder:
-    """Chainable query builder for data loading operations"""
+    """Chainable query builder for data loading operations.
+
+    Supports both data loading to various destinations and manifest generation
+    for dataset registration via the Admin API.
+    """
 
     def __init__(self, client: 'Client', query: str):
         self.client = client
         self.query = query
         self._result_cache = None
+        self._dependencies: Dict[str, str] = {}  # For manifest generation
         self.logger = logging.getLogger(__name__)
 
     def load(
@@ -115,18 +120,165 @@ class QueryBuilder:
         """Backward compatibility with existing method"""
         return self.client.get_sql(self.query, read_all=read_all)
 
+    # Admin API manifest methods (require admin_url in Client)
+    def with_dependency(self, alias: str, reference: str) -> 'QueryBuilder':
+        """Add a dataset dependency for manifest generation.
+
+        Use this to declare dependencies when generating manifests for derived datasets.
+        The alias should match the dataset prefix used in your SQL query.
+
+        Args:
+            alias: Local alias used in SQL (e.g., 'eth' for 'eth.blocks')
+            reference: Full dataset reference (e.g., '_/eth_firehose@0.0.0')
+
+        Returns:
+            Self for method chaining
+
+        Example:
+            >>> client.sql("SELECT block_num FROM eth.blocks WHERE block_num > 1000000") \\
+            ...     .with_dependency("eth", "_/eth_firehose@0.0.0") \\
+            ...     .to_manifest("recent_blocks")
+        """
+        self._dependencies[alias] = reference
+        return self
+
+    def to_manifest(self, table_name: str, network: str = 'mainnet') -> dict:
+        """Generate a dataset manifest from this query.
+
+        Automatically fetches the Arrow schema using the Admin API /schema endpoint.
+        Requires the Client to be initialized with admin_url.
+
+        Args:
+            table_name: Name for the table in the manifest
+            network: Network name (default: 'mainnet')
+
+        Returns:
+            Complete manifest dict ready for registration
+
+        Raises:
+            ValueError: If admin_url not configured in Client
+            GetOutputSchemaError: If schema fetch fails
+
+        Example:
+            >>> manifest = client.sql("SELECT block_num, hash FROM eth.blocks") \\
+            ...     .with_dependency("eth", "_/eth_firehose@0.0.0") \\
+            ...     .to_manifest("blocks", network="mainnet")
+            >>> print(manifest['kind'])
+            'manifest'
+        """
+        # Get schema from Admin API
+        schema_response = self.client.schema.get_output_schema(self.query, is_sql_dataset=True)
+
+        # Build manifest structure matching tests/config/manifests/*.json format
+        manifest = {
+            'kind': 'manifest',
+            'dependencies': self._dependencies,
+            'tables': {
+                table_name: {
+                    'input': {'sql': self.query},
+                    'schema': schema_response.schema_,  # Use schema_ field (schema is aliased in Pydantic)
+                    'network': network,
+                }
+            },
+            'functions': {},
+        }
+        return manifest
+
+    def register_as(self, namespace: str, name: str, version: str, table_name: str, network: str = 'mainnet'):
+        """Register this query as a new dataset.
+
+        Generates manifest and registers with Admin API in one call.
+        Returns a DeploymentContext for optional chained deployment.
+
+        Args:
+            namespace: Dataset namespace (e.g., '_')
+            name: Dataset name
+            version: Semantic version (e.g., '1.0.0')
+            table_name: Table name in manifest
+            network: Network name (default: 'mainnet')
+
+        Returns:
+            DeploymentContext for optional deployment
+
+        Raises:
+            ValueError: If admin_url not configured in Client
+            InvalidManifestError: If manifest is invalid
+            DependencyValidationError: If dependencies are invalid
+
+        Example:
+            >>> # Register and deploy in one chain
+            >>> client.sql("SELECT block_num, hash FROM eth.blocks WHERE block_num > 18000000") \\
+            ...     .with_dependency("eth", "_/eth_firehose@0.0.0") \\
+            ...     .register_as("_", "recent_blocks", "1.0.0", "blocks") \\
+            ...     .deploy(parallelism=4, wait=True)
+        """
+        from amp.admin.deployment import DeploymentContext
+
+        # Generate manifest
+        manifest = self.to_manifest(table_name, network)
+
+        # Register with Admin API
+        self.client.datasets.register(namespace, name, version, manifest)
+
+        # Return deployment context for optional chaining
+        return DeploymentContext(self.client, namespace, name, version)
+
     def __repr__(self):
         return f"QueryBuilder(query='{self.query[:50]}{'...' if len(self.query) > 50 else ''}')"
 
 
 class Client:
-    """Enhanced Flight SQL client with data loading capabilities"""
+    """Enhanced Flight SQL client with data loading capabilities.
 
-    def __init__(self, url):
-        self.conn = flight.connect(url)
+    Supports both query operations (via Flight SQL) and optional admin operations
+    (via HTTP Admin API).
+
+    Args:
+        url: Flight SQL URL (for backward compatibility, treated as query_url)
+        query_url: Query endpoint URL via Flight SQL (e.g., 'grpc://localhost:1602')
+        admin_url: Optional Admin API URL (e.g., 'http://localhost:8080')
+        auth_token: Optional Bearer token for Admin API authentication
+
+    Example:
+        >>> # Query-only client (backward compatible)
+        >>> client = Client(url='grpc://localhost:1602')
+        >>>
+        >>> # Client with admin capabilities
+        >>> client = Client(
+        ...     query_url='grpc://localhost:1602',
+        ...     admin_url='http://localhost:8080'
+        ... )
+    """
+
+    def __init__(
+        self,
+        url: Optional[str] = None,
+        query_url: Optional[str] = None,
+        admin_url: Optional[str] = None,
+        auth_token: Optional[str] = None,
+    ):
+        # Backward compatibility: url parameter → query_url
+        if url and not query_url:
+            query_url = url
+
+        # Initialize Flight SQL client
+        if query_url:
+            self.conn = flight.connect(query_url)
+        else:
+            raise ValueError('Either url or query_url must be provided for Flight SQL connection')
+
+        # Initialize managers
         self.connection_manager = ConnectionManager()
         self.label_manager = LabelManager()
         self.logger = logging.getLogger(__name__)
+
+        # Initialize optional Admin API client
+        if admin_url:
+            from amp.admin.client import AdminClient
+
+            self._admin_client = AdminClient(admin_url, auth_token)
+        else:
+            self._admin_client = None
 
     def sql(self, query: str) -> QueryBuilder:
         """
@@ -163,6 +315,69 @@ class Client:
     def get_available_loaders(self) -> List[str]:
         """Get list of available data loaders"""
         return get_available_loaders()
+
+    # Admin API access (optional, requires admin_url)
+    @property
+    def datasets(self):
+        """Access datasets client for Admin API operations.
+
+        Returns:
+            DatasetsClient for dataset registration, deployment, and management
+
+        Raises:
+            ValueError: If admin_url was not provided during Client initialization
+
+        Example:
+            >>> client = Client(query_url='...', admin_url='http://localhost:8080')
+            >>> datasets = client.datasets.list_all()
+        """
+        if not self._admin_client:
+            raise ValueError(
+                'Admin API not configured. Provide admin_url parameter to Client() '
+                'to enable dataset management operations.'
+            )
+        return self._admin_client.datasets
+
+    @property
+    def jobs(self):
+        """Access jobs client for Admin API operations.
+
+        Returns:
+            JobsClient for job monitoring and management
+
+        Raises:
+            ValueError: If admin_url was not provided during Client initialization
+
+        Example:
+            >>> client = Client(query_url='...', admin_url='http://localhost:8080')
+            >>> job = client.jobs.get(123)
+        """
+        if not self._admin_client:
+            raise ValueError(
+                'Admin API not configured. Provide admin_url parameter to Client() to enable job monitoring operations.'
+            )
+        return self._admin_client.jobs
+
+    @property
+    def schema(self):
+        """Access schema client for Admin API operations.
+
+        Returns:
+            SchemaClient for SQL query schema analysis
+
+        Raises:
+            ValueError: If admin_url was not provided during Client initialization
+
+        Example:
+            >>> client = Client(query_url='...', admin_url='http://localhost:8080')
+            >>> schema_resp = client.schema.get_output_schema('SELECT * FROM eth.blocks', True)
+        """
+        if not self._admin_client:
+            raise ValueError(
+                'Admin API not configured. Provide admin_url parameter to Client() '
+                'to enable schema analysis operations.'
+            )
+        return self._admin_client.schema
 
     # Existing methods for backward compatibility
     def get_sql(self, query, read_all=False):
