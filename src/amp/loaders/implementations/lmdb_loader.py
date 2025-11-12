@@ -1,7 +1,6 @@
 # amp/loaders/implementations/lmdb_loader.py
 
 import hashlib
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -64,8 +63,8 @@ class LMDBLoader(DataLoader[LMDBConfig]):
     REQUIRES_SCHEMA_MATCH = False
     SUPPORTS_TRANSACTIONS = True
 
-    def __init__(self, config: Dict[str, Any]):
-        super().__init__(config)
+    def __init__(self, config: Dict[str, Any], label_manager=None):
+        super().__init__(config, label_manager=label_manager)
 
         self.env: Optional[lmdb.Environment] = None
         self.dbs: Dict[str, Any] = {}  # Cache opened databases
@@ -350,21 +349,35 @@ class LMDBLoader(DataLoader[LMDBConfig]):
             self.logger.error(f'Failed to get table info: {e}')
             return None
 
-    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str) -> None:
+    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str, connection_name: str) -> None:
         """
         Handle blockchain reorganization by deleting affected entries from LMDB.
 
-        LMDB's key-value architecture requires iterating through entries to find
-        and delete affected data based on the metadata stored in each value.
+        Uses the _amp_batch_id column for fast deletion of affected batches.
 
         Args:
             invalidation_ranges: List of block ranges to invalidate (reorg points)
             table_name: The table containing the data to invalidate
+            connection_name: The connection name (for state invalidation)
         """
         if not invalidation_ranges:
             return
 
         try:
+            # Get affected batch IDs from state store
+            all_affected_batch_ids = []
+            for range_obj in invalidation_ranges:
+                affected_batch_ids = self.state_store.invalidate_from_block(
+                    connection_name, table_name, range_obj.network, range_obj.start
+                )
+                all_affected_batch_ids.extend(affected_batch_ids)
+
+            if not all_affected_batch_ids:
+                self.logger.info('No batches found to invalidate')
+                return
+
+            batch_id_set = {bid.unique_id for bid in all_affected_batch_ids}
+
             db = self._get_or_create_db(self.config.database_name)
             deleted_count = 0
 
@@ -372,53 +385,31 @@ class LMDBLoader(DataLoader[LMDBConfig]):
                 cursor = txn.cursor()
                 keys_to_delete = []
 
-                # First pass: identify keys to delete
+                # First pass: identify keys to delete based on batch_id
                 if cursor.first():
                     while True:
                         key = cursor.key()
                         value = cursor.value()
 
-                        # Deserialize the Arrow batch to check metadata
+                        # Deserialize the Arrow batch to check batch_id
                         try:
                             # Read the serialized Arrow batch
                             reader = pa.ipc.open_stream(value)
                             batch = reader.read_next_batch()
 
-                            # Check if this batch has metadata column
-                            if '_meta_block_ranges' in batch.schema.names:
-                                # Get the metadata (should be a single row)
-                                meta_idx = batch.schema.get_field_index('_meta_block_ranges')
-                                meta_json = batch.column(meta_idx)[0].as_py()
+                            # Check if this batch has batch_id column
+                            if '_amp_batch_id' in batch.schema.names:
+                                # Get the batch_id (should be a single row)
+                                batch_id_idx = batch.schema.get_field_index('_amp_batch_id')
+                                batch_id_str = batch.column(batch_id_idx)[0].as_py()
 
-                                if meta_json:
-                                    try:
-                                        ranges_data = json.loads(meta_json)
-
-                                        # Ensure ranges_data is a list
-                                        if not isinstance(ranges_data, list):
-                                            continue
-
-                                        # Check each invalidation range
-                                        for range_obj in invalidation_ranges:
-                                            network = range_obj.network
-                                            reorg_start = range_obj.start
-
-                                            # Check if any range for this network should be invalidated
-                                            for range_info in ranges_data:
-                                                if (
-                                                    isinstance(range_info, dict)
-                                                    and range_info.get('network') == network
-                                                    and range_info.get('end', 0) >= reorg_start
-                                                ):
-                                                    keys_to_delete.append(key)
-                                                    deleted_count += 1
-                                                    break
-
-                                            if key in keys_to_delete:
-                                                break
-
-                                    except (json.JSONDecodeError, KeyError):
-                                        pass
+                                if batch_id_str:
+                                    # Check if any of the batch IDs match affected batches
+                                    for batch_id in batch_id_str.split('|'):
+                                        if batch_id in batch_id_set:
+                                            keys_to_delete.append(key)
+                                            deleted_count += 1
+                                            break
 
                         except Exception as e:
                             self.logger.debug(f'Failed to deserialize entry: {e}')

@@ -12,21 +12,17 @@ dependencies = [
     "pandas>=2.3.1",
     "pyarrow>=20.0.0",
     "typer>=0.15.2",
-
     # Flight SQL support
     "adbc-driver-manager>=1.5.0",
     "adbc-driver-postgresql>=1.5.0",
     "protobuf>=4.21.0",
-
     # Ethereum/blockchain utilities
     "base58>=2.1.1",
     "eth-hash[pysha3]>=0.7.1",
     "eth-utils>=5.2.0",
-
     # Google Cloud support
     "google-cloud-bigquery>=3.30.0",
     "google-cloud-storage>=3.1.0",
-
     # Arro3 for enhanced PyArrow operations
     "arro3-core>=0.5.1",
     "arro3-compute>=0.5.1",
@@ -58,7 +54,8 @@ iceberg = [
 ]
 
 snowflake = [
-    "snowflake-connector-python>=3.5.0",
+    "snowflake-connector-python>=4.0.0",
+    "snowpipe-streaming>=1.0.0",  # Snowpipe Streaming API
 ]
 
 lmdb = [
@@ -71,7 +68,8 @@ all_loaders = [
     "deltalake>=1.0.2",             # Delta Lake (consistent version)
     "pyiceberg[sql-sqlite]>=0.10.0", # Apache Iceberg
     "pydantic>=2.0,<2.12",          # PyIceberg 0.10.0 compatibility
-    "snowflake-connector-python>=3.5.0",  # Snowflake
+    "snowflake-connector-python>=4.0.0",  # Snowflake
+    "snowpipe-streaming>=1.0.0",        # Snowpipe Streaming API
     "lmdb>=1.4.0",                  # LMDB
 ]
 
@@ -90,6 +88,9 @@ test = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/amp"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

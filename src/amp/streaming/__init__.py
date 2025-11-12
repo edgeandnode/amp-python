@@ -7,18 +7,23 @@ from .parallel import (
     QueryPartition,
 )
 from .reorg import ReorgAwareStream
+from .state import (
+    BatchIdentifier,
+    InMemoryStreamStateStore,
+    NullStreamStateStore,
+    ProcessedBatch,
+    StreamStateStore,
+)
 from .types import (
     BatchMetadata,
     BlockRange,
     ResponseBatch,
-    ResponseBatchWithReorg,
     ResumeWatermark,
 )
 
 __all__ = [
     'BlockRange',
     'ResponseBatch',
-    'ResponseBatchWithReorg',
     'ResumeWatermark',
     'BatchMetadata',
     'StreamingResultIterator',
@@ -27,4 +32,9 @@ __all__ = [
     'ParallelStreamExecutor',
     'QueryPartition',
     'BlockRangePartitionStrategy',
+    'StreamStateStore',
+    'InMemoryStreamStateStore',
+    'NullStreamStateStore',
+    'BatchIdentifier',
+    'ProcessedBatch',
 ]

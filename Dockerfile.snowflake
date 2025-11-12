@@ -1,0 +1,89 @@
+# Multi-stage build for snowflake_parallel_loader.py
+
+# Stage 1: Build dependencies
+FROM python:3.12-slim AS builder
+
+# Install system dependencies needed for compilation
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install UV for fast dependency management
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+WORKDIR /app
+
+# Copy dependency files
+COPY pyproject.toml README.md ./
+
+# Install ONLY core + Snowflake dependencies (no other loaders)
+# This significantly reduces image size compared to all_loaders
+RUN uv pip install --system --no-cache \
+    # Core dependencies
+    pandas>=2.3.1 \
+    pyarrow>=20.0.0 \
+    typer>=0.15.2 \
+    adbc-driver-manager>=1.5.0 \
+    adbc-driver-postgresql>=1.5.0 \
+    protobuf>=4.21.0 \
+    base58>=2.1.1 \
+    'eth-hash[pysha3]>=0.7.1' \
+    eth-utils>=5.2.0 \
+    google-cloud-bigquery>=3.30.0 \
+    google-cloud-storage>=3.1.0 \
+    arro3-core>=0.5.1 \
+    arro3-compute>=0.5.1 \
+    # Snowflake-specific dependencies
+    snowflake-connector-python>=4.0.0 \
+    snowpipe-streaming>=1.0.0
+
+# Stage 2: Runtime image
+FROM python:3.12-slim
+
+# Install minimal runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user for security
+RUN useradd -m -u 1000 amp && \
+    mkdir -p /app /data && \
+    chown -R amp:amp /app /data
+
+WORKDIR /app
+
+# Copy Python packages from builder stage
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+
+# Copy UV for runtime package management (if needed)
+COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
+
+# Copy application code
+COPY --chown=amp:amp src/ ./src/
+COPY --chown=amp:amp apps/ ./apps/
+COPY --chown=amp:amp pyproject.toml README.md ./
+
+# Note: /data directory is created but empty by default
+# Mount data files at runtime using Kubernetes ConfigMaps or volumes
+
+# Install the amp package (system install for Docker)
+RUN uv pip install --system --no-cache --no-deps .
+
+# Switch to non-root user
+USER amp
+
+# Set Python environment variables
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+# Health check - verify Python and imports work
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "from amp.loaders import get_available_loaders; assert 'snowflake' in get_available_loaders()"
+
+# Default entrypoint for snowflake_parallel_loader.py
+ENTRYPOINT ["python", "apps/snowflake_parallel_loader.py"]
+
+# Default arguments - override these with docker run
+CMD ["--help"]

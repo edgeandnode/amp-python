@@ -327,11 +327,17 @@ class TestPostgreSQLLoaderIntegration:
             # Get schema
             schema = loader.get_table_schema(test_table_name)
             assert schema is not None
-            assert len(schema) == len(small_test_data.schema)
 
-            # Verify column names match
+            # Filter out metadata columns added by PostgreSQL loader
+            non_meta_fields = [
+                field for field in schema if not (field.name.startswith('_meta_') or field.name.startswith('_amp_'))
+            ]
+
+            assert len(non_meta_fields) == len(small_test_data.schema)
+
+            # Verify column names match (excluding metadata columns)
             original_names = set(small_test_data.schema.names)
-            retrieved_names = set(schema.names)
+            retrieved_names = set(field.name for field in non_meta_fields)
             assert original_names == retrieved_names
 
     def test_error_handling(self, postgresql_test_config, small_test_data):
@@ -480,22 +486,24 @@ class TestPostgreSQLLoaderStreaming:
                     column_names = [col[0] for col in columns]
 
                     # Should have original columns plus metadata columns
-                    assert '_meta_block_ranges' in column_names
+                    assert '_amp_batch_id' in column_names
 
                     # Verify metadata column types
                     column_types = {col[0]: col[1] for col in columns}
-                    assert 'jsonb' in column_types['_meta_block_ranges'].lower()
+                    assert (
+                        'text' in column_types['_amp_batch_id'].lower()
+                        or 'varchar' in column_types['_amp_batch_id'].lower()
+                    )
 
                     # Verify data was stored correctly
-                    cur.execute(f'SELECT "_meta_block_ranges" FROM {test_table_name} LIMIT 1')
+                    cur.execute(f'SELECT "_amp_batch_id" FROM {test_table_name} LIMIT 1')
                     meta_row = cur.fetchone()
 
-                    # PostgreSQL JSONB automatically parses to Python objects
-                    ranges_data = meta_row[0]  # Already parsed by psycopg2
-                    assert len(ranges_data) == 1
-                    assert ranges_data[0]['network'] == 'ethereum'
-                    assert ranges_data[0]['start'] == 100
-                    assert ranges_data[0]['end'] == 102
+                    # _amp_batch_id contains a compact 16-char hex string (or multiple separated by |)
+                    batch_id_str = meta_row[0]
+                    assert batch_id_str is not None
+                    assert isinstance(batch_id_str, str)
+                    assert len(batch_id_str) >= 16  # At least one 16-char batch ID
 
             finally:
                 loader.pool.putconn(conn)
@@ -504,43 +512,55 @@ class TestPostgreSQLLoaderStreaming:
         """Test that _handle_reorg correctly deletes invalidated ranges"""
         cleanup_tables.append(test_table_name)
 
-        from src.amp.streaming.types import BlockRange
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
         loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
-            # Create table and load test data with multiple block ranges
-            data_batch1 = {
-                'tx_hash': ['0x100', '0x101', '0x102'],
-                'block_num': [100, 101, 102],
-                'value': [10.0, 11.0, 12.0],
-            }
-            batch1 = pa.RecordBatch.from_pydict(data_batch1)
-            ranges1 = [BlockRange(network='ethereum', start=100, end=102)]
-            batch1_with_meta = loader._add_metadata_columns(batch1, ranges1)
+            # Create streaming batches with metadata
+            batch1 = pa.RecordBatch.from_pydict(
+                {
+                    'tx_hash': ['0x100', '0x101', '0x102'],
+                    'block_num': [100, 101, 102],
+                    'value': [10.0, 11.0, 12.0],
+                }
+            )
+            batch2 = pa.RecordBatch.from_pydict(
+                {'tx_hash': ['0x200', '0x201'], 'block_num': [103, 104], 'value': [12.0, 33.0]}
+            )
+            batch3 = pa.RecordBatch.from_pydict(
+                {'tx_hash': ['0x300', '0x301'], 'block_num': [105, 106], 'value': [7.0, 9.0]}
+            )
+            batch4 = pa.RecordBatch.from_pydict(
+                {'tx_hash': ['0x400', '0x401'], 'block_num': [107, 108], 'value': [6.0, 73.0]}
+            )
 
-            data_batch2 = {'tx_hash': ['0x200', '0x201'], 'block_num': [103, 104], 'value': [12.0, 33.0]}
-            batch2 = pa.RecordBatch.from_pydict(data_batch2)
-            ranges2 = [BlockRange(network='ethereum', start=103, end=104)]
-            batch2_with_meta = loader._add_metadata_columns(batch2, ranges2)
+            # Create table from first batch schema
+            loader._create_table_from_schema(batch1.schema, test_table_name)
 
-            data_batch3 = {'tx_hash': ['0x200', '0x201'], 'block_num': [105, 106], 'value': [7.0, 9.0]}
-            batch3 = pa.RecordBatch.from_pydict(data_batch3)
-            ranges3 = [BlockRange(network='ethereum', start=103, end=104)]
-            batch3_with_meta = loader._add_metadata_columns(batch3, ranges3)
+            # Create response batches with hashes
+            response1 = ResponseBatch.data_batch(
+                data=batch1,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=102, hash='0xaaa')]),
+            )
+            response2 = ResponseBatch.data_batch(
+                data=batch2,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=103, end=104, hash='0xbbb')]),
+            )
+            response3 = ResponseBatch.data_batch(
+                data=batch3,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=105, end=106, hash='0xccc')]),
+            )
+            response4 = ResponseBatch.data_batch(
+                data=batch4,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=107, end=108, hash='0xddd')]),
+            )
 
-            data_batch4 = {'tx_hash': ['0x200', '0x201'], 'block_num': [107, 108], 'value': [6.0, 73.0]}
-            batch4 = pa.RecordBatch.from_pydict(data_batch4)
-            ranges4 = [BlockRange(network='ethereum', start=103, end=104)]
-            batch4_with_meta = loader._add_metadata_columns(batch4, ranges4)
-
-            # Load all batches
-            result1 = loader.load_batch(batch1_with_meta, test_table_name, create_table=True)
-            result2 = loader.load_batch(batch2_with_meta, test_table_name, create_table=False)
-            result3 = loader.load_batch(batch3_with_meta, test_table_name, create_table=False)
-            result4 = loader.load_batch(batch4_with_meta, test_table_name, create_table=False)
-
-            assert all([result1.success, result2.success, result3.success, result4.success])
+            # Load via streaming API
+            stream = [response1, response2, response3, response4]
+            results = list(loader.load_stream_continuous(iter(stream), test_table_name))
+            assert len(results) == 4
+            assert all(r.success for r in results)
 
             # Verify initial data count
             conn = loader.pool.getconn()
@@ -551,8 +571,12 @@ class TestPostgreSQLLoaderStreaming:
                     assert initial_count == 9  # 3 + 2 + 2 + 2
 
                     # Test reorg deletion - invalidate blocks 104-108 on ethereum
-                    invalidation_ranges = [BlockRange(network='ethereum', start=104, end=108)]
-                    loader._handle_reorg(invalidation_ranges, test_table_name)
+                    reorg_response = ResponseBatch.reorg_batch(
+                        invalidation_ranges=[BlockRange(network='ethereum', start=104, end=108)]
+                    )
+                    reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), test_table_name))
+                    assert len(reorg_results) == 1
+                    assert reorg_results[0].success
 
                     # Should delete batch2, batch3 and batch4 leaving only the 3 rows from batch1
                     cur.execute(f'SELECT COUNT(*) FROM {test_table_name}')
@@ -566,19 +590,28 @@ class TestPostgreSQLLoaderStreaming:
         """Test reorg deletion with overlapping block ranges"""
         cleanup_tables.append(test_table_name)
 
-        from src.amp.streaming.types import BlockRange
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
         loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             # Load data with overlapping ranges that should be invalidated
-            data = {'tx_hash': ['0x150', '0x175', '0x250'], 'block_num': [150, 175, 250], 'value': [15.0, 17.5, 25.0]}
-            batch = pa.RecordBatch.from_pydict(data)
-            ranges = [BlockRange(network='ethereum', start=150, end=175)]
-            batch_with_meta = loader._add_metadata_columns(batch, ranges)
+            batch = pa.RecordBatch.from_pydict(
+                {'tx_hash': ['0x150', '0x175', '0x250'], 'block_num': [150, 175, 250], 'value': [15.0, 17.5, 25.0]}
+            )
 
-            result = loader.load_batch(batch_with_meta, test_table_name, create_table=True)
-            assert result.success == True
+            # Create table from batch schema
+            loader._create_table_from_schema(batch.schema, test_table_name)
+
+            response = ResponseBatch.data_batch(
+                data=batch,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=175, hash='0xaaa')]),
+            )
+
+            # Load via streaming API
+            results = list(loader.load_stream_continuous(iter([response]), test_table_name))
+            assert len(results) == 1
+            assert results[0].success
 
             conn = loader.pool.getconn()
             try:
@@ -589,8 +622,12 @@ class TestPostgreSQLLoaderStreaming:
 
                     # Test partial overlap invalidation (160-180)
                     # This should invalidate our range [150,175] because they overlap
-                    invalidation_ranges = [BlockRange(network='ethereum', start=160, end=180)]
-                    loader._handle_reorg(invalidation_ranges, test_table_name)
+                    reorg_response = ResponseBatch.reorg_batch(
+                        invalidation_ranges=[BlockRange(network='ethereum', start=160, end=180)]
+                    )
+                    reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), test_table_name))
+                    assert len(reorg_results) == 1
+                    assert reorg_results[0].success
 
                     # All data should be deleted due to overlap
                     cur.execute(f'SELECT COUNT(*) FROM {test_table_name}')
@@ -603,27 +640,36 @@ class TestPostgreSQLLoaderStreaming:
         """Test that reorg only affects specified network"""
         cleanup_tables.append(test_table_name)
 
-        from src.amp.streaming.types import BlockRange
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
         loader = PostgreSQLLoader(postgresql_test_config)
 
         with loader:
             # Load data from multiple networks with same block ranges
-            data_eth = {'tx_hash': ['0x100_eth'], 'network_id': ['ethereum'], 'block_num': [100], 'value': [10.0]}
-            batch_eth = pa.RecordBatch.from_pydict(data_eth)
-            ranges_eth = [BlockRange(network='ethereum', start=100, end=100)]
-            batch_eth_with_meta = loader._add_metadata_columns(batch_eth, ranges_eth)
+            batch_eth = pa.RecordBatch.from_pydict(
+                {'tx_hash': ['0x100_eth'], 'network_id': ['ethereum'], 'block_num': [100], 'value': [10.0]}
+            )
+            batch_poly = pa.RecordBatch.from_pydict(
+                {'tx_hash': ['0x100_poly'], 'network_id': ['polygon'], 'block_num': [100], 'value': [10.0]}
+            )
 
-            data_poly = {'tx_hash': ['0x100_poly'], 'network_id': ['polygon'], 'block_num': [100], 'value': [10.0]}
-            batch_poly = pa.RecordBatch.from_pydict(data_poly)
-            ranges_poly = [BlockRange(network='polygon', start=100, end=100)]
-            batch_poly_with_meta = loader._add_metadata_columns(batch_poly, ranges_poly)
+            # Create table from batch schema
+            loader._create_table_from_schema(batch_eth.schema, test_table_name)
 
-            # Load both batches
-            result1 = loader.load_batch(batch_eth_with_meta, test_table_name, create_table=True)
-            result2 = loader.load_batch(batch_poly_with_meta, test_table_name, create_table=False)
+            response_eth = ResponseBatch.data_batch(
+                data=batch_eth,
+                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=100, hash='0xaaa')]),
+            )
+            response_poly = ResponseBatch.data_batch(
+                data=batch_poly,
+                metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=100, end=100, hash='0xbbb')]),
+            )
 
-            assert result1.success and result2.success
+            # Load both batches via streaming API
+            stream = [response_eth, response_poly]
+            results = list(loader.load_stream_continuous(iter(stream), test_table_name))
+            assert len(results) == 2
+            assert all(r.success for r in results)
 
             conn = loader.pool.getconn()
             try:
@@ -633,19 +679,16 @@ class TestPostgreSQLLoaderStreaming:
                     assert cur.fetchone()[0] == 2
 
                     # Invalidate only ethereum network
-                    invalidation_ranges = [BlockRange(network='ethereum', start=100, end=100)]
-                    loader._handle_reorg(invalidation_ranges, test_table_name)
+                    reorg_response = ResponseBatch.reorg_batch(
+                        invalidation_ranges=[BlockRange(network='ethereum', start=100, end=100)]
+                    )
+                    reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), test_table_name))
+                    assert len(reorg_results) == 1
+                    assert reorg_results[0].success
 
                     # Should only delete ethereum data, polygon should remain
                     cur.execute(f'SELECT COUNT(*) FROM {test_table_name}')
                     assert cur.fetchone()[0] == 1
-
-                    # Verify remaining data is from polygon
-                    cur.execute(f'SELECT "_meta_block_ranges" FROM {test_table_name}')
-                    remaining_ranges = cur.fetchone()[0]
-                    # PostgreSQL JSONB automatically parses to Python objects
-                    ranges_data = remaining_ranges
-                    assert ranges_data[0]['network'] == 'polygon'
 
             finally:
                 loader.pool.putconn(conn)

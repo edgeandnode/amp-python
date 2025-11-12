@@ -1,0 +1,62 @@
+# Environment files
+.env
+.test.env
+*.env
+
+# Kubernetes secrets (NEVER commit these!)
+k8s/secret.yaml
+k8s/secrets.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+*.cover
+.hypothesis/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Logs
+*.log
+/tmp/
+
+# UV/pip cache
+.uv/
+uv.lock
+
+# Data directories (local development)
+# Large datasets should be downloaded on-demand or mounted via ConfigMaps
+data/
+
+# Build artifacts
+*.tar.gz
+*.zip

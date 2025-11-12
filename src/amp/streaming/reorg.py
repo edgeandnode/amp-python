@@ -6,7 +6,7 @@ import logging
 from typing import Dict, Iterator, List
 
 from .iterator import StreamingResultIterator
-from .types import BlockRange, ResponseBatchWithReorg
+from .types import BlockRange, ResponseBatch
 
 
 class ReorgAwareStream:
@@ -14,8 +14,8 @@ class ReorgAwareStream:
     Wraps a streaming result iterator to detect and signal blockchain reorganizations.
 
     This class monitors the block ranges in consecutive batches to detect chain
-    reorganizations (reorgs). When a reorg is detected, a ResponseBatchWithReorg
-    with type REORG is emitted containing the invalidation ranges.
+    reorganizations (reorgs). When a reorg is detected, a ResponseBatch with
+    is_reorg=True is emitted containing the invalidation ranges.
     """
 
     def __init__(self, stream_iterator: StreamingResultIterator):
@@ -30,18 +30,16 @@ class ReorgAwareStream:
         self.prev_ranges_by_network: Dict[str, BlockRange] = {}
         self.logger = logging.getLogger(__name__)
 
-    def __iter__(self) -> Iterator[ResponseBatchWithReorg]:
+    def __iter__(self) -> Iterator[ResponseBatch]:
         """Return iterator instance"""
         return self
 
-    def __next__(self) -> ResponseBatchWithReorg:
+    def __next__(self) -> ResponseBatch:
         """
         Get the next item from the stream, detecting reorgs.
 
         Returns:
-            ResponseBatchWithReorg which can be either:
-            - A data batch with new data
-            - A reorg notification with invalidation ranges
+            ResponseBatch with is_reorg flag set if reorg detected
 
         Raises:
             StopIteration: When stream is exhausted
@@ -51,8 +49,7 @@ class ReorgAwareStream:
             # Get next batch from underlying stream
             batch = next(self.stream_iterator)
 
-            # TODO: look for metadata.ranges_complete to see if it's a batch end. mostly for resuming streams
-            # also document the metadata.  numbers, network, hash, prev_hash (could be null)
+            # Note: ranges_complete flag is handled by CheckpointStore in load_stream_continuous
             # Check if this batch contains only duplicate ranges
             if self._is_duplicate_batch(batch.metadata.ranges):
                 self.logger.debug(f'Skipping duplicate batch with ranges: {batch.metadata.ranges}')
@@ -69,19 +66,19 @@ class ReorgAwareStream:
             # If we detected a reorg, yield the reorg notification first
             if invalidation_ranges:
                 self.logger.info(f'Reorg detected with {len(invalidation_ranges)} invalidation ranges')
-                # We need to yield the reorg and then the batch
                 # Store the batch to yield after the reorg
                 self._pending_batch = batch
-                return ResponseBatchWithReorg.reorg_batch(invalidation_ranges)
+                return ResponseBatch.reorg_batch(invalidation_ranges)
 
             # Check if we have a pending batch from a previous reorg detection
+            # REVIEW: I think we should remove this
             if hasattr(self, '_pending_batch'):
                 pending = self._pending_batch
                 delattr(self, '_pending_batch')
-                return ResponseBatchWithReorg.data_batch(pending)
+                return pending
 
             # Normal case - just return the data batch
-            return ResponseBatchWithReorg.data_batch(batch)
+            return batch
 
         except KeyboardInterrupt:
             self.logger.info('Reorg-aware stream cancelled by user')

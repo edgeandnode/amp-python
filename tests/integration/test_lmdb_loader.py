@@ -365,7 +365,7 @@ class TestLMDBLoaderIntegration:
         invalidation_ranges = [BlockRange(network='ethereum', start=100, end=200)]
 
         # Should not raise any errors
-        loader._handle_reorg(invalidation_ranges, 'test_reorg_empty')
+        loader._handle_reorg(invalidation_ranges, 'test_reorg_empty', 'test_connection')
 
         loader.disconnect()
 
@@ -385,7 +385,7 @@ class TestLMDBLoaderIntegration:
         invalidation_ranges = [BlockRange(network='ethereum', start=150, end=250)]
 
         # Should not delete any data (no metadata to check)
-        loader._handle_reorg(invalidation_ranges, 'test_reorg_no_meta')
+        loader._handle_reorg(invalidation_ranges, 'test_reorg_no_meta', 'test_connection')
 
         # Verify data still exists
         with loader.env.begin() as txn:
@@ -397,33 +397,36 @@ class TestLMDBLoaderIntegration:
 
     def test_handle_reorg_single_network(self, lmdb_config):
         """Test reorg handling for single network data"""
-        import json
-
-        from src.amp.streaming.types import BlockRange
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
         config = {**lmdb_config, 'key_column': 'id'}
         loader = LMDBLoader(config)
         loader.connect()
 
-        # Create table with metadata
-        block_ranges = [
-            [{'network': 'ethereum', 'start': 100, 'end': 110}],
-            [{'network': 'ethereum', 'start': 150, 'end': 160}],
-            [{'network': 'ethereum', 'start': 200, 'end': 210}],
-        ]
+        # Create streaming batches with metadata
+        batch1 = pa.RecordBatch.from_pydict({'id': [1], 'block_num': [105]})
+        batch2 = pa.RecordBatch.from_pydict({'id': [2], 'block_num': [155]})
+        batch3 = pa.RecordBatch.from_pydict({'id': [3], 'block_num': [205]})
 
-        data = pa.table(
-            {
-                'id': [1, 2, 3],
-                'block_num': [105, 155, 205],
-                '_meta_block_ranges': [json.dumps(ranges) for ranges in block_ranges],
-            }
+        # Create response batches with hashes
+        response1 = ResponseBatch.data_batch(
+            data=batch1,
+            metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc')]),
+        )
+        response2 = ResponseBatch.data_batch(
+            data=batch2,
+            metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef')]),
+        )
+        response3 = ResponseBatch.data_batch(
+            data=batch3,
+            metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=200, end=210, hash='0x123')]),
         )
 
-        # Load initial data
-        result = loader.load_table(data, 'test_reorg_single', mode=LoadMode.OVERWRITE)
-        assert result.success
-        assert result.rows_loaded == 3
+        # Load via streaming API
+        stream = [response1, response2, response3]
+        results = list(loader.load_stream_continuous(iter(stream), 'test_reorg_single'))
+        assert len(results) == 3
+        assert all(r.success for r in results)
 
         # Verify all data exists
         with loader.env.begin() as txn:
@@ -432,8 +435,13 @@ class TestLMDBLoaderIntegration:
             assert txn.get(b'3') is not None
 
         # Reorg from block 155 - should delete rows 2 and 3
-        invalidation_ranges = [BlockRange(network='ethereum', start=155, end=300)]
-        loader._handle_reorg(invalidation_ranges, 'test_reorg_single')
+        reorg_response = ResponseBatch.reorg_batch(
+            invalidation_ranges=[BlockRange(network='ethereum', start=155, end=300)]
+        )
+        reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), 'test_reorg_single'))
+        assert len(reorg_results) == 1
+        assert reorg_results[0].success
+        assert reorg_results[0].is_reorg
 
         # Verify only first row remains
         with loader.env.begin() as txn:
@@ -445,38 +453,49 @@ class TestLMDBLoaderIntegration:
 
     def test_handle_reorg_multi_network(self, lmdb_config):
         """Test reorg handling preserves data from unaffected networks"""
-        import json
-
-        from src.amp.streaming.types import BlockRange
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
         config = {**lmdb_config, 'key_column': 'id'}
         loader = LMDBLoader(config)
         loader.connect()
 
-        # Create data from multiple networks
-        block_ranges = [
-            [{'network': 'ethereum', 'start': 100, 'end': 110}],
-            [{'network': 'polygon', 'start': 100, 'end': 110}],
-            [{'network': 'ethereum', 'start': 150, 'end': 160}],
-            [{'network': 'polygon', 'start': 150, 'end': 160}],
-        ]
+        # Create streaming batches from multiple networks
+        batch1 = pa.RecordBatch.from_pydict({'id': [1], 'network': ['ethereum']})
+        batch2 = pa.RecordBatch.from_pydict({'id': [2], 'network': ['polygon']})
+        batch3 = pa.RecordBatch.from_pydict({'id': [3], 'network': ['ethereum']})
+        batch4 = pa.RecordBatch.from_pydict({'id': [4], 'network': ['polygon']})
 
-        data = pa.table(
-            {
-                'id': [1, 2, 3, 4],
-                'network': ['ethereum', 'polygon', 'ethereum', 'polygon'],
-                '_meta_block_ranges': [json.dumps(r) for r in block_ranges],
-            }
+        # Create response batches with network-specific ranges
+        response1 = ResponseBatch.data_batch(
+            data=batch1,
+            metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xaaa')]),
+        )
+        response2 = ResponseBatch.data_batch(
+            data=batch2,
+            metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=100, end=110, hash='0xbbb')]),
+        )
+        response3 = ResponseBatch.data_batch(
+            data=batch3,
+            metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xccc')]),
+        )
+        response4 = ResponseBatch.data_batch(
+            data=batch4,
+            metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=150, end=160, hash='0xddd')]),
         )
 
-        # Load initial data
-        result = loader.load_table(data, 'test_reorg_multi', mode=LoadMode.OVERWRITE)
-        assert result.success
-        assert result.rows_loaded == 4
+        # Load via streaming API
+        stream = [response1, response2, response3, response4]
+        results = list(loader.load_stream_continuous(iter(stream), 'test_reorg_multi'))
+        assert len(results) == 4
+        assert all(r.success for r in results)
 
         # Reorg only ethereum from block 150
-        invalidation_ranges = [BlockRange(network='ethereum', start=150, end=200)]
-        loader._handle_reorg(invalidation_ranges, 'test_reorg_multi')
+        reorg_response = ResponseBatch.reorg_batch(
+            invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)]
+        )
+        reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), 'test_reorg_multi'))
+        assert len(reorg_results) == 1
+        assert reorg_results[0].success
 
         # Verify ethereum row 3 deleted, but polygon rows preserved
         with loader.env.begin() as txn:
@@ -489,31 +508,46 @@ class TestLMDBLoaderIntegration:
 
     def test_handle_reorg_overlapping_ranges(self, lmdb_config):
         """Test reorg with overlapping block ranges"""
-        import json
-
-        from src.amp.streaming.types import BlockRange
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
         config = {**lmdb_config, 'key_column': 'id'}
         loader = LMDBLoader(config)
         loader.connect()
 
-        # Create data with overlapping ranges
-        block_ranges = [
-            [{'network': 'ethereum', 'start': 90, 'end': 110}],  # Overlaps with reorg
-            [{'network': 'ethereum', 'start': 140, 'end': 160}],  # Overlaps with reorg
-            [{'network': 'ethereum', 'start': 170, 'end': 190}],  # After reorg
-        ]
+        # Create streaming batches with different ranges
+        batch1 = pa.RecordBatch.from_pydict({'id': [1]})
+        batch2 = pa.RecordBatch.from_pydict({'id': [2]})
+        batch3 = pa.RecordBatch.from_pydict({'id': [3]})
 
-        data = pa.table({'id': [1, 2, 3], '_meta_block_ranges': [json.dumps(ranges) for ranges in block_ranges]})
+        # Batch 1: 90-110 (ends before reorg start of 150)
+        # Batch 2: 140-160 (overlaps with reorg)
+        # Batch 3: 170-190 (after reorg, but should be deleted as 170 >= 150)
+        response1 = ResponseBatch.data_batch(
+            data=batch1,
+            metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=90, end=110, hash='0xaaa')]),
+        )
+        response2 = ResponseBatch.data_batch(
+            data=batch2,
+            metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=140, end=160, hash='0xbbb')]),
+        )
+        response3 = ResponseBatch.data_batch(
+            data=batch3,
+            metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=170, end=190, hash='0xccc')]),
+        )
 
-        # Load initial data
-        result = loader.load_table(data, 'test_reorg_overlap', mode=LoadMode.OVERWRITE)
-        assert result.success
-        assert result.rows_loaded == 3
+        # Load via streaming API
+        stream = [response1, response2, response3]
+        results = list(loader.load_stream_continuous(iter(stream), 'test_reorg_overlap'))
+        assert len(results) == 3
+        assert all(r.success for r in results)
 
-        # Reorg from block 150 - should delete rows where end >= 150
-        invalidation_ranges = [BlockRange(network='ethereum', start=150, end=200)]
-        loader._handle_reorg(invalidation_ranges, 'test_reorg_overlap')
+        # Reorg from block 150 - should delete batches 2 and 3
+        reorg_response = ResponseBatch.reorg_batch(
+            invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)]
+        )
+        reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), 'test_reorg_overlap'))
+        assert len(reorg_results) == 1
+        assert reorg_results[0].success
 
         # Only first row should remain (ends at 110 < 150)
         with loader.env.begin() as txn:
@@ -529,8 +563,6 @@ class TestLMDBLoaderIntegration:
             BatchMetadata,
             BlockRange,
             ResponseBatch,
-            ResponseBatchType,
-            ResponseBatchWithReorg,
         )
 
         config = {**lmdb_config, 'key_column': 'id'}
@@ -542,24 +574,20 @@ class TestLMDBLoaderIntegration:
 
         data2 = pa.RecordBatch.from_pydict({'id': [3, 4], 'value': [300, 400]})
 
-        # Create response batches
-        response1 = ResponseBatchWithReorg(
-            batch_type=ResponseBatchType.DATA,
-            data=ResponseBatch(
-                data=data1, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110)])
-            ),
+        # Create response batches using factory methods (with hashes for proper state management)
+        response1 = ResponseBatch.data_batch(
+            data=data1,
+            metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc123')]),
         )
 
-        response2 = ResponseBatchWithReorg(
-            batch_type=ResponseBatchType.DATA,
-            data=ResponseBatch(
-                data=data2, metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160)])
-            ),
+        response2 = ResponseBatch.data_batch(
+            data=data2,
+            metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef456')]),
         )
 
-        # Simulate reorg event
-        reorg_response = ResponseBatchWithReorg(
-            batch_type=ResponseBatchType.REORG, invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)]
+        # Simulate reorg event using factory method
+        reorg_response = ResponseBatch.reorg_batch(
+            invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)]
         )
 
         # Process streaming data

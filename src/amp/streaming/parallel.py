@@ -18,6 +18,8 @@ from threading import Lock
 from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional
 
 from ..loaders.types import LoadResult
+from .resilience import BackPressureConfig, RetryConfig
+from .types import ResumeWatermark
 
 if TYPE_CHECKING:
     from ..client import Client
@@ -53,7 +55,7 @@ class QueryPartition:
 
 @dataclass
 class ParallelConfig:
-    """Configuration for parallel streaming execution"""
+    """Configuration for parallel streaming execution with resilience support"""
 
     num_workers: int
     table_name: str  # Name of the table to partition (e.g., 'blocks', 'transactions')
@@ -64,6 +66,11 @@ class ParallelConfig:
     stop_on_error: bool = False  # Stop all workers on first error
     reorg_buffer: int = 200  # Block overlap when transitioning to continuous streaming (for reorg detection)
 
+    # Resilience configuration (applied to all workers)
+    # If not specified, uses sensible defaults from resilience module
+    retry_config: Optional[RetryConfig] = None
+    back_pressure_config: Optional[BackPressureConfig] = None
+
     def __post_init__(self):
         if self.num_workers < 1:
             raise ValueError(f'num_workers must be >= 1, got {self.num_workers}')
@@ -73,6 +80,37 @@ class ParallelConfig:
             raise ValueError(f'partition_size must be >= 1, got {self.partition_size}')
         if not self.table_name:
             raise ValueError('table_name is required')
+
+    def get_resilience_config(self) -> Dict[str, Any]:
+        """
+        Get resilience configuration as a dict suitable for loader config.
+
+        Returns:
+            Dict with resilience settings, or empty dict if all None (use defaults)
+        """
+        resilience_dict = {}
+
+        if self.retry_config is not None:
+            resilience_dict['retry'] = {
+                'enabled': self.retry_config.enabled,
+                'max_retries': self.retry_config.max_retries,
+                'initial_backoff_ms': self.retry_config.initial_backoff_ms,
+                'max_backoff_ms': self.retry_config.max_backoff_ms,
+                'backoff_multiplier': self.retry_config.backoff_multiplier,
+                'jitter': self.retry_config.jitter,
+            }
+
+        if self.back_pressure_config is not None:
+            resilience_dict['back_pressure'] = {
+                'enabled': self.back_pressure_config.enabled,
+                'initial_delay_ms': self.back_pressure_config.initial_delay_ms,
+                'max_delay_ms': self.back_pressure_config.max_delay_ms,
+                'adapt_on_429': self.back_pressure_config.adapt_on_429,
+                'adapt_on_timeout': self.back_pressure_config.adapt_on_timeout,
+                'recovery_factor': self.back_pressure_config.recovery_factor,
+            }
+
+        return {'resilience': resilience_dict} if resilience_dict else {}
 
 
 class BlockRangePartitionStrategy:
@@ -162,16 +200,17 @@ class BlockRangePartitionStrategy:
         self.logger.info(f'Created {len(partitions)} partitions from block {min_block:,} to {max_block:,}')
         return partitions
 
+    # TODO: Simplify this, go back to wrapping with CTE?
     def wrap_query_with_partition(self, user_query: str, partition: QueryPartition) -> str:
         """
         Add partition filter to user query's WHERE clause.
 
         Injects a block range filter into the query to partition the data.
-        If the query already has a WHERE clause, appends with AND.
-        If not, adds a new WHERE clause.
+        For simple queries, appends to existing WHERE or adds new WHERE.
+        For nested subqueries, adds WHERE at the outer query level.
 
         Args:
-            user_query: Original user query (e.g., "SELECT * FROM blocks WHERE hash IS NOT NULL")
+            user_query: Original user query
             partition: Partition to apply
 
         Returns:
@@ -185,32 +224,16 @@ class BlockRangePartitionStrategy:
             f'{partition.block_column} >= {partition.start_block} AND {partition.block_column} < {partition.end_block}'
         )
 
-        # Check if query already has a WHERE clause (case-insensitive)
-        # Look for WHERE before any ORDER BY, LIMIT, or SETTINGS clauses
         query_upper = user_query.upper()
 
-        # Find WHERE position
-        where_pos = query_upper.find(_WHERE)
+        # Check if this is a subquery pattern: SELECT ... FROM (...) alias
+        # Look for closing paren followed by an identifier (the alias)
+        has_subquery = ')' in user_query and ' FROM (' in query_upper
 
-        if where_pos != -1:
-            # Query has WHERE clause - append with AND
-            # Need to insert before ORDER BY, LIMIT, GROUP BY, or SETTINGS if they exist
-            insert_pos = where_pos + len(_WHERE)
-
-            # Find the end of the WHERE clause (before ORDER BY, LIMIT, GROUP BY, SETTINGS)
-            end_keywords = [_ORDER_BY, _LIMIT, _GROUP_BY, _SETTINGS]
-            end_pos = len(user_query)
-
-            for keyword in end_keywords:
-                keyword_pos = query_upper.find(keyword, insert_pos)
-                if keyword_pos != -1 and keyword_pos < end_pos:
-                    end_pos = keyword_pos
-
-            # Insert partition filter with AND
-            partitioned_query = user_query[:end_pos] + f' AND ({partition_filter})' + user_query[end_pos:]
-        else:
-            # No WHERE clause - add one before ORDER BY, LIMIT, GROUP BY, or SETTINGS
-            end_keywords = [_ORDER_BY, _LIMIT, _GROUP_BY, _SETTINGS]
+        if has_subquery:
+            # For subqueries, add WHERE at the outer level (after the closing paren and alias)
+            # Find position before ORDER BY, LIMIT, GROUP BY, or SETTINGS
+            end_keywords = [' ORDER BY ', ' LIMIT ', ' GROUP BY ', ' SETTINGS ']
             insert_pos = len(user_query)
 
             for keyword in end_keywords:
@@ -218,8 +241,40 @@ class BlockRangePartitionStrategy:
                 if keyword_pos != -1 and keyword_pos < insert_pos:
                     insert_pos = keyword_pos
 
-            # Insert WHERE clause with partition filter
+            # Insert WHERE clause at outer level
             partitioned_query = user_query[:insert_pos] + f' WHERE {partition_filter}' + user_query[insert_pos:]
+
+        else:
+            # Simple query without subquery - check for existing WHERE
+            where_pos = query_upper.find(_WHERE)
+
+            if where_pos != -1:
+                # Query has WHERE clause - append with AND
+                insert_pos = where_pos + len(_WHERE)
+
+                # Find the end of the WHERE clause
+                end_keywords = [_ORDER_BY, _LIMIT, _GROUP_BY, _SETTINGS]
+                end_pos = len(user_query)
+
+                for keyword in end_keywords:
+                    keyword_pos = query_upper.find(keyword, insert_pos)
+                    if keyword_pos != -1 and keyword_pos < end_pos:
+                        end_pos = keyword_pos
+
+                # Insert partition filter with AND
+                partitioned_query = user_query[:end_pos] + f' AND ({partition_filter})' + user_query[end_pos:]
+            else:
+                # No WHERE clause - add one
+                end_keywords = [_ORDER_BY, _LIMIT, _GROUP_BY, _SETTINGS]
+                insert_pos = len(user_query)
+
+                for keyword in end_keywords:
+                    keyword_pos = query_upper.find(keyword)
+                    if keyword_pos != -1 and keyword_pos < insert_pos:
+                        insert_pos = keyword_pos
+
+                # Insert WHERE clause with partition filter
+                partitioned_query = user_query[:insert_pos] + f' WHERE {partition_filter}' + user_query[insert_pos:]
 
         return partitioned_query
 
@@ -290,6 +345,217 @@ class ParallelStreamExecutor:
             self.logger.error(f'Failed to detect max block: {e}')
             raise RuntimeError(f'Failed to detect current max block from {self.config.table_name}: {e}') from e
 
+    def _get_resume_adjusted_config(
+        self, connection_name: str, destination: str, config: ParallelConfig
+    ) -> tuple[ParallelConfig, Optional['ResumeWatermark'], Optional[str]]:
+        """
+        Adjust config's min_block based on resume position from persistent state with gap detection.
+
+        This optimizes resumption in two modes:
+        1. Gap detection enabled: Returns resume_watermark with gap and continuation ranges
+        2. Gap detection disabled: Simple min_block adjustment
+
+        Args:
+            connection_name: Name of the connection
+            destination: Destination table name
+            config: Original parallel config
+
+        Returns:
+            Tuple of (adjusted_config, resume_watermark, log_message)
+            - adjusted_config: Config (unchanged when using gap detection)
+            - resume_watermark: Resume position with gaps (None if no gaps)
+            - log_message: Optional message about resume adjustment (None if no adjustment)
+        """
+        try:
+            # Get connection info and create temporary loader to access state store
+            connection_info = self.client.connection_manager.get_connection_info(connection_name)
+            loader_config = connection_info['config']
+            loader_type = connection_info['loader']
+
+            # Check if state management is enabled
+            # Handle both dict and dataclass configs
+            if isinstance(loader_config, dict):
+                state_config = loader_config.get('state', {})
+                state_enabled = state_config.get('enabled', False) if state_config else False
+            else:
+                # Dataclass config - check if it has state attribute
+                state_config = getattr(loader_config, 'state', None)
+                state_enabled = getattr(state_config, 'enabled', False) if state_config else False
+
+            if not state_enabled:
+                # State management disabled - no resume optimization possible
+                return config, None, None
+
+            # Create temporary loader instance to access state store
+            from ..loaders.registry import create_loader
+
+            temp_loader = create_loader(loader_type, loader_config, label_manager=self.client.label_manager)
+            temp_loader.connect()
+
+            try:
+                # Query resume position with gap detection enabled
+                resume_watermark = temp_loader.state_store.get_resume_position(
+                    connection_name, destination, detect_gaps=True
+                )
+
+                if resume_watermark and resume_watermark.ranges:
+                    # Separate gap ranges from remaining range markers
+                    gap_ranges = [br for br in resume_watermark.ranges if br.start != br.end]
+                    remaining_ranges = [br for br in resume_watermark.ranges if br.start == br.end]
+
+                    if gap_ranges:
+                        # Gaps detected - return watermark for gap-aware partitioning
+                        total_gap_blocks = sum(br.end - br.start + 1 for br in gap_ranges)
+
+                        log_message = (
+                            f'Resume optimization: Detected {len(gap_ranges)} gap(s) totaling '
+                            f'{total_gap_blocks:,} blocks. Will prioritize gap filling before '
+                            f'processing remaining historical range.'
+                        )
+
+                        return config, resume_watermark, log_message
+
+                    elif remaining_ranges:
+                        # No gaps, but we have processed batches - use simple min_block adjustment
+                        max_processed_block = max(br.start - 1 for br in remaining_ranges)
+
+                        # Only adjust if resume position is beyond current min_block
+                        if max_processed_block >= config.min_block:
+                            # Create adjusted config starting from max processed block + 1
+                            adjusted_config = ParallelConfig(
+                                num_workers=config.num_workers,
+                                table_name=config.table_name,
+                                min_block=max_processed_block + 1,
+                                max_block=config.max_block,
+                                partition_size=config.partition_size,
+                                block_column=config.block_column,
+                                stop_on_error=config.stop_on_error,
+                                reorg_buffer=config.reorg_buffer,
+                                retry_config=config.retry_config,
+                                back_pressure_config=config.back_pressure_config,
+                            )
+
+                            blocks_skipped = max_processed_block - config.min_block + 1
+
+                            log_message = (
+                                f'Resume optimization: Adjusted min_block from {config.min_block:,} to '
+                                f'{max_processed_block + 1:,} based on persistent state '
+                                f'(skipping {blocks_skipped:,} already-processed blocks)'
+                            )
+
+                            return adjusted_config, None, log_message
+
+            finally:
+                # Clean up temporary loader
+                temp_loader.close()
+
+        except Exception as e:
+            # Resume optimization is best-effort - don't fail the load if it doesn't work
+            self.logger.debug(f'Resume optimization skipped: {e}')
+
+        # No adjustment needed or possible
+        return config, None, None
+
+    def _create_partitions_with_gaps(
+        self, config: ParallelConfig, resume_watermark: ResumeWatermark
+    ) -> List[QueryPartition]:
+        """
+        Create partitions that prioritize filling gaps before processing remaining historical range.
+
+        Process order:
+        1. Gap partitions (lowest block first across all networks)
+        2. Remaining range partitions (from max processed block to config.max_block)
+
+        Args:
+            config: Parallel execution configuration
+            resume_watermark: Resume watermark with gap and remaining range markers
+
+        Returns:
+            List of QueryPartition objects ordered by priority
+        """
+        partitions = []
+        partition_id = 0
+
+        # Separate gap ranges from remaining range markers
+        # Remaining range markers have start == end (signals "process from here to max_block")
+        gap_ranges = [br for br in resume_watermark.ranges if br.start != br.end]
+        remaining_ranges = [br for br in resume_watermark.ranges if br.start == br.end]
+
+        # Sort gaps by start block (process lowest blocks first)
+        gap_ranges.sort(key=lambda br: br.start)
+
+        # Create partitions for gaps
+        if gap_ranges:
+            self.logger.info(f'Detected {len(gap_ranges)} gap(s) in processed ranges')
+
+            for gap_range in gap_ranges:
+                # Calculate how many partitions needed for this gap
+                gap_size = gap_range.end - gap_range.start + 1
+
+                # Use configured partition size, or divide evenly if not specified
+                if config.partition_size:
+                    partition_size = config.partition_size
+                else:
+                    # For gaps, use reasonable default partition size
+                    partition_size = max(1000000, gap_size // config.num_workers)
+
+                # Split gap into partitions
+                current_start = gap_range.start
+                while current_start <= gap_range.end:
+                    end = min(current_start + partition_size, gap_range.end + 1)
+
+                    partitions.append(
+                        QueryPartition(
+                            partition_id=partition_id,
+                            start_block=current_start,
+                            end_block=end,
+                            block_column=config.block_column,
+                        )
+                    )
+                    partition_id += 1
+                    current_start = end
+
+                self.logger.info(
+                    f'Gap fill: Created partitions for {gap_range.network} blocks '
+                    f'{gap_range.start:,} to {gap_range.end:,} ({gap_size:,} blocks)'
+                )
+
+        # Then create partitions for remaining unprocessed historical range
+        if remaining_ranges:
+            # Find max processed block across all networks
+            max_processed = max(br.start - 1 for br in remaining_ranges)  # start is max_block + 1
+
+            # Create config for remaining historical range (from max_processed + 1 to config.max_block)
+            remaining_config = ParallelConfig(
+                num_workers=config.num_workers,
+                table_name=config.table_name,
+                min_block=max_processed + 1,
+                max_block=config.max_block,
+                partition_size=config.partition_size,
+                block_column=config.block_column,
+                stop_on_error=config.stop_on_error,
+                reorg_buffer=config.reorg_buffer,
+                retry_config=config.retry_config,
+                back_pressure_config=config.back_pressure_config,
+            )
+
+            # Only create partitions if there's a range to process
+            if remaining_config.max_block > remaining_config.min_block:
+                remaining_partitions = self.partitioner.create_partitions(remaining_config)
+
+                # Renumber partition IDs
+                for part in remaining_partitions:
+                    part.partition_id = partition_id
+                    partition_id += 1
+                    partitions.append(part)
+
+                self.logger.info(
+                    f'Remaining range: Created {len(remaining_partitions)} partitions for blocks '
+                    f'{remaining_config.min_block:,} to {remaining_config.max_block:,}'
+                )
+
+        return partitions
+
     def execute_parallel_stream(
         self, user_query: str, destination: str, connection_name: str, load_config: Optional[Dict[str, Any]] = None
     ) -> Iterator[LoadResult]:
@@ -316,6 +582,13 @@ class ParallelStreamExecutor:
             LoadResult for each partition as it completes, then continuous streaming results
         """
         load_config = load_config or {}
+
+        # Merge resilience configuration into load_config
+        # This ensures all workers inherit the resilience behavior
+        resilience_config = self.config.get_resilience_config()
+        if resilience_config:
+            load_config.update(resilience_config)
+            self.logger.info('Applied resilience configuration to parallel workers')
 
         # Detect if we should continue with live streaming after parallel phase
         continue_streaming = self.config.max_block is None
@@ -355,9 +628,23 @@ class ParallelStreamExecutor:
                 f'Historical load mode: loading blocks {self.config.min_block:,} to {self.config.max_block:,}'
             )
 
-        # 2. Create partitions
+        # 1.5. Optimize resumption by adjusting min_block based on persistent state
+        # This skips creation and checking of already-processed partitions
+        # Also detects gaps for intelligent gap filling
+        catchup_config, resume_watermark, resume_message = self._get_resume_adjusted_config(
+            connection_name, destination, catchup_config
+        )
+        if resume_message:
+            self.logger.info(resume_message)
+
+        # 2. Create partitions (gap-aware if resume_watermark has gaps)
         try:
-            partitions = self.partitioner.create_partitions(catchup_config)
+            if resume_watermark:
+                # Gap-aware partitioning: prioritize filling gaps before continuation
+                partitions = self._create_partitions_with_gaps(catchup_config, resume_watermark)
+            else:
+                # Normal partitioning: sequential block ranges
+                partitions = self.partitioner.create_partitions(catchup_config)
         except ValueError as e:
             self.logger.error(f'Failed to create partitions: {e}')
             yield LoadResult(
@@ -413,13 +700,29 @@ class ParallelStreamExecutor:
                 # Create loader instance to get effective schema and create table
                 from ..loaders.registry import create_loader
 
-                loader_instance = create_loader(loader_type, loader_config)
+                loader_instance = create_loader(loader_type, loader_config, label_manager=self.client.label_manager)
 
                 try:
                     loader_instance.connect()
 
                     # Get schema from sample batch
                     sample_batch = sample_table.to_batches()[0]
+
+                    # Apply label joining if configured (to ensure table schema includes label columns)
+                    label_config = load_config.get('label_config')
+                    if label_config:
+                        self.logger.info(
+                            f'Applying label join to sample batch for table creation '
+                            f'(label={label_config.label_name}, join_key={label_config.stream_key_column})'
+                        )
+                        sample_batch = loader_instance._join_with_labels(
+                            sample_batch,
+                            label_config.label_name,
+                            label_config.label_key_column,
+                            label_config.stream_key_column,
+                        )
+                        self.logger.info(f'Label join applied: schema now has {len(sample_batch.schema)} columns')
+
                     effective_schema = sample_batch.schema
 
                     # Create table once with schema
@@ -559,7 +862,19 @@ class ParallelStreamExecutor:
         Returns:
             Aggregated LoadResult for this partition
         """
+        import sys
+
         start_time = time.time()
+        partition_blocks = partition.end_block - partition.start_block
+
+        # Log worker startup to stderr for immediate visibility
+        startup_msg = (
+            f'🚀 Worker {partition.partition_id} starting: '
+            f'blocks {partition.start_block:,} → {partition.end_block:,} '
+            f'({partition_blocks:,} blocks)\n'
+        )
+        sys.stderr.write(startup_msg)
+        sys.stderr.flush()
 
         self.logger.info(
             f'Worker {partition.partition_id} starting: blocks {partition.start_block:,} to {partition.end_block:,}'
@@ -575,6 +890,28 @@ class ParallelStreamExecutor:
                 idx = partition_query_upper.find('SETTINGS STREAM = TRUE')
                 partition_query = partition_query[:idx].rstrip()
 
+            # Create BlockRange for this partition to enable batch ID tracking
+            # Note: We don't have block hashes for regular queries, so the loader will use
+            # position-based IDs (network:start:end) instead of hash-based IDs
+            from ..streaming.types import BlockRange
+
+            partition_block_range = BlockRange(
+                network=self.config.table_name,  # Use table name as network identifier
+                start=partition.start_block,
+                end=partition.end_block,
+                hash=None,  # Not available for regular queries (only streaming provides hashes)
+                prev_hash=None,
+            )
+
+            # Add partition metadata for Snowpipe Streaming (separate channel per partition)
+            # Table will be created by first worker with thread-safe locking
+            partition_load_config = {
+                **load_config,
+                'channel_suffix': f'partition_{partition.partition_id}',  # Each worker gets own channel
+                'offset_token': str(partition.start_block),  # Use start block as offset token
+                'block_ranges': [partition_block_range],  # Pass block range for _amp_batch_id column
+            }
+
             # Execute query and load (NOT streaming mode - we want to load historical range and finish)
             # Use query_and_load with read_all=False to stream batches efficiently
             results_iterator = self.client.query_and_load(
@@ -582,24 +919,56 @@ class ParallelStreamExecutor:
                 destination=destination,
                 connection_name=connection_name,
                 read_all=False,  # Stream batches for memory efficiency
-                **load_config,
+                **partition_load_config,
             )
 
             # Aggregate results from streaming iterator
             total_rows = 0
             total_duration = 0.0
             batch_count = 0
+            last_batch_time = start_time
 
             for result in results_iterator:
                 if result.success:
+                    batch_count += 1
                     total_rows += result.rows_loaded
                     total_duration += result.duration
-                    batch_count += 1
+                    batch_duration = time.time() - last_batch_time
+                    last_batch_time = time.time()
+
+                    # Calculate progress (estimated based on rows, since we don't have exact block info per batch)
+                    # This is an approximation - actual progress depends on data distribution
+                    elapsed = time.time() - start_time
+                    rows_per_sec = total_rows / elapsed if elapsed > 0 else 0
+
+                    # Progress indicator
+                    progress_msg = (
+                        f'📦 Worker {partition.partition_id} | '
+                        f'Batch {batch_count}: {result.rows_loaded:,} rows in {batch_duration:.2f}s | '
+                        f'Total: {total_rows:,} rows ({rows_per_sec:,.0f} rows/sec avg) | '
+                        f'Elapsed: {elapsed:.1f}s\n'
+                    )
+                    sys.stderr.write(progress_msg)
+                    sys.stderr.flush()
+
                 else:
+                    error_msg = f'❌ Worker {partition.partition_id} batch {batch_count + 1} failed: {result.error}\n'
+                    sys.stderr.write(error_msg)
+                    sys.stderr.flush()
                     self.logger.error(f'Worker {partition.partition_id} batch failed: {result.error}')
                     raise RuntimeError(f'Batch load failed: {result.error}')
 
             duration = time.time() - start_time
+
+            # Log worker completion to stderr
+            completion_msg = (
+                f'✅ Worker {partition.partition_id} COMPLETE: '
+                f'{total_rows:,} rows in {duration:.2f}s ({batch_count} batches, '
+                f'{total_rows / duration:.0f} rows/sec) | '
+                f'Blocks {partition.start_block:,} → {partition.end_block:,}\n'
+            )
+            sys.stderr.write(completion_msg)
+            sys.stderr.flush()
 
             self.logger.info(
                 f'Worker {partition.partition_id} completed: '
@@ -625,6 +994,9 @@ class ParallelStreamExecutor:
 
         except Exception as e:
             duration = time.time() - start_time
+            error_msg = f'❌ Worker {partition.partition_id} FAILED after {duration:.2f}s: {e}\n'
+            sys.stderr.write(error_msg)
+            sys.stderr.flush()
             self.logger.error(f'Worker {partition.partition_id} failed after {duration:.2f}s: {e}')
             raise
 

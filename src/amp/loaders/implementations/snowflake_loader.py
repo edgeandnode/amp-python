@@ -1,6 +1,9 @@
 import io
+import threading
 import time
+import uuid
 from dataclasses import dataclass
+from queue import Empty, Queue
 from typing import Any, Dict, List, Optional
 
 import pyarrow as pa
@@ -8,8 +11,17 @@ import pyarrow.csv as pa_csv
 import snowflake.connector
 from snowflake.connector import DictCursor, SnowflakeConnection
 
-from ...streaming.types import BlockRange
+try:
+    import pandas as pd
+except ImportError:
+    pd = None  # pandas is optional, only needed for pandas loading method
+
+from ...streaming.state import BatchIdentifier, StreamStateStore
+from ...streaming.types import BlockRange, ResumeWatermark
 from ..base import DataLoader, LoadMode
+
+# Legacy SnowflakeCheckpointStore class removed - replaced by unified StreamState
+# Old checkpointing code can be found in git history (commit 7943054) if needed for migration
 
 
 @dataclass
@@ -18,9 +30,9 @@ class SnowflakeConnectionConfig:
 
     account: str
     user: str
-    password: str
     warehouse: str
     database: str
+    password: Optional[str] = None  # Optional - required only for password auth
     schema: str = 'PUBLIC'
     role: Optional[str] = None
     authenticator: Optional[str] = None
@@ -37,9 +49,665 @@ class SnowflakeConnectionConfig:
     timezone: Optional[str] = None
     connection_params: Dict[str, Any] = None
 
+    # Loading method configuration
+    loading_method: str = 'stage'  # 'stage', 'insert', 'pandas', or 'snowpipe_streaming'
+
+    # Connection pooling configuration
+    use_connection_pool: bool = True
+    pool_size: int = 5
+
+    # Pandas loading specific options
+    pandas_compression: str = 'gzip'  # Compression for pandas staging files ('gzip', 'snappy', or 'none')
+    pandas_parallel_threads: int = 4  # Number of parallel threads for pandas uploads
+
+    # Snowpipe Streaming specific options
+    streaming_channel_prefix: str = 'amp'
+    streaming_max_retries: int = 3
+    streaming_buffer_flush_interval: int = 1
+
+    # Reorg handling options
+    preserve_reorg_history: bool = False  # If True, UPDATE reorged rows instead of DELETE
+
     def __post_init__(self):
         if self.connection_params is None:
             self.connection_params = {}
+
+        # Parse private key if it's a PEM string
+        # The Snowflake connector requires a cryptography key object, not a string
+        if self.private_key and isinstance(self.private_key, str):
+            from cryptography.hazmat.backends import default_backend
+            from cryptography.hazmat.primitives import serialization
+
+            try:
+                pem_bytes = self.private_key.encode('utf-8')
+                if self.private_key_passphrase:
+                    passphrase = self.private_key_passphrase.encode('utf-8')
+                    self.private_key = serialization.load_pem_private_key(
+                        pem_bytes, password=passphrase, backend=default_backend()
+                    )
+                else:
+                    self.private_key = serialization.load_pem_private_key(
+                        pem_bytes, password=None, backend=default_backend()
+                    )
+            except Exception as e:
+                raise ValueError(
+                    f'Failed to parse private key: {e}. '
+                    'Ensure the key is in PKCS#8 PEM format (unencrypted or with passphrase).'
+                ) from e
+
+
+class SnowflakeStreamStateStore(StreamStateStore):
+    """
+    Snowflake-backed implementation of StreamStateStore for persistent job resumption.
+
+    Stores processed batch state in a Snowflake table (amp_stream_state) instead of
+    in-memory. This enables jobs to resume from the correct position after process
+    restart or failure.
+
+    The state table tracks server-confirmed completed batches (checkpoint watermarks),
+    not just data existence in tables. This ensures accurate resume positions.
+    """
+
+    def __init__(self, connection: SnowflakeConnection, cursor: DictCursor, logger):
+        """
+        Initialize Snowflake-backed state store.
+
+        Args:
+            connection: Active Snowflake connection
+            cursor: Dict cursor for queries
+            logger: Logger instance
+        """
+        self.connection = connection
+        self.cursor = cursor
+        self.logger = logger
+        self._ensure_state_table_exists()
+
+    def _ensure_state_table_exists(self) -> None:
+        """Create amp_stream_state table if it doesn't exist."""
+        try:
+            create_sql = """
+            CREATE TABLE IF NOT EXISTS amp_stream_state (
+                connection_name VARCHAR(255) NOT NULL,
+                table_name VARCHAR(255) NOT NULL,
+                network VARCHAR(100) NOT NULL,
+                batch_id VARCHAR(16) NOT NULL,
+                start_block BIGINT NOT NULL,
+                end_block BIGINT NOT NULL,
+                end_hash VARCHAR(66),
+                start_parent_hash VARCHAR(66),
+                processed_at TIMESTAMP_NTZ NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+                PRIMARY KEY (connection_name, table_name, network, batch_id)
+            )
+            """
+            self.cursor.execute(create_sql)
+
+            # Create indexes
+            self.cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_stream_state_resume
+            ON amp_stream_state (connection_name, table_name, network, end_block)
+            """)
+
+            self.cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_stream_state_blocks
+            ON amp_stream_state (connection_name, table_name, network, start_block, end_block)
+            """)
+
+            self.connection.commit()
+            self.logger.debug('Ensured amp_stream_state table exists')
+
+        except Exception as e:
+            self.logger.warning(f'Failed to ensure state table exists: {e}')
+            # Don't fail - table might already exist
+
+    def is_processed(self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]) -> bool:
+        """Check if all given batches have already been processed."""
+        if not batch_ids:
+            return False
+
+        # Group by network
+        by_network: Dict[str, List[BatchIdentifier]] = {}
+        for batch_id in batch_ids:
+            by_network.setdefault(batch_id.network, []).append(batch_id)
+
+        # Check each network
+        for network, network_batch_ids in by_network.items():
+            # Query state table for these batch IDs
+            batch_id_strs = [bid.unique_id for bid in network_batch_ids]
+            placeholders = ','.join(['?' for _ in batch_id_strs])
+
+            query = f"""
+            SELECT DISTINCT batch_id
+            FROM amp_stream_state
+            WHERE connection_name = ?
+              AND table_name = ?
+              AND network = ?
+              AND batch_id IN ({placeholders})
+            """
+
+            params = [connection_name, table_name, network] + batch_id_strs
+            self.cursor.execute(query, params)
+            results = self.cursor.fetchall()
+
+            processed_ids = {row['BATCH_ID'] for row in results}
+
+            # All batches for this network must be in the processed set
+            for batch_id in network_batch_ids:
+                if batch_id.unique_id not in processed_ids:
+                    return False
+
+        return True
+
+    def mark_processed(self, connection_name: str, table_name: str, batch_ids: List[BatchIdentifier]) -> None:
+        """Mark batches as processed by inserting into state table."""
+        if not batch_ids:
+            return
+
+        # Insert all batches
+        for batch_id in batch_ids:
+            try:
+                self.cursor.execute(
+                    """
+                    INSERT INTO amp_stream_state (
+                        connection_name, table_name, network, batch_id,
+                        start_block, end_block, end_hash, start_parent_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        connection_name,
+                        table_name,
+                        batch_id.network,
+                        batch_id.unique_id,
+                        batch_id.start_block,
+                        batch_id.end_block,
+                        batch_id.end_hash,
+                        batch_id.start_parent_hash,
+                    ),
+                )
+            except Exception as e:
+                # Ignore duplicate key errors (batch already marked)
+                if 'Duplicate' not in str(e) and 'unique' not in str(e).lower():
+                    self.logger.warning(f'Failed to mark batch as processed: {e}')
+
+        self.connection.commit()
+
+    def get_resume_position(
+        self, connection_name: str, table_name: str, detect_gaps: bool = False
+    ) -> Optional[ResumeWatermark]:
+        """
+        Calculate resume position from processed batches.
+
+        Args:
+            connection_name: Connection identifier
+            table_name: Destination table name
+            detect_gaps: If True, detect and return gaps in processed ranges.
+                        If False, only return max processed position per network.
+
+        Returns:
+            ResumeWatermark with ranges. When detect_gaps=True:
+            - Gap ranges: BlockRange(network, gap_start, gap_end, hash=None)
+            - Remaining range markers: BlockRange(network, max_block+1, max_block+1, hash=end_hash)
+              (start==end signals "process from here to max_block in config")
+
+        Example with detect_gaps=True:
+            Processed: [0-100], [200-300], [500-600]
+            Returns: [
+                BlockRange(network='ethereum', start=101, end=199),  # Gap 1
+                BlockRange(network='ethereum', start=301, end=499),  # Gap 2
+                BlockRange(network='ethereum', start=601, end=601, hash='0xabc...')  # Remaining range
+            ]
+        """
+        if not detect_gaps:
+            # Simple mode: Return max processed position per network (existing behavior)
+            return self._get_max_processed_position(connection_name, table_name)
+
+        # Gap-aware mode: Detect gaps and combine with remaining range markers
+        gaps = self._detect_all_gaps(connection_name, table_name)
+        max_positions = self._get_max_processed_position(connection_name, table_name)
+
+        if not gaps and not max_positions:
+            return None
+
+        all_ranges = []
+
+        # Add gap ranges (need to be filled)
+        for gap in gaps:
+            all_ranges.append(
+                BlockRange(
+                    network=gap['network'],
+                    start=gap['gap_start'],
+                    end=gap['gap_end'],
+                    hash=None,  # Position-based for historical gaps
+                    prev_hash=None,
+                )
+            )
+
+        # Add remaining range markers (after max processed block, to finish historical catch-up)
+        if max_positions:
+            for br in max_positions.ranges:
+                # Create remaining range marker: start == end signals "process from here to max_block"
+                all_ranges.append(
+                    BlockRange(
+                        network=br.network,
+                        start=br.end + 1,
+                        end=br.end + 1,  # Same value = marker for remaining unprocessed range
+                        hash=br.hash,
+                        prev_hash=br.prev_hash,
+                    )
+                )
+
+        return ResumeWatermark(ranges=all_ranges) if all_ranges else None
+
+    def _get_max_processed_position(self, connection_name: str, table_name: str) -> Optional[ResumeWatermark]:
+        """
+        Get max processed position for each network (simple mode).
+
+        This is the original get_resume_position() logic, extracted for reuse.
+        """
+        # Find max end_block for each network
+        query = """
+        SELECT network, MAX(end_block) as max_end_block,
+               batch_id, end_hash, start_parent_hash
+        FROM amp_stream_state
+        WHERE connection_name = ?
+          AND table_name = ?
+        GROUP BY network
+        """
+
+        self.cursor.execute(query, (connection_name, table_name))
+        results = self.cursor.fetchall()
+
+        if not results:
+            return None
+
+        # Get the full batch info for each max block
+        ranges = []
+        for row in results:
+            network = row['NETWORK']
+            max_block = row['MAX_END_BLOCK']
+
+            # Get the batch with this max end_block
+            self.cursor.execute(
+                """
+                SELECT batch_id, start_block, end_block, end_hash, start_parent_hash
+                FROM amp_stream_state
+                WHERE connection_name = ?
+                  AND table_name = ?
+                  AND network = ?
+                  AND end_block = ?
+                LIMIT 1
+                """,
+                (connection_name, table_name, network, max_block),
+            )
+            batch_row = self.cursor.fetchone()
+
+            if batch_row:
+                ranges.append(
+                    BlockRange(
+                        network=network,
+                        start=batch_row['START_BLOCK'],
+                        end=batch_row['END_BLOCK'],
+                        hash=batch_row['END_HASH'],
+                        prev_hash=batch_row['START_PARENT_HASH'],
+                    )
+                )
+
+        return ResumeWatermark(ranges=ranges) if ranges else None
+
+    def _detect_all_gaps(self, connection_name: str, table_name: str) -> List[Dict[str, any]]:
+        """
+        Detect all gaps in processed batch ranges using window functions.
+
+        Returns list of gap ranges, each with: {network, gap_start, gap_end}
+        Gaps are ordered by network and gap_start.
+
+        Example:
+            If processed batches are [0-100], [200-300], [500-600]:
+            Returns: [
+                {'network': 'ethereum', 'gap_start': 101, 'gap_end': 199},
+                {'network': 'ethereum', 'gap_start': 301, 'gap_end': 499}
+            ]
+        """
+        query = """
+        WITH ordered_batches AS (
+            SELECT
+                network,
+                start_block,
+                end_block,
+                LEAD(start_block) OVER (PARTITION BY network ORDER BY end_block) as next_start_block
+            FROM amp_stream_state
+            WHERE connection_name = ?
+              AND table_name = ?
+        ),
+        gaps AS (
+            SELECT
+                network,
+                end_block + 1 as gap_start,
+                next_start_block - 1 as gap_end
+            FROM ordered_batches
+            WHERE next_start_block IS NOT NULL
+              AND next_start_block > end_block + 1
+        )
+        SELECT network, gap_start, gap_end
+        FROM gaps
+        ORDER BY network, gap_start
+        """
+
+        try:
+            self.cursor.execute(query, (connection_name, table_name))
+            results = self.cursor.fetchall()
+
+            # Convert to list of dicts with lowercase keys
+            gaps = []
+            for row in results:
+                gaps.append({'network': row['NETWORK'], 'gap_start': row['GAP_START'], 'gap_end': row['GAP_END']})
+
+            return gaps
+
+        except Exception as e:
+            self.logger.warning(f'Failed to detect gaps: {e}')
+            return []
+
+    def invalidate_from_block(
+        self, connection_name: str, table_name: str, network: str, from_block: int
+    ) -> List[BatchIdentifier]:
+        """Invalidate batches affected by reorg."""
+        # Find affected batches
+        query = """
+        SELECT batch_id, start_block, end_block, end_hash, start_parent_hash
+        FROM amp_stream_state
+        WHERE connection_name = ?
+          AND table_name = ?
+          AND network = ?
+          AND end_block >= ?
+        """
+
+        self.cursor.execute(query, (connection_name, table_name, network, from_block))
+        results = self.cursor.fetchall()
+
+        affected = [
+            BatchIdentifier(
+                network=network,
+                start_block=row['START_BLOCK'],
+                end_block=row['END_BLOCK'],
+                end_hash=row['END_HASH'],
+                start_parent_hash=row['START_PARENT_HASH'] or '',
+            )
+            for row in results
+        ]
+
+        # Delete from state table
+        if affected:
+            self.cursor.execute(
+                """
+                DELETE FROM amp_stream_state
+                WHERE connection_name = ?
+                  AND table_name = ?
+                  AND network = ?
+                  AND end_block >= ?
+                """,
+                (connection_name, table_name, network, from_block),
+            )
+            self.connection.commit()
+
+        return affected
+
+    def cleanup_before_block(self, connection_name: str, table_name: str, network: str, before_block: int) -> None:
+        """Remove old batches before a given block."""
+        self.cursor.execute(
+            """
+            DELETE FROM amp_stream_state
+            WHERE connection_name = ?
+              AND table_name = ?
+              AND network = ?
+              AND end_block < ?
+            """,
+            (connection_name, table_name, network, before_block),
+        )
+        self.connection.commit()
+
+
+class SnowflakeConnectionPool:
+    """
+    Thread-safe connection pool for Snowflake connections.
+
+    Manages a pool of reusable Snowflake connections to avoid the overhead
+    of creating new connections for each parallel worker.
+
+    Features:
+    - Connection health validation before reuse
+    - Automatic connection refresh when stale
+    - Connection age tracking to prevent credential expiration
+    """
+
+    _pools: Dict[str, 'SnowflakeConnectionPool'] = {}
+    _pools_lock = threading.Lock()
+
+    # Connection lifecycle settings
+    MAX_CONNECTION_AGE = 3600  # Max age in seconds (1 hour) before refresh
+    CONNECTION_VALIDATION_TIMEOUT = 5  # Seconds to wait for validation query
+
+    def __init__(self, config: SnowflakeConnectionConfig, pool_size: int = 5):
+        """
+        Initialize connection pool.
+
+        Args:
+            config: Snowflake connection configuration
+            pool_size: Maximum number of connections in the pool
+        """
+        self.config = config
+        self.pool_size = pool_size
+        self._pool: Queue[tuple[SnowflakeConnection, float]] = Queue(maxsize=pool_size)  # (connection, created_at)
+        self._active_connections = 0
+        self._lock = threading.Lock()
+        self._closed = False
+
+    @classmethod
+    def get_pool(cls, config: SnowflakeConnectionConfig, pool_size: int = 5) -> 'SnowflakeConnectionPool':
+        """
+        Get or create a connection pool for the given configuration.
+
+        Uses connection config as key to share pools across loader instances
+        with the same configuration.
+        """
+        # Create a hashable key from config
+        key = f'{config.account}:{config.user}:{config.database}:{config.schema}'
+
+        with cls._pools_lock:
+            if key not in cls._pools:
+                cls._pools[key] = SnowflakeConnectionPool(config, pool_size)
+            return cls._pools[key]
+
+    def _validate_connection(self, connection: SnowflakeConnection) -> bool:
+        """
+        Validate that a connection is still healthy and responsive.
+
+        Args:
+            connection: The connection to validate
+
+        Returns:
+            True if connection is healthy, False otherwise
+        """
+        if connection.is_closed():
+            return False
+
+        try:
+            # Execute a simple query with timeout to verify connection is responsive
+            cursor = connection.cursor()
+            cursor.execute('SELECT 1', timeout=self.CONNECTION_VALIDATION_TIMEOUT)
+            cursor.fetchone()
+            cursor.close()
+            return True
+        except Exception:
+            # Any error means connection is not healthy
+            return False
+
+    def _create_connection(self) -> SnowflakeConnection:
+        """Create a new Snowflake connection"""
+        # Set defaults for connection parameters
+        # Increase timeouts for long-running operations (pandas loading, large datasets)
+        default_params = {
+            'login_timeout': 60,
+            'network_timeout': 600,  # Increased from 300 to 600 (10 minutes)
+            'socket_timeout': 600,  # Increased from 300 to 600 (10 minutes)
+            'validate_default_parameters': True,
+            'paramstyle': 'qmark',
+        }
+
+        # Build connection parameters
+        conn_params = {
+            'account': self.config.account,
+            'user': self.config.user,
+            'warehouse': self.config.warehouse,
+            'database': self.config.database,
+            'schema': self.config.schema,
+            **default_params,
+            **self.config.connection_params,
+        }
+
+        # Add authentication parameters
+        if self.config.authenticator:
+            conn_params['authenticator'] = self.config.authenticator
+            if self.config.authenticator == 'oauth':
+                conn_params['token'] = self.config.token
+            elif self.config.authenticator == 'okta' and self.config.okta_account_name:
+                conn_params['authenticator'] = f'https://{self.config.okta_account_name}.okta.com'
+        elif self.config.private_key:
+            conn_params['private_key'] = self.config.private_key
+            if self.config.private_key_passphrase:
+                conn_params['private_key_passphrase'] = self.config.private_key_passphrase
+        else:
+            conn_params['password'] = self.config.password
+
+        # Optional parameters
+        if self.config.role:
+            conn_params['role'] = self.config.role
+
+        return snowflake.connector.connect(**conn_params)
+
+    def acquire(self, timeout: Optional[float] = 30.0) -> SnowflakeConnection:
+        """
+        Acquire a connection from the pool with health validation.
+
+        Args:
+            timeout: Maximum time to wait for a connection (seconds)
+
+        Returns:
+            A healthy Snowflake connection
+
+        Raises:
+            RuntimeError: If pool is closed or timeout exceeded
+        """
+        if self._closed:
+            raise RuntimeError('Connection pool is closed')
+
+        try:
+            # Try to get an existing connection from the pool
+            connection, created_at = self._pool.get(block=False)
+            connection_age = time.time() - created_at
+
+            # Check if connection is too old or unhealthy
+            if connection_age > self.MAX_CONNECTION_AGE:
+                # Connection too old, close and create new one
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+                with self._lock:
+                    self._active_connections -= 1
+                # Create new connection below
+            elif self._validate_connection(connection):
+                # Connection is healthy, return it
+                return connection
+            else:
+                # Connection unhealthy, close and create new one
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+                with self._lock:
+                    self._active_connections -= 1
+                # Create new connection below
+
+        except Empty:
+            # No connections available in pool
+            pass
+
+        # Create new connection if under pool size limit
+        with self._lock:
+            if self._active_connections < self.pool_size:
+                connection = self._create_connection()
+                self._active_connections += 1
+                return connection
+
+        # Pool is at capacity, wait for a connection to be released
+        try:
+            connection, created_at = self._pool.get(block=True, timeout=timeout)
+            connection_age = time.time() - created_at
+
+            # Validate the connection we got
+            if connection_age > self.MAX_CONNECTION_AGE or not self._validate_connection(connection):
+                # Connection too old or unhealthy, create new one
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+                with self._lock:
+                    self._active_connections -= 1
+                connection = self._create_connection()
+                with self._lock:
+                    self._active_connections += 1
+
+            return connection
+        except Empty:
+            raise RuntimeError(f'Failed to acquire connection from pool within {timeout}s') from None
+
+    def release(self, connection: SnowflakeConnection) -> None:
+        """
+        Release a connection back to the pool with updated timestamp.
+
+        Args:
+            connection: The connection to release
+        """
+        if self._closed:
+            # Pool is closed, close the connection
+            try:
+                connection.close()
+            except Exception:
+                pass
+            return
+
+        # Return connection to pool if it's still open
+        # Store current time as "created_at" - connection stays fresh when actively used
+        if not connection.is_closed():
+            try:
+                self._pool.put((connection, time.time()), block=False)
+            except Exception:
+                # Pool is full, close the connection
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+                with self._lock:
+                    self._active_connections -= 1
+        else:
+            # Connection is closed, decrement counter
+            with self._lock:
+                self._active_connections -= 1
+
+    def close(self) -> None:
+        """Close all connections in the pool"""
+        self._closed = True
+
+        # Close all connections in the queue
+        while not self._pool.empty():
+            try:
+                connection, _ = self._pool.get(block=False)  # Unpack tuple
+                connection.close()
+            except Exception:
+                pass
+
+        with self._lock:
+            self._active_connections = 0
 
 
 class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
@@ -60,65 +728,97 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
     REQUIRES_SCHEMA_MATCH = False
     SUPPORTS_TRANSACTIONS = True
 
-    def __init__(self, config: Dict[str, Any]) -> None:
-        super().__init__(config)
-        self.connection: SnowflakeConnection = None
+    def __init__(self, config: Dict[str, Any], label_manager=None) -> None:
+        super().__init__(config, label_manager=label_manager)
+        self.connection: Optional[SnowflakeConnection] = None
         self.cursor = None
         self._created_tables = set()  # Track created tables
+        self._connection_pool: Optional[SnowflakeConnectionPool] = None
+        self._owns_connection = False  # Track if we own the connection or got it from pool
+        self._worker_id = str(uuid.uuid4())[:8]  # Unique identifier for this loader instance
 
         # Loading configuration
-        self.use_stage = config.get('use_stage', True)
         self.stage_name = config.get('stage_name', 'amp_STAGE')
         self.compression = config.get('compression', 'gzip')
+
+        # Connection pooling configuration (use config object values)
+        self.use_connection_pool = self.config.use_connection_pool
+        self.pool_size = self.config.pool_size
+
+        # Determine loading method from config
+        self.loading_method = self.config.loading_method
+
+        # Snowpipe Streaming clients and channels (one client per table)
+        self.streaming_clients: Dict[str, Any] = {}  # table_name -> StreamingIngestClient
+        self.streaming_channels: Dict[str, Any] = {}  # table_name:channel_name -> channel
 
     def _get_required_config_fields(self) -> list[str]:
         """Return required configuration fields"""
         return ['account', 'user', 'warehouse', 'database']
 
     def connect(self) -> None:
-        """Establish connection to Snowflake"""
+        """Establish connection to Snowflake using connection pool if enabled"""
         try:
-            # Build connection parameters
-            conn_params = {
-                'account': self.config.account,
-                'user': self.config.user,
-                'warehouse': self.config.warehouse,
-                'database': self.config.database,
-                'schema': self.config.schema,
-                'login_timeout': self.config.login_timeout,
-                'network_timeout': self.config.network_timeout,
-                'socket_timeout': self.config.socket_timeout,
-                'ocsp_response_cache_filename': self.config.ocsp_response_cache_filename,
-                'validate_default_parameters': self.config.validate_default_parameters,
-                'paramstyle': self.config.paramstyle,
-                **self.config.connection_params,
-            }
+            if self.use_connection_pool:
+                # Get or create connection pool
+                self._connection_pool = SnowflakeConnectionPool.get_pool(self.config, self.pool_size)
 
-            # Add authentication parameters
-            if self.config.authenticator:
-                conn_params['authenticator'] = self.config.authenticator
-                if self.config.authenticator == 'oauth':
-                    conn_params['token'] = self.config.token
-                elif self.config.authenticator == 'externalbrowser':
-                    pass  # No additional params needed
-                elif self.config.authenticator == 'okta' and self.config.okta_account_name:
-                    conn_params['authenticator'] = f'https://{self.config.okta_account_name}.okta.com'
-            elif self.config.private_key:
-                conn_params['private_key'] = self.config.private_key
-                if self.config.private_key_passphrase:
-                    conn_params['private_key_passphrase'] = self.config.private_key_passphrase
+                # Acquire a connection from the pool
+                self.connection = self._connection_pool.acquire()
+                self._owns_connection = False  # Pool owns the connection
+
+                self.logger.info(f'Acquired connection from pool (worker {self._worker_id})')
+
             else:
-                conn_params['password'] = self.config.password
+                # Create dedicated connection (legacy behavior)
+                # Set defaults for connection parameters
 
-            # Optional parameters
-            if self.config.role:
-                conn_params['role'] = self.config.role
-            if self.config.timezone:
-                conn_params['timezone'] = self.config.timezone
+                conn_params = {
+                    'account': self.config.account,
+                    'user': self.config.user,
+                    'warehouse': self.config.warehouse,
+                    'database': self.config.database,
+                    'schema': self.config.schema,
+                    'login_timeout': self.config.login_timeout,
+                    'network_timeout': self.config.network_timeout,
+                    'socket_timeout': self.config.socket_timeout,
+                    'ocsp_response_cache_filename': self.config.ocsp_response_cache_filename,
+                    'validate_default_parameters': self.config.validate_default_parameters,
+                    'paramstyle': self.config.paramstyle,
+                    **self.config.connection_params,
+                }
 
-            self.connection = snowflake.connector.connect(**conn_params)
+                # Add authentication parameters
+                if self.config.authenticator:
+                    conn_params['authenticator'] = self.config.authenticator
+                    if self.config.authenticator == 'oauth':
+                        conn_params['token'] = self.config.token
+                    elif self.config.authenticator == 'externalbrowser':
+                        pass  # No additional params needed
+                    elif self.config.authenticator == 'okta' and self.config.okta_account_name:
+                        conn_params['authenticator'] = f'https://{self.config.okta_account_name}.okta.com'
+                elif self.config.private_key:
+                    conn_params['private_key'] = self.config.private_key
+                    if self.config.private_key_passphrase:
+                        conn_params['private_key_passphrase'] = self.config.private_key_passphrase
+                else:
+                    conn_params['password'] = self.config.password
+
+                # Optional parameters
+                if self.config.role:
+                    conn_params['role'] = self.config.role
+                if self.config.timezone:
+                    conn_params['timezone'] = self.config.timezone
+
+                self.connection = snowflake.connector.connect(**conn_params)
+                self._owns_connection = True  # We own this connection
+
+                self.logger.info('Created dedicated Snowflake connection')
+
+            # Create cursor
             self.cursor = self.connection.cursor(DictCursor)
 
+            # Log connection info
             self.cursor.execute('SELECT CURRENT_VERSION(), CURRENT_WAREHOUSE(), CURRENT_DATABASE(), CURRENT_SCHEMA()')
             result = self.cursor.fetchone()
 
@@ -126,8 +826,19 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             self.logger.info(f'Warehouse: {result["CURRENT_WAREHOUSE()"]}')
             self.logger.info(f'Database: {result["CURRENT_DATABASE()"]}.{result["CURRENT_SCHEMA()"]}')
 
-            if self.use_stage:
+            # Initialize stage for stage loading (streaming client is created lazily per table)
+            if self.loading_method == 'stage':
                 self._create_stage()
+
+            # Replace in-memory state store with Snowflake-backed store if configured
+            state_config = getattr(self.config, 'state', None)
+            if state_config:
+                storage = getattr(state_config, 'storage', None)
+                enabled = getattr(state_config, 'enabled', True)
+                if storage == 'snowflake' and enabled:
+                    self.logger.info('Using Snowflake-backed persistent state store')
+                    self.state_store = SnowflakeStreamStateStore(self.connection, self.cursor, self.logger)
+            # Otherwise, state store is initialized in base class with in-memory storage (default)
 
             self._is_connected = True
 
@@ -135,16 +846,204 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             self.logger.error(f'Failed to connect to Snowflake: {str(e)}')
             raise
 
+    def _init_streaming_client(self, table_name: str) -> None:
+        """
+        Initialize Snowpipe Streaming client.
+
+        Each table gets its own pipe and streaming client because the pipe's
+        COPY INTO clause is tied to a specific table.
+
+        Args:
+            table_name: The target table name (for pipe naming)
+        """
+        try:
+            from snowflake.ingest.streaming import StreamingIngestClient
+
+            # Add authentication - Snowpipe Streaming requires key-pair auth
+            if not self.config.private_key:
+                raise ValueError(
+                    'Snowpipe Streaming requires private_key authentication. Password authentication is not supported.'
+                )
+
+            from cryptography.hazmat.primitives import serialization
+
+            # Private key is already parsed as a cryptography object in __post_init__
+            # Convert to PEM string for Snowpipe Streaming SDK
+            pem_bytes = self.config.private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            private_key_pem = pem_bytes.decode('utf-8')
+
+            # Build properties dict for authentication
+            # Snowpipe Streaming needs host in addition to account
+            properties = {
+                'account': self.config.account,
+                'user': self.config.user,
+                'private_key': private_key_pem,
+                'host': f'{self.config.account}.snowflakecomputing.com',
+            }
+
+            if self.config.role:
+                properties['role'] = self.config.role
+
+            # Each table gets its own pipe (pipe's COPY INTO is tied to one table)
+            pipe_name = f'{self.config.streaming_channel_prefix}_{table_name}_pipe'
+
+            # Create the streaming pipe before initializing the client
+            # The pipe must exist before the SDK can use it
+            self._create_streaming_pipe(pipe_name, table_name)
+
+            # Create client using Snowpipe Streaming API
+            client = StreamingIngestClient(
+                client_name=f'amp_{self.config.database}_{self.config.schema}_{table_name}',
+                db_name=self.config.database,
+                schema_name=self.config.schema,
+                pipe_name=pipe_name,
+                properties=properties,
+            )
+
+            # Store client for this table
+            self.streaming_clients[table_name] = client
+
+            self.logger.info(f'Initialized Snowpipe Streaming client with pipe {pipe_name} for table {table_name}')
+
+        except ImportError:
+            raise ImportError(
+                'snowpipe-streaming package required for Snowpipe Streaming. '
+                'Install with: pip install snowpipe-streaming'
+            ) from None
+        except Exception as e:
+            self.logger.error(f'Failed to initialize Snowpipe Streaming client for {table_name}: {e}')
+            raise
+
+    def _create_streaming_pipe(self, pipe_name: str, table_name: str) -> None:
+        """
+        Create Snowpipe Streaming pipe if it doesn't exist.
+
+        Uses DATA_SOURCE(TYPE => 'STREAMING') to create a streaming-compatible pipe
+        (not a traditional file-based pipe). The pipe maps VARIANT data from the stream
+        to table columns.
+
+        Args:
+            pipe_name: Name of the pipe to create
+            table_name: Target table for the pipe (table must already exist)
+        """
+        try:
+            # Query table schema to get column names and types
+            # Table must exist before creating the pipe
+            self.cursor.execute(
+                """
+                SELECT COLUMN_NAME, DATA_TYPE
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+                ORDER BY ORDINAL_POSITION
+                """,
+                (self.config.schema, table_name.upper()),
+            )
+            column_info = [(row['COLUMN_NAME'], row['DATA_TYPE']) for row in self.cursor.fetchall()]
+
+            if not column_info:
+                raise RuntimeError(f'Table {table_name} does not exist or has no columns')
+
+            # Build SELECT clause: map $1:column_name::TYPE for each column
+            # The streaming data comes in as VARIANT ($1) and needs to be parsed
+            select_columns = [f'$1:{col}::{dtype}' for col, dtype in column_info]
+            column_names = [col for col, _ in column_info]
+
+            # Create streaming pipe using DATA_SOURCE(TYPE => 'STREAMING')
+            # This creates a streaming-compatible pipe (not file-based)
+            create_pipe_sql = f"""
+            CREATE PIPE IF NOT EXISTS {pipe_name}
+            AS COPY INTO {table_name} ({', '.join(f'"{col}"' for col in column_names)})
+            FROM (
+                SELECT {', '.join(select_columns)}
+                FROM TABLE(DATA_SOURCE(TYPE => 'STREAMING'))
+            )
+            """
+            self.cursor.execute(create_pipe_sql)
+            self.logger.info(
+                f"Created or verified Snowpipe Streaming pipe '{pipe_name}' for table {table_name} "
+                f'with {len(column_info)} columns'
+            )
+        except Exception as e:
+            # Pipe creation might fail if it already exists or if we don't have permissions
+            # Log warning but continue - the SDK will validate if the pipe is accessible
+            self.logger.warning(f"Could not create streaming pipe '{pipe_name}': {e}")
+
+    def _get_or_create_channel(self, table_name: str, channel_suffix: str = 'default') -> Any:
+        """
+        Get or create a Snowpipe Streaming channel for a table.
+
+        Args:
+            table_name: Target table name (must already exist in Snowflake)
+            channel_suffix: Suffix for channel name (e.g., 'default', 'partition_0')
+
+        Returns:
+            Streaming channel instance
+        """
+        channel_name = f'{self.config.streaming_channel_prefix}_{table_name}_{channel_suffix}'
+        channel_key = f'{table_name}:{channel_name}'
+
+        if channel_key not in self.streaming_channels:
+            # Get the client for this table
+            client = self.streaming_clients[table_name]
+
+            # Open channel - returns (channel, status) tuple
+            channel, status = client.open_channel(channel_name=channel_name)
+
+            self.logger.info(f'Opened Snowpipe Streaming channel: {channel_name} with status: {status}')
+
+            self.streaming_channels[channel_key] = channel
+
+        return self.streaming_channels[channel_key]
+
     def disconnect(self) -> None:
-        """Close Snowflake connection"""
+        """Close Snowflake connection and streaming channels"""
+        # Close all streaming channels
+        if self.streaming_channels:
+            self.logger.info(f'Closing {len(self.streaming_channels)} streaming channels...')
+            for channel_key, channel in self.streaming_channels.items():
+                try:
+                    channel.close()
+                    self.logger.debug(f'Closed channel: {channel_key}')
+                except Exception as e:
+                    self.logger.warning(f'Error closing channel {channel_key}: {e}')
+
+            self.streaming_channels.clear()
+
+        # Close all streaming clients
+        if self.streaming_clients:
+            self.logger.info(f'Closing {len(self.streaming_clients)} Snowpipe Streaming clients...')
+            for table_name, client in self.streaming_clients.items():
+                try:
+                    client.close()
+                    self.logger.debug(f'Closed Snowpipe Streaming client for table {table_name}')
+                except Exception as e:
+                    self.logger.warning(f'Error closing streaming client for {table_name}: {e}')
+
+            self.streaming_clients.clear()
+
+        # Close cursor
         if self.cursor:
             self.cursor.close()
             self.cursor = None
+
+        # Release connection back to pool or close it
         if self.connection:
-            self.connection.close()
+            if self._connection_pool and not self._owns_connection:
+                # Return connection to pool
+                self._connection_pool.release(self.connection)
+                self.logger.info(f'Released connection to pool (worker {self._worker_id})')
+            else:
+                # Close owned connection
+                self.connection.close()
+                self.logger.info('Closed Snowflake connection')
+
             self.connection = None
+
         self._is_connected = False
-        self.logger.info('Disconnected from Snowflake')
 
     def _clear_table(self, table_name: str) -> None:
         """Clear table for overwrite mode"""
@@ -169,14 +1068,24 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             # For pandas, skip table creation - write_pandas will handle it
             if self.loading_method != 'pandas':
                 self._create_table_from_schema(batch.schema, table_name)
+                # Create history views if reorg history is enabled
+                self._create_history_views(table_name)
             self._created_tables.add(table_name.upper())
 
-        if self.use_stage:
-            rows_loaded = self._load_via_stage(batch, table_name)
-        else:
+        # Route to appropriate loading method based on loading_method setting
+        if self.loading_method == 'snowpipe_streaming':
+            rows_loaded = self._load_via_streaming(batch, table_name, **kwargs)
+        elif self.loading_method == 'insert':
             rows_loaded = self._load_via_insert(batch, table_name)
+        elif self.loading_method == 'pandas':
+            rows_loaded = self._load_via_pandas(batch, table_name)
+        else:  # default to 'stage'
+            rows_loaded = self._load_via_stage(batch, table_name)
 
-        self.connection.commit()
+        # Commit only for non-streaming methods (streaming commits automatically)
+        if self.loading_method != 'snowpipe_streaming':
+            self.connection.commit()
+
         return rows_loaded
 
     def _create_stage(self) -> None:
@@ -204,40 +1113,137 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             raise RuntimeError(error_msg) from e
 
     def _load_via_stage(self, batch: pa.RecordBatch, table_name: str) -> int:
-        """Load data via Snowflake internal stage using COPY INTO"""
+        """Load data via Snowflake internal stage using COPY INTO with binary data support"""
+        import datetime
 
+        t_start = time.time()
+
+        # Identify binary columns and convert to hex for CSV compatibility
+        binary_columns = {}
+        # Track VARIANT columns so we can use PARSE_JSON in COPY INTO
+        variant_columns = set()
+        modified_arrays = []
+        modified_fields = []
+
+        t_conversion_start = time.time()
+        for i, field in enumerate(batch.schema):
+            col_array = batch.column(i)
+
+            # Track _meta_block_ranges as VARIANT column for JSON parsing
+            if field.name == '_meta_block_ranges':
+                variant_columns.add(field.name)
+
+            # Check if this is a binary type that needs hex encoding
+            if (
+                pa.types.is_binary(field.type)
+                or pa.types.is_large_binary(field.type)
+                or pa.types.is_fixed_size_binary(field.type)
+            ):
+                binary_columns[field.name] = field.type
+
+                # Convert binary data to hex strings using list comprehension (faster)
+                pylist = col_array.to_pylist()
+                hex_values = [val.hex() if val is not None else None for val in pylist]
+
+                # Create string array for CSV
+                modified_arrays.append(pa.array(hex_values, type=pa.string()))
+                modified_fields.append(pa.field(field.name, pa.string()))
+
+            # Convert timestamps to string for CSV compatibility
+            elif pa.types.is_timestamp(field.type):
+                # Convert to Python list and format as ISO strings (faster)
+                pylist = col_array.to_pylist()
+                timestamp_values = [
+                    dt.strftime('%Y-%m-%d %H:%M:%S.%f')
+                    if isinstance(dt, datetime.datetime)
+                    else (str(dt) if dt is not None else None)
+                    for dt in pylist
+                ]
+
+                modified_arrays.append(pa.array(timestamp_values, type=pa.string()))
+                modified_fields.append(pa.field(field.name, pa.string()))
+
+            else:
+                # Keep other columns as-is
+                modified_arrays.append(col_array)
+                modified_fields.append(field)
+
+        t_conversion_end = time.time()
+        self.logger.debug(
+            f'Data conversion took {t_conversion_end - t_conversion_start:.2f}s for {batch.num_rows} rows'
+        )
+
+        # Create modified batch with hex-encoded binary columns
+        t_batch_start = time.time()
+        modified_schema = pa.schema(modified_fields)
+        modified_batch = pa.RecordBatch.from_arrays(modified_arrays, schema=modified_schema)
+        t_batch_end = time.time()
+        self.logger.debug(f'Batch creation took {t_batch_end - t_batch_start:.2f}s')
+
+        # Write to CSV
+        t_csv_start = time.time()
         csv_buffer = io.BytesIO()
-
         write_options = pa_csv.WriteOptions(include_header=False, delimiter='|', quoting_style='needed')
-
-        pa_csv.write_csv(batch, csv_buffer, write_options=write_options)
+        pa_csv.write_csv(modified_batch, csv_buffer, write_options=write_options)
 
         csv_content = csv_buffer.getvalue()
         csv_buffer.close()
+        t_csv_end = time.time()
+        self.logger.debug(f'CSV writing took {t_csv_end - t_csv_start:.2f}s ({len(csv_content)} bytes)')
 
-        stage_path = f'@{self.stage_name}/temp_{table_name}_{int(time.time() * 1000)}.csv'
+        # Add worker_id to make file names unique across parallel workers
+        stage_path = f'@{self.stage_name}/temp_{table_name}_{self._worker_id}_{int(time.time() * 1000000)}.csv'
 
+        t_put_start = time.time()
         self.cursor.execute(f"PUT 'file://-' {stage_path} OVERWRITE = TRUE", file_stream=io.BytesIO(csv_content))
+        t_put_end = time.time()
+        self.logger.debug(f'PUT command took {t_put_end - t_put_start:.2f}s')
+
+        # Build column list with transformations - convert hex strings back to binary, parse JSON for VARIANT
+        final_column_specs = []
+        for i, field in enumerate(batch.schema, start=1):
+            if field.name in binary_columns:
+                # Use TO_BINARY to convert hex string back to binary
+                final_column_specs.append(f"TO_BINARY(${i}, 'HEX')")
+            elif field.name in variant_columns:
+                # Use PARSE_JSON to convert JSON string to VARIANT
+                final_column_specs.append(f'PARSE_JSON(${i})')
+            else:
+                final_column_specs.append(f'${i}')
 
         column_names = [f'"{field.name}"' for field in batch.schema]
 
         copy_sql = f"""
         COPY INTO {table_name} ({', '.join(column_names)})
-        FROM {stage_path}
+        FROM (
+            SELECT {', '.join(final_column_specs)}
+            FROM {stage_path}
+        )
         ON_ERROR = 'ABORT_STATEMENT'
         PURGE = TRUE
         """
 
+        t_copy_start = time.time()
         result = self.cursor.execute(copy_sql).fetchone()
         rows_loaded = result['rows_loaded'] if result else batch.num_rows
+        t_copy_end = time.time()
+        self.logger.debug(f'COPY INTO took {t_copy_end - t_copy_start:.2f}s ({rows_loaded} rows)')
+
+        t_end = time.time()
+        self.logger.info(
+            f'Total _load_via_stage took {t_end - t_start:.2f}s for {rows_loaded} rows '
+            f'({rows_loaded / (t_end - t_start):.0f} rows/sec)'
+        )
 
         return rows_loaded
 
     def _load_via_insert(self, batch: pa.RecordBatch, table_name: str) -> int:
-        """Load data via INSERT statements using Arrow's native iteration"""
+        """Load data via INSERT statements with proper type conversions for Snowflake"""
+        import datetime
 
         column_names = [field.name for field in batch.schema]
         quoted_column_names = [f'"{field.name}"' for field in batch.schema]
+        schema_fields = {field.name: field.type for field in batch.schema}
 
         placeholders = ', '.join(['?'] * len(quoted_column_names))
         insert_sql = f"""
@@ -248,15 +1254,42 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         rows = []
         data_dict = batch.to_pydict()
 
-        # Transpose to row-wise format
+        # Transpose to row-wise format with type conversions
         for i in range(batch.num_rows):
             row = []
             for col_name in column_names:
                 value = data_dict[col_name][i]
+                field_type = schema_fields[col_name]
 
                 # Convert Arrow nulls to None
                 if value is None or (hasattr(value, 'is_valid') and not value.is_valid):
                     row.append(None)
+                    continue
+
+                # Convert Arrow scalars to Python types if needed
+                if hasattr(value, 'as_py'):
+                    value = value.as_py()
+
+                # Now handle type-specific conversions
+                if value is None:
+                    row.append(None)
+                # Convert timestamps to ISO string for Snowflake
+                # Snowflake connector has issues with datetime objects in qmark paramstyle
+                elif pa.types.is_timestamp(field_type):
+                    if isinstance(value, datetime.datetime):
+                        # Convert to ISO format string that Snowflake can parse
+                        # Format: 'YYYY-MM-DD HH:MM:SS.ffffff'
+                        row.append(value.strftime('%Y-%m-%d %H:%M:%S.%f'))
+                    else:
+                        # Shouldn't reach here after as_py() conversion
+                        row.append(str(value) if value is not None else None)
+                # Keep binary data as bytes (Snowflake handles bytes directly)
+                elif (
+                    pa.types.is_binary(field_type)
+                    or pa.types.is_large_binary(field_type)
+                    or pa.types.is_fixed_size_binary(field_type)
+                ):
+                    row.append(value)
                 else:
                     row.append(value)
             rows.append(row)
@@ -264,6 +1297,380 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         self.cursor.executemany(insert_sql, rows)
 
         return len(rows)
+
+    def _load_via_pandas(self, batch: pa.RecordBatch, table_name: str) -> int:
+        """
+        Load data via pandas DataFrame using Snowflake's write_pandas().
+
+        This method leverages Snowflake's native pandas integration which handles
+        type conversions automatically, including binary data.
+
+        Optimizations:
+        - Uses PyArrow-backed DataFrames to avoid unnecessary type conversions
+        - Enables compression for staging files to reduce network transfer
+        - Configures optimal chunk size for parallel uploads
+        - Uses logical types for proper timestamp handling
+        - Retries on transient errors (connection resets, credential expiration)
+
+        Args:
+            batch: PyArrow RecordBatch to load
+            table_name: Target table name (must already exist)
+
+        Returns:
+            Number of rows loaded
+
+        Raises:
+            RuntimeError: If write_pandas fails after retries
+            ImportError: If pandas or snowflake.connector.pandas_tools not available
+        """
+        try:
+            from snowflake.connector.pandas_tools import write_pandas
+        except ImportError:
+            raise ImportError(
+                'pandas and snowflake.connector.pandas_tools are required for pandas loading. '
+                'Install with: pip install pandas'
+            ) from None
+
+        t_start = time.time()
+        max_retries = 3  # Retry on transient errors
+
+        # Convert PyArrow RecordBatch to pandas DataFrame
+        # Use PyArrow-backed DataFrame for zero-copy conversion (more efficient)
+        t_conversion_start = time.time()
+        try:
+            # PyArrow-backed DataFrames avoid unnecessary type conversions
+            # Requires pandas >= 1.5.0 with PyArrow support
+            if pd is not None and hasattr(pd, 'ArrowDtype'):
+                df = batch.to_pandas(types_mapper=pd.ArrowDtype)
+            else:
+                df = batch.to_pandas()
+        except Exception:
+            # Fallback to regular pandas if PyArrow backend not available
+            df = batch.to_pandas()
+        t_conversion_end = time.time()
+        self.logger.debug(
+            f'Pandas conversion took {t_conversion_end - t_conversion_start:.2f}s for {batch.num_rows} rows'
+        )
+
+        # Use Snowflake's write_pandas to load data with retry logic
+        # This handles all type conversions internally and is optimized for bulk loading
+        # Let write_pandas handle table creation for better compatibility
+        t_write_start = time.time()
+
+        # Build write_pandas parameters
+        write_params = {
+            'df': df,
+            'table_name': table_name,
+            'database': self.config.database,
+            'schema': self.config.schema,
+            'quote_identifiers': True,  # Quote identifiers for safety
+            'auto_create_table': True,  # Let write_pandas create the table
+            'overwrite': False,  # Append mode - don't overwrite existing data
+            'use_logical_type': True,  # Use proper logical types for timestamps and other complex types
+        }
+
+        # Add compression if configured
+        if self.config.pandas_compression and self.config.pandas_compression != 'none':
+            write_params['compression'] = self.config.pandas_compression
+
+        # Add parallel parameter (may not be supported in all versions)
+        try:
+            write_params['parallel'] = self.config.pandas_parallel_threads
+        except TypeError:
+            # parallel parameter not supported in this version, skip it
+            pass
+
+        # Retry loop for transient errors
+        for attempt in range(max_retries + 1):
+            try:
+                # Pass current connection
+                write_params['conn'] = self.connection
+                success, num_chunks, num_rows, output = write_pandas(**write_params)
+
+                if not success:
+                    raise RuntimeError(f'write_pandas failed: {output}')
+
+                # Success! Break out of retry loop
+                break
+
+            except Exception as e:
+                error_str = str(e).lower()
+                # Check if error is transient (connection reset, credential expiration, timeout)
+                is_transient = any(
+                    pattern in error_str
+                    for pattern in [
+                        'connection reset',
+                        'econnreset',
+                        '403',
+                        'forbidden',
+                        'timeout',
+                        'credential',
+                        'expired',
+                        'connection aborted',
+                        'jwt',
+                        'invalid',  # JWT token expiration
+                    ]
+                )
+
+                if attempt < max_retries and is_transient:
+                    wait_time = 2**attempt  # Exponential backoff: 1s, 2s, 4s
+                    self.logger.warning(
+                        f'Pandas loading error (attempt {attempt + 1}/{max_retries + 1}), '
+                        f'refreshing connection and retrying in {wait_time}s: {e}'
+                    )
+                    time.sleep(wait_time)
+
+                    # Get a fresh connection from the pool
+                    # This will trigger connection validation and potential refresh
+                    if self._connection_pool:
+                        self._connection_pool.release(self.connection)
+                        self.connection = self._connection_pool.acquire()
+                        self.cursor = self.connection.cursor(DictCursor)
+                else:
+                    # Final attempt failed or non-transient error
+                    self.logger.error(f'Pandas loading failed after {attempt + 1} attempts: {e}')
+                    raise
+
+        t_write_end = time.time()
+
+        t_end = time.time()
+        write_time = t_write_end - t_write_start
+        total_time = t_end - t_start
+        throughput = num_rows / total_time if total_time > 0 else 0
+
+        self.logger.debug(f'write_pandas took {write_time:.2f}s for {num_rows} rows in {num_chunks} chunks')
+        self.logger.info(
+            f'Total _load_via_pandas took {total_time:.2f}s for {num_rows} rows ({throughput:.0f} rows/sec)'
+        )
+
+        return num_rows
+
+    def _arrow_batch_to_snowflake_rows(self, batch: pa.RecordBatch) -> List[Dict[str, Any]]:
+        """
+        Convert PyArrow RecordBatch to list of row dictionaries for Snowpipe Streaming.
+
+        OPTIMIZED: Minimal conversions - only timestamps and binary data.
+        Snowpipe SDK requires ISO format strings for timestamps and hex strings for binary data.
+
+        Performance:
+        - Uses Arrow's C++ optimized to_pydict() for columnar extraction
+        - Converts timestamps (datetime → ISO string)
+        - Converts binary data (bytes → hex string)
+        """
+        import sys
+
+        t_start = time.perf_counter()
+
+        # Identify timestamp and binary columns for conversion
+        timestamp_columns = set()
+        binary_columns = set()
+        for field in batch.schema:
+            if pa.types.is_timestamp(field.type) or pa.types.is_date(field.type):
+                timestamp_columns.add(field.name)
+            elif (
+                pa.types.is_binary(field.type)
+                or pa.types.is_large_binary(field.type)
+                or pa.types.is_fixed_size_binary(field.type)
+            ):
+                binary_columns.add(field.name)
+
+        # Use to_pydict() for Python type conversion
+        columns = batch.to_pydict()
+
+        # Convert timestamps to ISO format strings and binary to hex strings
+        t_timestamp_start = time.perf_counter()
+        for col_name in timestamp_columns:
+            if col_name in columns:
+                columns[col_name] = [v.isoformat() if v is not None else None for v in columns[col_name]]
+        t_timestamp_end = time.perf_counter()
+
+        t_binary_start = time.perf_counter()
+        for col_name in binary_columns:
+            if col_name in columns:
+                columns[col_name] = [v.hex() if v is not None else None for v in columns[col_name]]
+        t_binary_end = time.perf_counter()
+
+        # Transpose from columnar format to row-oriented format
+        t_transpose_start = time.perf_counter()
+        column_names = list(columns.keys())
+        rows = [
+            dict(zip(column_names, row_values, strict=False))
+            for row_values in zip(*[columns[col] for col in column_names], strict=False)
+        ]
+        t_transpose_end = time.perf_counter()
+
+        # Add reorg history tracking columns (when enabled)
+        # Note: _amp_batch_id is already in the batch from base loader
+        if self.config.preserve_reorg_history:
+            for row in rows:
+                row['_amp_is_current'] = True
+                row['_amp_reorg_batch_id'] = None  # NULL means not superseded
+
+        t_end = time.perf_counter()
+
+        # Log timing breakdown
+        total_time = t_end - t_start
+        timestamp_conversion_time = t_timestamp_end - t_timestamp_start
+        binary_conversion_time = t_binary_end - t_binary_start
+        transpose_time = t_transpose_end - t_transpose_start
+
+        timing_msg = (
+            f'⏱️  Row conversion timing for {batch.num_rows} rows: '
+            f'total={total_time * 1000:.2f}ms '
+            f'(timestamp={timestamp_conversion_time * 1000:.2f}ms, '
+            f'binary={binary_conversion_time * 1000:.2f}ms, '
+            f'transpose={transpose_time * 1000:.2f}ms)\n'
+        )
+        sys.stderr.write(timing_msg)
+        sys.stderr.flush()
+
+        return rows
+
+    def _is_transient_error(self, error: Exception) -> bool:
+        """
+        Check if error is transient and worth retrying.
+
+        Transient errors include network issues, rate limiting, and temporary service issues.
+        """
+        transient_patterns = [
+            'timeout',
+            'throttle',
+            'rate limit',
+            'service unavailable',
+            'connection reset',
+            'connection refused',
+            'temporarily unavailable',
+            'network',
+        ]
+
+        error_str = str(error).lower()
+        return any(pattern in error_str for pattern in transient_patterns)
+
+    def _append_with_retry(self, channel: Any, rows: List[Dict[str, Any]]) -> None:
+        """
+        Append rows to Snowpipe Streaming channel with automatic retry on transient failures.
+
+        Args:
+            channel: Snowpipe Streaming channel instance
+            rows: List of row dictionaries to append
+
+        Raises:
+            Exception: If insertion fails after all retries
+        """
+        max_retries = self.config.streaming_max_retries
+
+        for attempt in range(max_retries + 1):
+            try:
+                # Time the channel append operation
+                t_append_start = time.perf_counter()
+                channel.append_rows(rows)
+                t_append_end = time.perf_counter()
+
+                # Log timing to stderr for visibility
+                import sys
+
+                append_time_ms = (t_append_end - t_append_start) * 1000
+                rows_per_sec = len(rows) / append_time_ms * 1000
+                timing_msg = (
+                    f'⏱️  Snowpipe append: {len(rows)} rows in {append_time_ms:.2f}ms ({rows_per_sec:.0f} rows/sec)\n'
+                )
+                sys.stderr.write(timing_msg)
+                sys.stderr.flush()
+
+                return
+            except Exception as e:
+                # Check if we should retry
+                if attempt < max_retries and self._is_transient_error(e):
+                    wait_time = 2**attempt  # Exponential backoff: 1s, 2s, 4s
+                    self.logger.warning(
+                        f'Snowpipe Streaming error (attempt {attempt + 1}/{max_retries + 1}), '
+                        f'retrying in {wait_time}s: {e}'
+                    )
+                    time.sleep(wait_time)
+                else:
+                    # Final attempt failed or non-transient error
+                    self.logger.error(f'Snowpipe Streaming insertion failed after {attempt + 1} attempts: {e}')
+                    raise
+
+    def _load_via_streaming(self, batch: pa.RecordBatch, table_name: str, **kwargs) -> int:
+        """
+        Load data via Snowpipe Streaming API with optimal batch sizes and retry logic.
+
+        Optimizations:
+        - Splits large batches into optimal chunk sizes (50K rows) for Snowpipe Streaming
+        - Uses Arrow's zero-copy slice() operation for efficient chunking
+        - Delegates retry logic to helper method
+
+        Args:
+            batch: PyArrow RecordBatch to load
+            table_name: Target table name (must already exist)
+            **kwargs: Additional options including:
+                - channel_suffix: Optional channel suffix for parallel loading
+                - offset_token: Optional offset token for exactly-once semantics (currently unused)
+
+        Returns:
+            Number of rows loaded
+
+        Raises:
+            RuntimeError: If insertion fails after all retries
+        """
+        import sys
+
+        t_batch_start = time.perf_counter()
+
+        # Initialize streaming client for this table if needed (lazy initialization, one client per table)
+        if table_name not in self.streaming_clients:
+            self._init_streaming_client(table_name)
+
+        # Get channel (create if needed)
+        channel_suffix = kwargs.get('channel_suffix', 'default')
+        channel = self._get_or_create_channel(table_name, channel_suffix)
+
+        # OPTIMIZATION: Split large batches into optimal chunks for Snowpipe Streaming
+        # Snowpipe Streaming works best with chunks of 10K-50K rows
+        MAX_ROWS_PER_CHUNK = 50000
+
+        if batch.num_rows > MAX_ROWS_PER_CHUNK:
+            # Process in chunks using Arrow's zero-copy slice operation
+            total_loaded = 0
+            for offset in range(0, batch.num_rows, MAX_ROWS_PER_CHUNK):
+                chunk_size = min(MAX_ROWS_PER_CHUNK, batch.num_rows - offset)
+                chunk = batch.slice(offset, chunk_size)  # Zero-copy slice!
+
+                # Convert chunk to row-oriented format
+                rows = self._arrow_batch_to_snowflake_rows(chunk)
+
+                # Append with retry logic
+                self._append_with_retry(channel, rows)
+                total_loaded += len(rows)
+
+            t_batch_end = time.perf_counter()
+            batch_time_ms = (t_batch_end - t_batch_start) * 1000
+            num_chunks = (batch.num_rows + MAX_ROWS_PER_CHUNK - 1) // MAX_ROWS_PER_CHUNK
+            rows_per_sec = total_loaded / batch_time_ms * 1000
+            timing_msg = (
+                f'⏱️  Batch load complete: {total_loaded} rows in {batch_time_ms:.2f}ms '
+                f'({rows_per_sec:.0f} rows/sec) [{num_chunks} chunks]\n'
+            )
+            sys.stderr.write(timing_msg)
+            sys.stderr.flush()
+
+            return total_loaded
+        else:
+            # Single batch (small enough to process at once)
+            rows = self._arrow_batch_to_snowflake_rows(batch)
+            self._append_with_retry(channel, rows)
+
+            t_batch_end = time.perf_counter()
+            batch_time_ms = (t_batch_end - t_batch_start) * 1000
+            rows_per_sec = len(rows) / batch_time_ms * 1000
+            timing_msg = (
+                f'⏱️  Batch load complete: {len(rows)} rows in {batch_time_ms:.2f}ms ({rows_per_sec:.0f} rows/sec)\n'
+            )
+            sys.stderr.write(timing_msg)
+            sys.stderr.flush()
+
+            return len(rows)
 
     def _create_table_from_schema(self, schema: pa.Schema, table_name: str) -> None:
         """Create Snowflake table from Arrow schema"""
@@ -320,8 +1727,16 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
         # Build CREATE TABLE statement
         columns = []
         for field in schema:
+            # Special case: new metadata columns
+            if field.name == '_amp_batch_id':
+                snowflake_type = 'VARCHAR'  # Compact batch identifier
+            elif field.name == '_amp_block_ranges':
+                snowflake_type = 'VARIANT'  # Optional full JSON metadata
+            elif field.name == '_meta_block_ranges':
+                # Legacy column name - still support for backward compatibility
+                snowflake_type = 'VARIANT'
             # Handle complex types
-            if pa.types.is_timestamp(field.type):
+            elif pa.types.is_timestamp(field.type):
                 if field.type.tz is not None:
                     snowflake_type = 'TIMESTAMP_TZ'
                 else:
@@ -356,6 +1771,28 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             # Add column definition - quote column name for safety with special characters
             columns.append(f'"{field.name}" {snowflake_type}{nullable}')
 
+        # Always add batch_id metadata column for streaming/reorg support
+        # This supports hybrid streaming where initial batches don't have metadata but later ones do
+        schema_field_names = [field.name for field in schema]
+
+        # Add compact batch_id column (primary metadata for fast reorg invalidation)
+        if '_amp_batch_id' not in schema_field_names:
+            # Use VARCHAR for compact batch identifiers (16 hex chars per batch)
+            # This column is optional and can be NULL for non-streaming loads
+            columns.append('"_amp_batch_id" VARCHAR')
+
+        # Optionally add full metadata for debugging (if coming from base loader with store_full_metadata=True)
+        if '_amp_block_ranges' not in schema_field_names and any(f.name == '_amp_block_ranges' for f in schema):
+            columns.append('"_amp_block_ranges" VARIANT')
+
+        # Add columns for reorg history tracking (when enabled)
+        # Note: _amp_batch_id is automatically added by base loader's _add_metadata_columns()
+        if self.config.preserve_reorg_history:
+            if '_amp_is_current' not in schema_field_names:
+                columns.append('"_amp_is_current" BOOLEAN NOT NULL')
+            if '_amp_reorg_batch_id' not in schema_field_names:
+                columns.append('"_amp_reorg_batch_id" VARCHAR(16)')  # Batch that superseded this (NULL if current)
+
         create_sql = f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
             {', '.join(columns)}
@@ -372,7 +1809,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
     def _get_loader_batch_metadata(self, batch: pa.RecordBatch, duration: float, **kwargs) -> Dict[str, Any]:
         """Get Snowflake-specific metadata for batch operation"""
         return {
-            'loading_method': 'stage' if self.use_stage else 'insert',
+            'loading_method': self.loading_method,
             'warehouse': self.config.warehouse,
             'database': self.config.database,
             'schema': self.config.schema,
@@ -383,7 +1820,7 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
     ) -> Dict[str, Any]:
         """Get Snowflake-specific metadata for table operation"""
         return {
-            'loading_method': 'stage' if self.use_stage else 'insert',
+            'loading_method': self.loading_method,
             'warehouse': self.config.warehouse,
             'database': self.config.database,
             'schema': self.config.schema,
@@ -462,78 +1899,204 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
             self.logger.error(f"Failed to get table info for '{table_name}': {str(e)}")
             return None
 
-    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str) -> None:
+    def _add_metadata_columns(self, data: pa.RecordBatch, block_ranges: List[BlockRange]) -> pa.RecordBatch:
         """
-        Handle blockchain reorganization by deleting affected rows from Snowflake.
+        Override base loader to add reorg history columns when preserve_reorg_history is enabled.
 
-        Snowflake's SQL capabilities allow for efficient deletion using JSON functions
-        to parse the _meta_block_ranges column and identify affected rows.
+        Calls base implementation to add _amp_batch_id and _amp_block_ranges, then adds:
+        - _amp_is_current: Boolean indicating if this is the current (not superseded) version
+        - _amp_reorg_batch_id: Batch ID that superseded this row (NULL if current)
+        """
+        # Call base implementation to add standard metadata columns
+        result = super()._add_metadata_columns(data, block_ranges)
+
+        # Add reorg history tracking columns (when enabled)
+        if self.config.preserve_reorg_history:
+            num_rows = len(result)
+
+            # Add _amp_is_current (all rows start as current)
+            is_current_array = pa.array([True] * num_rows, type=pa.bool_())
+            result = result.append_column('_amp_is_current', is_current_array)
+
+            # Add _amp_reorg_batch_id (NULL means not superseded)
+            reorg_batch_id_array = pa.array([None] * num_rows, type=pa.string())
+            result = result.append_column('_amp_reorg_batch_id', reorg_batch_id_array)
+
+        return result
+
+    def _create_history_views(self, table_name: str) -> None:
+        """
+        Create views for querying current and historical data.
+
+        Creates two views when preserve_reorg_history is enabled:
+        1. {table}_current: Shows only active rows (_amp_is_current = TRUE)
+        2. {table}_history: Shows all rows including invalidated ones
+
+        Args:
+            table_name: Base table name to create views for
+        """
+        if not self.config.preserve_reorg_history:
+            return
+
+        try:
+            # Create _current view for active data only
+            current_view_name = f'{table_name}_current'
+            current_view_sql = f"""
+            CREATE OR REPLACE VIEW {current_view_name} AS
+            SELECT * FROM {table_name}
+            WHERE "_amp_is_current" = TRUE
+            """
+
+            self.logger.debug(f'Creating current data view: {current_view_name}')
+            self.cursor.execute(current_view_sql)
+
+            # Create _history view for all data (including invalidated)
+            history_view_name = f'{table_name}_history'
+            history_view_sql = f"""
+            CREATE OR REPLACE VIEW {history_view_name} AS
+            SELECT * FROM {table_name}
+            """
+
+            self.logger.debug(f'Creating history view: {history_view_name}')
+            self.cursor.execute(history_view_sql)
+
+            self.connection.commit()
+            self.logger.info(f'Created reorg history views: {current_view_name}, {history_view_name}')
+
+        except Exception as e:
+            self.logger.error(f"Failed to create history views for '{table_name}': {str(e)}")
+            raise
+
+    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str, connection_name: str) -> None:
+        """
+        Handle blockchain reorganization by invalidating affected rows using batch IDs.
+
+        Supports two modes based on preserve_reorg_history config:
+        1. DELETE mode (default): Removes affected rows entirely
+        2. UPDATE mode: Marks rows as historical with temporal tracking
+
+        This method uses the state_store to find affected batch IDs, then performs
+        invalidation using those IDs. Much faster than JSON/VARIANT queries.
+
+        For Snowpipe Streaming mode:
+        - Closes all streaming channels for the affected table
+        - Performs batch ID-based invalidation
+        - Channels will be recreated on next insert with new offset tokens
 
         Args:
             invalidation_ranges: List of block ranges to invalidate (reorg points)
             table_name: The table containing the data to invalidate
+            connection_name: Connection identifier for state lookup
         """
         if not invalidation_ranges:
             return
 
         try:
-            # First check if the table has the metadata column
-            self.cursor.execute(
-                """
-                SELECT COUNT(*) as count
-                FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = '_META_BLOCK_RANGES'
-                """,
-                (self.config.schema, table_name.upper()),
-            )
+            # For Snowpipe Streaming mode, close all channels for this table before deletion
+            if self.loading_method == 'snowpipe_streaming' and self.streaming_channels:
+                channels_to_close = []
 
-            result = self.cursor.fetchone()
-            if not result or result['COUNT'] == 0:
-                self.logger.warning(
-                    f"Table '{table_name}' doesn't have '_meta_block_ranges' column, skipping reorg handling"
-                )
-                return
+                # Find all channels for this table
+                for channel_key, channel in list(self.streaming_channels.items()):
+                    if channel_key.startswith(f'{table_name}:'):
+                        channels_to_close.append((channel_key, channel))
 
-            # Build DELETE statement with conditions for each invalidation range
-            # Snowflake's PARSE_JSON and ARRAY_SIZE functions help work with JSON data
-            delete_conditions = []
+                # Close and remove the channels
+                if channels_to_close:
+                    self.logger.info(
+                        f'Closing {len(channels_to_close)} streaming channels for table '
+                        f"'{table_name}' due to blockchain reorg"
+                    )
+
+                    for channel_key, channel in channels_to_close:
+                        try:
+                            channel.close()
+                            del self.streaming_channels[channel_key]
+                            self.logger.debug(f'Closed streaming channel: {channel_key}')
+                        except Exception as e:
+                            self.logger.warning(f'Error closing channel {channel_key}: {e}')
+                            # Continue closing other channels even if one fails
+
+                    self.logger.info(
+                        f"All streaming channels for table '{table_name}' closed. "
+                        'Channels will be recreated on next insert with new offset tokens.'
+                    )
+
+            # Collect all affected batch IDs from state store
+            all_affected_batch_ids = []
+            reorg_batch_ids = {}  # Store batch_id for each network's reorg event
 
             for range_obj in invalidation_ranges:
-                network = range_obj.network
-                reorg_start = range_obj.start
-
-                # Create condition for this network's reorg
-                # Delete rows where any range in the JSON array for this network has end >= reorg_start
-                condition = f"""
-                EXISTS (
-                    SELECT 1
-                    FROM TABLE(FLATTEN(input => PARSE_JSON("_META_BLOCK_RANGES"))) f
-                    WHERE f.value:network::STRING = '{network}'
-                    AND f.value:end::NUMBER >= {reorg_start}
+                # Get batch IDs that need to be invalidated from state store
+                affected_batch_ids = self.state_store.invalidate_from_block(
+                    connection_name, table_name, range_obj.network, range_obj.start
                 )
-                """
-                delete_conditions.append(condition)
+                all_affected_batch_ids.extend(affected_batch_ids)
 
-            # Combine conditions with OR
-            if delete_conditions:
-                where_clause = ' OR '.join(f'({cond})' for cond in delete_conditions)
+                # Create batch_id for this reorg event (for history tracking)
+                if self.config.preserve_reorg_history:
+                    # Create a batch identifier from the reorg invalidation range
+                    # This batch represents the "new corrected data" that will replace the old data
+                    from ...streaming.state import BatchIdentifier
 
-                # Execute deletion
-                delete_sql = f'DELETE FROM {table_name} WHERE {where_clause}'
+                    reorg_batch = BatchIdentifier.from_block_range(range_obj)
+                    reorg_batch_ids[range_obj.network] = reorg_batch.unique_id
 
-                self.logger.info(
-                    f'Executing blockchain reorg deletion for {len(invalidation_ranges)} networks '
-                    f"in Snowflake table '{table_name}'"
-                )
+            if not all_affected_batch_ids:
+                action = 'update' if self.config.preserve_reorg_history else 'delete'
+                self.logger.info(f'No batches to {action} for reorg in {table_name}')
+                return
 
-                # Execute the delete and get row count
-                self.cursor.execute(delete_sql)
-                deleted_rows = self.cursor.rowcount
+            # Build list of unique IDs to process
+            unique_batch_ids = list(set(bid.unique_id for bid in all_affected_batch_ids))
 
-                # Commit the transaction
+            # Process in chunks to avoid query size limits
+            chunk_size = 1000
+            total_affected = 0
+
+            for i in range(0, len(unique_batch_ids), chunk_size):
+                chunk = unique_batch_ids[i : i + chunk_size]
+
+                # Use LIKE with OR for multi-batch matching (handles "|"-separated IDs)
+                # Snowflake doesn't have LIKE ANY, so we build OR conditions
+                like_conditions = ' OR '.join([f'"_amp_batch_id" LIKE \'%{bid}%\'' for bid in chunk])
+
+                if self.config.preserve_reorg_history:
+                    # UPDATE mode: Mark rows as historical instead of deleting
+                    # Use first reorg batch_id (typically single network per table)
+                    reorg_batch_id = next(iter(reorg_batch_ids.values()))
+
+                    update_sql = f"""
+                    UPDATE {table_name}
+                    SET "_amp_is_current" = FALSE,
+                        "_amp_reorg_batch_id" = '{reorg_batch_id}'
+                    WHERE ({like_conditions}) AND "_amp_is_current" = TRUE
+                    """
+
+                    self.logger.debug(f'Updating chunk {i // chunk_size + 1} with {len(chunk)} batch IDs')
+                    self.cursor.execute(update_sql)
+                    affected_count = self.cursor.rowcount
+                    total_affected += affected_count
+                else:
+                    # DELETE mode: Remove rows (existing behavior)
+                    delete_sql = f"""
+                    DELETE FROM {table_name}
+                    WHERE {like_conditions}
+                    """
+
+                    self.logger.debug(f'Deleting chunk {i // chunk_size + 1} with {len(chunk)} batch IDs')
+                    self.cursor.execute(delete_sql)
+                    affected_count = self.cursor.rowcount
+                    total_affected += affected_count
+
+                # Commit after each chunk
                 self.connection.commit()
 
-                self.logger.info(f"Blockchain reorg deleted {deleted_rows} rows from table '{table_name}'")
+            action = 'updated' if self.config.preserve_reorg_history else 'deleted'
+            self.logger.info(
+                f'{action.capitalize()} {total_affected} rows for reorg in {table_name} '
+                f'({len(all_affected_batch_ids)} batch IDs)'
+            )
 
         except Exception as e:
             self.logger.error(f"Failed to handle blockchain reorg for table '{table_name}': {str(e)}")
