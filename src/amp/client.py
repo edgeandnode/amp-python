@@ -4,6 +4,7 @@ from typing import Dict, Iterator, List, Optional, Union
 import pyarrow as pa
 from google.protobuf.any_pb2 import Any
 from pyarrow import flight
+from pyarrow.flight import ClientMiddleware, ClientMiddlewareFactory
 
 from . import FlightSql_pb2
 from .config.connection_manager import ConnectionManager
@@ -17,6 +18,38 @@ from .streaming import (
     ResumeWatermark,
     StreamingResultIterator,
 )
+
+
+class AuthMiddleware(ClientMiddleware):
+    """Flight middleware to add Bearer token authentication header."""
+
+    def __init__(self, token: str):
+        """Initialize auth middleware.
+
+        Args:
+            token: Bearer token to add to requests
+        """
+        self.token = token
+
+    def sending_headers(self):
+        """Add Authorization header to outgoing requests."""
+        return {'authorization': f'Bearer {self.token}'}
+
+
+class AuthMiddlewareFactory(ClientMiddlewareFactory):
+    """Factory for creating auth middleware instances."""
+
+    def __init__(self, token: str):
+        """Initialize auth middleware factory.
+
+        Args:
+            token: Bearer token to use for authentication
+        """
+        self.token = token
+
+    def start_call(self, info):
+        """Create auth middleware for each call."""
+        return AuthMiddleware(self.token)
 
 
 class QueryBuilder:
@@ -264,9 +297,24 @@ class Client:
         if url and not query_url:
             query_url = url
 
+        # Get auth token if using amp auth system
+        flight_auth_token = None
+        if auth and not auth_token:
+            from amp.auth import AuthService
+
+            auth_service = AuthService()
+            flight_auth_token = auth_service.get_token()
+        elif auth_token:
+            flight_auth_token = auth_token
+
         # Initialize Flight SQL client
         if query_url:
-            self.conn = flight.connect(query_url)
+            # Add auth middleware if token is provided
+            if flight_auth_token:
+                middleware = [AuthMiddlewareFactory(flight_auth_token)]
+                self.conn = flight.connect(query_url, middleware=middleware)
+            else:
+                self.conn = flight.connect(query_url)
         else:
             raise ValueError('Either url or query_url must be provided for Flight SQL connection')
 
