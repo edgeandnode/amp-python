@@ -238,15 +238,17 @@ class Client:
         query_url: Query endpoint URL via Flight SQL (e.g., 'grpc://localhost:1602')
         admin_url: Optional Admin API URL (e.g., 'http://localhost:8080')
         auth_token: Optional Bearer token for Admin API authentication
+        auth: If True, load auth token from ~/.amp-cli-config (shared with TS CLI)
 
     Example:
         >>> # Query-only client (backward compatible)
         >>> client = Client(url='grpc://localhost:1602')
         >>>
-        >>> # Client with admin capabilities
+        >>> # Client with admin capabilities and amp auth
         >>> client = Client(
         ...     query_url='grpc://localhost:1602',
-        ...     admin_url='http://localhost:8080'
+        ...     admin_url='http://localhost:8080',
+        ...     auth=True
         ... )
     """
 
@@ -256,6 +258,7 @@ class Client:
         query_url: Optional[str] = None,
         admin_url: Optional[str] = None,
         auth_token: Optional[str] = None,
+        auth: bool = False,
     ):
         # Backward compatibility: url parameter → query_url
         if url and not query_url:
@@ -276,7 +279,7 @@ class Client:
         if admin_url:
             from amp.admin.client import AdminClient
 
-            self._admin_client = AdminClient(admin_url, auth_token)
+            self._admin_client = AdminClient(admin_url, auth_token=auth_token, auth=auth)
         else:
             self._admin_client = None
 

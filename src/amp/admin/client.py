@@ -20,20 +20,38 @@ class AdminClient:
     Args:
         base_url: Base URL for Admin API (e.g., 'http://localhost:8080')
         auth_token: Optional Bearer token for authentication
+        auth: If True, load auth token from ~/.amp-cli-config (shared with TS CLI)
 
     Example:
-        >>> client = AdminClient('http://localhost:8080')
-        >>> datasets = client.datasets.list_all()
+        >>> # Use amp auth system
+        >>> client = AdminClient('http://localhost:8080', auth=True)
+        >>>
+        >>> # Or use manual token
+        >>> client = AdminClient('http://localhost:8080', auth_token='your-token')
     """
 
-    def __init__(self, base_url: str, auth_token: Optional[str] = None):
+    def __init__(self, base_url: str, auth_token: Optional[str] = None, auth: bool = False):
         """Initialize Admin API client.
 
         Args:
             base_url: Base URL for Admin API (e.g., 'http://localhost:8080')
             auth_token: Optional Bearer token for authentication
+            auth: If True, load auth token from ~/.amp-cli-config
+
+        Raises:
+            ValueError: If both auth=True and auth_token are provided
         """
+        if auth and auth_token:
+            raise ValueError('Cannot specify both auth=True and auth_token. Choose one authentication method.')
+
         self.base_url = base_url.rstrip('/')
+
+        # Load token from amp auth system if requested
+        if auth:
+            from amp.auth import AuthService
+
+            auth_service = AuthService()
+            auth_token = auth_service.get_token()
 
         # Build headers
         headers = {}
