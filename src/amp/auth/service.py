@@ -196,9 +196,7 @@ class AuthService:
 
         # Validate user ID matches (security check)
         if refresh_response.user.id != auth.userId:
-            raise ValueError(
-                f'User ID mismatch after refresh. Expected {auth.userId}, got {refresh_response.user.id}'
-            )
+            raise ValueError(f'User ID mismatch after refresh. Expected {auth.userId}, got {refresh_response.user.id}')
 
         # Calculate new expiry
         now_ms = int(time.time() * 1000)
@@ -225,3 +223,32 @@ class AuthService:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self._http.close()
+
+    def login(self, verbose: bool = True, auto_open_browser: bool = True) -> None:
+        """Perform interactive browser-based login.
+
+        Opens browser for OAuth2 device authorization flow with PKCE.
+        Saves authentication tokens to ~/.amp-cli-config/amp_cli_auth.
+
+        Args:
+            verbose: Print progress messages
+            auto_open_browser: Automatically open browser
+
+        Raises:
+            ValueError: If authentication fails
+
+        Example:
+            >>> auth = AuthService()
+            >>> auth.login()  # Opens browser for authentication
+            >>> # Auth tokens saved to ~/.amp-cli-config/amp_cli_auth
+        """
+        from .device_flow import interactive_device_login
+
+        # Perform device authorization flow
+        auth_storage = interactive_device_login(verbose=verbose, auto_open_browser=auto_open_browser)
+
+        # Save to config file
+        self.save_auth(auth_storage)
+
+        if verbose:
+            print(f'✓ Authentication saved to {self.config_path}')

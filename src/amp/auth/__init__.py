@@ -4,7 +4,8 @@ Provides Privy authentication support compatible with the TypeScript CLI.
 Reads and manages auth tokens from ~/.amp-cli-config.
 """
 
+from .device_flow import interactive_device_login
 from .models import AuthStorage, RefreshTokenResponse
 from .service import AuthService
 
-__all__ = ['AuthService', 'AuthStorage', 'RefreshTokenResponse']
+__all__ = ['AuthService', 'AuthStorage', 'RefreshTokenResponse', 'interactive_device_login']
