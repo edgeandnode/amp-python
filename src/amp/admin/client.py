@@ -4,6 +4,7 @@ This module provides the core AdminClient class for communicating
 with the Amp Admin API over HTTP.
 """
 
+import os
 from typing import Optional
 
 import httpx
@@ -19,15 +20,24 @@ class AdminClient:
 
     Args:
         base_url: Base URL for Admin API (e.g., 'http://localhost:8080')
-        auth_token: Optional Bearer token for authentication
+        auth_token: Optional Bearer token for authentication (highest priority)
         auth: If True, load auth token from ~/.amp-cli-config (shared with TS CLI)
 
+    Authentication Priority (highest to lowest):
+        1. Explicit auth_token parameter
+        2. AMP_AUTH_TOKEN environment variable
+        3. auth=True - reads from ~/.amp-cli-config/amp_cli_auth
+
     Example:
-        >>> # Use amp auth system
+        >>> # Use amp auth from file
         >>> client = AdminClient('http://localhost:8080', auth=True)
         >>>
-        >>> # Or use manual token
+        >>> # Use manual token
         >>> client = AdminClient('http://localhost:8080', auth_token='your-token')
+        >>>
+        >>> # Use environment variable
+        >>> # export AMP_AUTH_TOKEN="eyJhbGci..."
+        >>> client = AdminClient('http://localhost:8080')
     """
 
     def __init__(self, base_url: str, auth_token: Optional[str] = None, auth: bool = False):
@@ -46,17 +56,25 @@ class AdminClient:
 
         self.base_url = base_url.rstrip('/')
 
-        # Load token from amp auth system if requested
-        if auth:
+        # Resolve auth token with priority: explicit param > env var > auth file
+        resolved_token = None
+        if auth_token:
+            # Priority 1: Explicit auth_token parameter
+            resolved_token = auth_token
+        elif os.getenv('AMP_AUTH_TOKEN'):
+            # Priority 2: AMP_AUTH_TOKEN environment variable
+            resolved_token = os.getenv('AMP_AUTH_TOKEN')
+        elif auth:
+            # Priority 3: Load from ~/.amp-cli-config/amp_cli_auth
             from amp.auth import AuthService
 
             auth_service = AuthService()
-            auth_token = auth_service.get_token()
+            resolved_token = auth_service.get_token()
 
         # Build headers
         headers = {}
-        if auth_token:
-            headers['Authorization'] = f'Bearer {auth_token}'
+        if resolved_token:
+            headers['Authorization'] = f'Bearer {resolved_token}'
 
         # Create HTTP client
         self._http = httpx.Client(

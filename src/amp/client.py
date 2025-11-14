@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Dict, Iterator, List, Optional, Union
 
 import pyarrow as pa
@@ -270,19 +271,28 @@ class Client:
         url: Flight SQL URL (for backward compatibility, treated as query_url)
         query_url: Query endpoint URL via Flight SQL (e.g., 'grpc://localhost:1602')
         admin_url: Optional Admin API URL (e.g., 'http://localhost:8080')
-        auth_token: Optional Bearer token for Admin API authentication
+        auth_token: Optional Bearer token for authentication (highest priority)
         auth: If True, load auth token from ~/.amp-cli-config (shared with TS CLI)
+
+    Authentication Priority (highest to lowest):
+        1. Explicit auth_token parameter
+        2. AMP_AUTH_TOKEN environment variable
+        3. auth=True - reads from ~/.amp-cli-config/amp_cli_auth
 
     Example:
         >>> # Query-only client (backward compatible)
         >>> client = Client(url='grpc://localhost:1602')
         >>>
-        >>> # Client with admin capabilities and amp auth
+        >>> # Client with amp auth from file
         >>> client = Client(
         ...     query_url='grpc://localhost:1602',
         ...     admin_url='http://localhost:8080',
         ...     auth=True
         ... )
+        >>>
+        >>> # Client with auth from environment variable
+        >>> # export AMP_AUTH_TOKEN="eyJhbGci..."
+        >>> client = Client(query_url='grpc://localhost:1602')
     """
 
     def __init__(
@@ -297,15 +307,20 @@ class Client:
         if url and not query_url:
             query_url = url
 
-        # Get auth token if using amp auth system
+        # Resolve auth token with priority: explicit param > env var > auth file
         flight_auth_token = None
-        if auth and not auth_token:
+        if auth_token:
+            # Priority 1: Explicit auth_token parameter
+            flight_auth_token = auth_token
+        elif os.getenv('AMP_AUTH_TOKEN'):
+            # Priority 2: AMP_AUTH_TOKEN environment variable
+            flight_auth_token = os.getenv('AMP_AUTH_TOKEN')
+        elif auth:
+            # Priority 3: Load from ~/.amp-cli-config/amp_cli_auth
             from amp.auth import AuthService
 
             auth_service = AuthService()
             flight_auth_token = auth_service.get_token()
-        elif auth_token:
-            flight_auth_token = auth_token
 
         # Initialize Flight SQL client
         if query_url:
@@ -327,7 +342,8 @@ class Client:
         if admin_url:
             from amp.admin.client import AdminClient
 
-            self._admin_client = AdminClient(admin_url, auth_token=auth_token, auth=auth)
+            # Pass resolved token to AdminClient (maintains same priority logic)
+            self._admin_client = AdminClient(admin_url, auth_token=flight_auth_token, auth=False)
         else:
             self._admin_client = None
 
