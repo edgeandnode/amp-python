@@ -14,7 +14,7 @@ import httpx
 from .models import AuthStorage, RefreshTokenResponse
 
 # Auth platform URL (matches TypeScript implementation)
-AUTH_PLATFORM_URL = 'https://auth.amp.edgeandnode.com/'
+AUTH_PLATFORM_URL = 'https://auth.amp.thegraph.com/'
 
 # Storage location (matches TypeScript implementation)
 # TypeScript CLI uses: ~/.amp-cli-config/amp_cli_auth (directory with file inside)
