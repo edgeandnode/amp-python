@@ -5,9 +5,16 @@
 [![Formatting status](https://github.com/edgeandnode/amp-python/actions/workflows/ruff.yml/badge.svg?event=push)](https://github.com/edgeandnode/amp-python/actions/workflows/ruff.yml)
 
 
-## Overview 
+## Overview
 
-Client for issuing queries to an Amp server and working with the returned data.
+Python client for Amp - a high-performance data infrastructure for blockchain data.
+
+**Features:**
+- **Query Client**: Issue Flight SQL queries to Amp servers
+- **Admin Client**: Manage datasets, deployments, and jobs programmatically
+- **Data Loaders**: Zero-copy loading into PostgreSQL, Redis, Snowflake, Delta Lake, Iceberg, and more
+- **Parallel Streaming**: High-throughput parallel data ingestion with automatic resume
+- **Manifest Generation**: Fluent API for creating and deploying datasets from SQL queries
 
 ## Installation
  
@@ -21,7 +28,57 @@ Client for issuing queries to an Amp server and working with the returned data.
     uv venv
    ```
 
-## Useage 
+## Quick Start
+
+### Querying Data
+
+```python
+from amp import Client
+
+# Connect to Amp server
+client = Client(url="grpc://localhost:8815")
+
+# Execute query and convert to pandas
+df = client.query("SELECT * FROM eth.blocks LIMIT 10").to_pandas()
+print(df)
+```
+
+### Admin Operations
+
+```python
+from amp import Client
+
+# Connect with admin capabilities
+client = Client(
+    query_url="grpc://localhost:8815",
+    admin_url="http://localhost:8080",
+    auth_token="your-token"
+)
+
+# Register and deploy a dataset
+job = (
+    client.query("SELECT block_num, hash FROM eth.blocks")
+    .with_dependency('eth', '_/eth_firehose@1.0.0')
+    .register_as('_', 'my_dataset', '1.0.0', 'blocks', 'mainnet')
+    .deploy(parallelism=4, end_block='latest', wait=True)
+)
+
+print(f"Deployment completed: {job.status}")
+```
+
+### Loading Data
+
+```python
+# Load query results into PostgreSQL
+loader = client.query("SELECT * FROM eth.blocks").load(
+    loader_type='postgresql',
+    connection='my_pg_connection',
+    table_name='eth_blocks'
+)
+print(f"Loaded {loader.rows_written} rows")
+```
+
+## Usage
 
 ### Marimo
 
@@ -30,18 +87,22 @@ Start up a marimo workspace editor
 uv run marimo edit
 ```
 
-The Marimo app will open a new browser tab where you can create a new notebook, view helpful resources, and 
+The Marimo app will open a new browser tab where you can create a new notebook, view helpful resources, and
 browse existing notebooks in the workspace.
 
 ### Apps
 
-You can execute python apps and scripts using `uv run <path>` which will give them access to the dependencies 
+You can execute python apps and scripts using `uv run <path>` which will give them access to the dependencies
 and the `amp` package. For example, you can run the `execute_query` app with the following command.
 ```bash
 uv run apps/execute_query.py
 ```
 
 ## Documentation
+
+### Getting Started
+- **[Admin Client Guide](docs/admin_client_guide.md)** - Complete guide for dataset management and deployment
+- **[Admin API Reference](docs/api/admin_api.md)** - Full API documentation for admin operations
 
 ### Features
 - **[Parallel Streaming Usage Guide](docs/parallel_streaming_usage.md)** - User guide for high-throughput parallel data loading
