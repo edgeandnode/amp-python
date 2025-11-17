@@ -182,7 +182,10 @@ class TestQueryBuilderManifest:
         mock_client.schema.get_output_schema.assert_called_once_with(query, is_sql_dataset=True)
 
     def test_to_manifest_matches_expected_format(self):
-        """Test that to_manifest generates a manifest matching tests/config/manifests/register_test_dataset__1_0_0.json"""
+        """
+        Test that to_manifest generates a manifest matching reference manifest at
+        tests/config/manifests/register_test_dataset__1_0_0.json
+        """
         # Load the expected manifest
         manifest_path = Path(__file__).parent.parent / 'config' / 'manifests' / 'register_test_dataset__1_0_0.json'
         with open(manifest_path) as f:

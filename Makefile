@@ -59,6 +59,10 @@ lint:
 	@echo "🔍 Linting code..."
 	$(PYTHON) ruff check .
 
+lint-fix:
+	@echo "🔍 Linting code..."
+	$(PYTHON) ruff check . --fix
+
 format:
 	@echo "✨ Formatting code..."
 	$(PYTHON) ruff format .
