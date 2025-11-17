@@ -97,7 +97,7 @@ class TestClientAuthPriority:
         """Test that explicit auth_token parameter has highest priority"""
         mock_getenv.return_value = 'env-var-token'
 
-        client = Client(query_url='grpc://localhost:1602', auth_token='explicit-token')
+        Client(query_url='grpc://localhost:1602', auth_token='explicit-token')
 
         # Verify that explicit token was used (not env var)
         mock_connect.assert_called_once()
@@ -119,7 +119,7 @@ class TestClientAuthPriority:
 
         mock_getenv.side_effect = getenv_side_effect
 
-        client = Client(query_url='grpc://localhost:1602')
+        Client(query_url='grpc://localhost:1602')
 
         # Verify env var was checked
         calls = [str(call) for call in mock_getenv.call_args_list]
@@ -146,7 +146,7 @@ class TestClientAuthPriority:
         mock_service_instance.get_token.return_value = 'file-token'
         mock_auth_service.return_value = mock_service_instance
 
-        client = Client(query_url='grpc://localhost:1602', auth=True)
+        Client(query_url='grpc://localhost:1602', auth=True)
 
         # Verify auth file was used
         mock_auth_service.assert_called_once()
@@ -168,7 +168,7 @@ class TestClientAuthPriority:
 
         mock_getenv.side_effect = getenv_side_effect
 
-        client = Client(query_url='grpc://localhost:1602')
+        Client(query_url='grpc://localhost:1602')
 
         # Verify no middleware was added
         mock_connect.assert_called_once()
