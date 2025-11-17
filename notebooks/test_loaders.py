@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.14.16"
+__generated_with = "0.17.0"
 app = marimo.App(width="full")
 
 
@@ -89,7 +89,7 @@ app._unparsable_cell(
             create_table=True,
         )
     """,
-    name='_',
+    name="_"
 )
 
 
@@ -97,7 +97,7 @@ app._unparsable_cell(
 def _(psql_load_results):
     for p_result in psql_load_results:
         print(p_result)
-    return (p_result,)
+    return
 
 
 @app.cell(hide_code=True)
@@ -120,7 +120,7 @@ def _(client):
 def _(redis_load_results):
     for r_result in redis_load_results:
         print(r_result)
-    return (r_result,)
+    return
 
 
 @app.cell(hide_code=True)
@@ -149,7 +149,7 @@ def _(client):
     else:
         # Single result
         print(f'Total: {result.rows_loaded} rows')
-    return batch_result, result
+    return (batch_result,)
 
 
 @app.cell
@@ -291,7 +291,7 @@ def _(lmdb_load_result):
 def _(batch_result, lmdb_load_result):
     for lmdb_batch_result in lmdb_load_result:
             print(f'Batch: {batch_result.rows_loaded} rows')
-    return (lmdb_batch_result,)
+    return
 
 
 @app.cell
@@ -325,7 +325,7 @@ def _(env):
        myList = [ key for key, _ in txn.cursor() ]
        print(myList)
        print(len(myList))
-    return myList, txn
+    return
 
 
 @app.cell
@@ -340,7 +340,74 @@ def _(env, pa):
             batch = reader.read_next_batch()
 
             print(batch)
-    return batch, key, open_txn, reader, value
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""# Kafka""")
+    return
+
+
+@app.cell
+def _(client):
+    # Configure Kafka connection
+    client.configure_connection(
+        'my_kafka',
+        'kafka',
+        {
+            'bootstrap_servers': 'localhost:9092',
+            'client_id': 'amp-test-client',
+            'key_field': 'id'
+        }
+    )
+    return
+
+
+@app.cell
+def _(client):
+    # Load data to Kafka topic
+    kafka_load_results = client.sql('select * from eth_firehose.logs limit 100').load(
+        'my_kafka',
+        'test_logs',
+        create_table=True,
+    )
+    return (kafka_load_results,)
+
+
+@app.cell
+def _(kafka_load_results):
+    # Check results
+    for k_result in kafka_load_results:
+        print(f'Kafka batch: {k_result.rows_loaded} rows loaded, duration: {k_result.duration:.2f}s')
+    return (k_result,)
+
+
+@app.cell
+def _():
+    from kafka import KafkaConsumer
+    import json
+
+    consumer = KafkaConsumer(
+        'test_logs',
+        bootstrap_servers='localhost:9092',
+        auto_offset_reset='earliest',
+        consumer_timeout_ms=3000,
+        value_deserializer=lambda m: json.loads(m.decode('utf-8'))
+    )
+
+    messages = list(consumer)
+    consumer.close()
+
+    print(f"Total messages in Kafka: {len(messages)}")
+    print(f"\nFirst message:")
+    if messages:
+        msg = messages[0].value
+        print(f"  Block: {msg.get('block_num')}")
+        print(f"  Timestamp: {msg.get('timestamp')}")
+        print(f"  Address: {msg.get('address')}")
+
+    return
 
 
 @app.cell
