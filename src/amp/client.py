@@ -265,12 +265,13 @@ class Client:
     """Enhanced Flight SQL client with data loading capabilities.
 
     Supports both query operations (via Flight SQL) and optional admin operations
-    (via HTTP Admin API).
+    (via HTTP Admin API) and registry operations (via Registry API).
 
     Args:
         url: Flight SQL URL (for backward compatibility, treated as query_url)
         query_url: Query endpoint URL via Flight SQL (e.g., 'grpc://localhost:1602')
         admin_url: Optional Admin API URL (e.g., 'http://localhost:8080')
+        registry_url: Optional Registry API URL (default: staging registry)
         auth_token: Optional Bearer token for authentication (highest priority)
         auth: If True, load auth token from ~/.amp-cli-config (shared with TS CLI)
 
@@ -293,6 +294,15 @@ class Client:
         >>> # Client with auth from environment variable
         >>> # export AMP_AUTH_TOKEN="eyJhbGci..."
         >>> client = Client(query_url='grpc://localhost:1602')
+        >>>
+        >>> # Client with registry support
+        >>> client = Client(
+        ...     query_url='grpc://localhost:1602',
+        ...     admin_url='http://localhost:8080',
+        ...     registry_url='https://api.registry.amp.staging.thegraph.com',
+        ...     auth=True
+        ... )
+        >>> results = client.registry.datasets.search('ethereum')
     """
 
     def __init__(
@@ -300,6 +310,7 @@ class Client:
         url: Optional[str] = None,
         query_url: Optional[str] = None,
         admin_url: Optional[str] = None,
+        registry_url: str = 'https://api.registry.amp.staging.thegraph.com',
         auth_token: Optional[str] = None,
         auth: bool = False,
     ):
@@ -346,6 +357,15 @@ class Client:
             self._admin_client = AdminClient(admin_url, auth_token=flight_auth_token, auth=False)
         else:
             self._admin_client = None
+
+        # Initialize optional Registry API client
+        if registry_url:
+            from amp.registry import RegistryClient
+
+            # Pass resolved token to RegistryClient (for authenticated operations)
+            self._registry_client = RegistryClient(registry_url, auth_token=flight_auth_token)
+        else:
+            self._registry_client = None
 
     def sql(self, query: str) -> QueryBuilder:
         """
@@ -445,6 +465,35 @@ class Client:
                 'to enable schema analysis operations.'
             )
         return self._admin_client.schema
+
+    @property
+    def registry(self):
+        """Access registry client for Registry API operations.
+
+        Returns:
+            RegistryClient for dataset discovery, search, and publishing
+
+        Raises:
+            ValueError: If registry_url was not provided during Client initialization
+
+        Example:
+            >>> client = Client(
+            ...     query_url='grpc://localhost:1602',
+            ...     registry_url='https://api.registry.amp.staging.thegraph.com'
+            ... )
+            >>> # Search for datasets
+            >>> results = client.registry.datasets.search('ethereum blocks')
+            >>> # Get a specific dataset
+            >>> dataset = client.registry.datasets.get('graphops', 'ethereum-mainnet')
+            >>> # Fetch manifest
+            >>> manifest = client.registry.datasets.get_manifest('graphops', 'ethereum-mainnet', 'latest')
+        """
+        if not self._registry_client:
+            raise ValueError(
+                'Registry API not configured. Provide registry_url parameter to Client() '
+                'to enable dataset discovery and search operations.'
+            )
+        return self._registry_client
 
     # Existing methods for backward compatibility
     def get_sql(self, query, read_all=False):
