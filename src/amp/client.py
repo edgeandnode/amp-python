@@ -24,33 +24,33 @@ from .streaming import (
 class AuthMiddleware(ClientMiddleware):
     """Flight middleware to add Bearer token authentication header."""
 
-    def __init__(self, token: str):
+    def __init__(self, get_token):
         """Initialize auth middleware.
 
         Args:
-            token: Bearer token to add to requests
+            get_token: Callable that returns the current access token
         """
-        self.token = token
+        self.get_token = get_token
 
     def sending_headers(self):
         """Add Authorization header to outgoing requests."""
-        return {'authorization': f'Bearer {self.token}'}
+        return {'authorization': f'Bearer {self.get_token()}'}
 
 
 class AuthMiddlewareFactory(ClientMiddlewareFactory):
     """Factory for creating auth middleware instances."""
 
-    def __init__(self, token: str):
+    def __init__(self, get_token):
         """Initialize auth middleware factory.
 
         Args:
-            token: Bearer token to use for authentication
+            get_token: Callable that returns the current access token
         """
-        self.token = token
+        self.get_token = get_token
 
     def start_call(self, info):
         """Create auth middleware for each call."""
-        return AuthMiddleware(self.token)
+        return AuthMiddleware(self.get_token)
 
 
 class QueryBuilder:
@@ -307,26 +307,30 @@ class Client:
         if url and not query_url:
             query_url = url
 
-        # Resolve auth token with priority: explicit param > env var > auth file
-        flight_auth_token = None
+        # Resolve auth token provider with priority: explicit param > env var > auth file
+        get_token = None
         if auth_token:
-            # Priority 1: Explicit auth_token parameter
-            flight_auth_token = auth_token
+            # Priority 1: Explicit auth_token parameter (static token)
+            def get_token():
+                return auth_token
         elif os.getenv('AMP_AUTH_TOKEN'):
-            # Priority 2: AMP_AUTH_TOKEN environment variable
-            flight_auth_token = os.getenv('AMP_AUTH_TOKEN')
+            # Priority 2: AMP_AUTH_TOKEN environment variable (static token)
+            env_token = os.getenv('AMP_AUTH_TOKEN')
+
+            def get_token():
+                return env_token
         elif auth:
-            # Priority 3: Load from ~/.amp-cli-config/amp_cli_auth
+            # Priority 3: Load from ~/.amp-cli-config/amp_cli_auth (auto-refreshing)
             from amp.auth import AuthService
 
             auth_service = AuthService()
-            flight_auth_token = auth_service.get_token()
+            get_token = auth_service.get_token  # Callable that auto-refreshes
 
         # Initialize Flight SQL client
         if query_url:
-            # Add auth middleware if token is provided
-            if flight_auth_token:
-                middleware = [AuthMiddlewareFactory(flight_auth_token)]
+            # Add auth middleware if token provider exists
+            if get_token:
+                middleware = [AuthMiddlewareFactory(get_token)]
                 self.conn = flight.connect(query_url, middleware=middleware)
             else:
                 self.conn = flight.connect(query_url)
@@ -342,8 +346,18 @@ class Client:
         if admin_url:
             from amp.admin.client import AdminClient
 
-            # Pass resolved token to AdminClient (maintains same priority logic)
-            self._admin_client = AdminClient(admin_url, auth_token=flight_auth_token, auth=False)
+            # Pass auth=True if we have a get_token callable from auth file
+            # Otherwise pass the static token if available
+            if auth:
+                # Use auth file (auto-refreshing)
+                self._admin_client = AdminClient(admin_url, auth=True)
+            elif auth_token or os.getenv('AMP_AUTH_TOKEN'):
+                # Use static token
+                static_token = auth_token or os.getenv('AMP_AUTH_TOKEN')
+                self._admin_client = AdminClient(admin_url, auth_token=static_token)
+            else:
+                # No auth
+                self._admin_client = AdminClient(admin_url)
         else:
             self._admin_client = None
 

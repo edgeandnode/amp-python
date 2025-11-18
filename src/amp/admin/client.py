@@ -56,30 +56,25 @@ class AdminClient:
 
         self.base_url = base_url.rstrip('/')
 
-        # Resolve auth token with priority: explicit param > env var > auth file
-        resolved_token = None
+        # Resolve auth token provider with priority: explicit param > env var > auth file
+        self._get_token = None
         if auth_token:
-            # Priority 1: Explicit auth_token parameter
-            resolved_token = auth_token
+            # Priority 1: Explicit auth_token parameter (static token)
+            self._get_token = lambda: auth_token
         elif os.getenv('AMP_AUTH_TOKEN'):
-            # Priority 2: AMP_AUTH_TOKEN environment variable
-            resolved_token = os.getenv('AMP_AUTH_TOKEN')
+            # Priority 2: AMP_AUTH_TOKEN environment variable (static token)
+            env_token = os.getenv('AMP_AUTH_TOKEN')
+            self._get_token = lambda: env_token
         elif auth:
-            # Priority 3: Load from ~/.amp-cli-config/amp_cli_auth
+            # Priority 3: Load from ~/.amp-cli-config/amp_cli_auth (auto-refreshing)
             from amp.auth import AuthService
 
             auth_service = AuthService()
-            resolved_token = auth_service.get_token()
+            self._get_token = auth_service.get_token  # Callable that auto-refreshes
 
-        # Build headers
-        headers = {}
-        if resolved_token:
-            headers['Authorization'] = f'Bearer {resolved_token}'
-
-        # Create HTTP client
+        # Create HTTP client (no auth header yet - will be added per-request)
         self._http = httpx.Client(
             base_url=self.base_url,
-            headers=headers,
             timeout=30.0,
             follow_redirects=True,
         )
@@ -102,6 +97,12 @@ class AdminClient:
         Raises:
             AdminAPIError: If the API returns an error response
         """
+        # Add auth header dynamically (auto-refreshes if needed)
+        headers = kwargs.get('headers', {})
+        if self._get_token:
+            headers['Authorization'] = f'Bearer {self._get_token()}'
+            kwargs['headers'] = headers
+
         response = self._http.request(method, path, json=json, params=params, **kwargs)
 
         # Handle error responses

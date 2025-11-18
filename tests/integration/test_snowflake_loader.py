@@ -67,7 +67,7 @@ def wait_for_snowpipe_data(loader, table_name, expected_count, max_wait=30, poll
 
 
 # Skip all Snowflake tests
-# pytestmark = pytest.mark.skip(reason='Requires active Snowflake account - see module docstring for details')
+pytestmark = pytest.mark.skip(reason='Requires active Snowflake account - see module docstring for details')
 
 
 @pytest.fixture

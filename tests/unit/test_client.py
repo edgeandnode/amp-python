@@ -104,7 +104,7 @@ class TestClientAuthPriority:
         call_args = mock_connect.call_args
         middleware = call_args[1].get('middleware', [])
         assert len(middleware) == 1
-        assert middleware[0].token == 'explicit-token'
+        assert middleware[0].get_token() == 'explicit-token'
 
     @patch('amp.client.os.getenv')
     @patch('amp.client.flight.connect')
@@ -128,7 +128,7 @@ class TestClientAuthPriority:
         call_args = mock_connect.call_args
         middleware = call_args[1].get('middleware', [])
         assert len(middleware) == 1
-        assert middleware[0].token == 'env-var-token'
+        assert middleware[0].get_token() == 'env-var-token'
 
     @patch('amp.auth.AuthService')
     @patch('amp.client.os.getenv')
@@ -150,12 +150,12 @@ class TestClientAuthPriority:
 
         # Verify auth file was used
         mock_auth_service.assert_called_once()
-        mock_service_instance.get_token.assert_called_once()
         mock_connect.assert_called_once()
         call_args = mock_connect.call_args
         middleware = call_args[1].get('middleware', [])
         assert len(middleware) == 1
-        assert middleware[0].token == 'file-token'
+        # The middleware should use the auth service's get_token method directly
+        assert middleware[0].get_token == mock_service_instance.get_token
 
     @patch('amp.client.os.getenv')
     @patch('amp.client.flight.connect')
@@ -190,8 +190,8 @@ class TestAdminClientAuthPriority:
 
         client = AdminClient('http://localhost:8080', auth_token='explicit-token')
 
-        # Verify explicit token was used
-        assert client._http.headers.get('Authorization') == 'Bearer explicit-token'
+        # Verify explicit token was used (check get_token callable)
+        assert client._get_token() == 'explicit-token'
 
     @patch('amp.admin.client.os.getenv')
     def test_admin_env_var_second_priority(self, mock_getenv):
@@ -204,7 +204,7 @@ class TestAdminClientAuthPriority:
 
         # Verify env var was used
         mock_getenv.assert_called_with('AMP_AUTH_TOKEN')
-        assert client._http.headers.get('Authorization') == 'Bearer env-var-token'
+        assert client._get_token() == 'env-var-token'
 
     @patch('amp.auth.AuthService')
     @patch('amp.admin.client.os.getenv')
@@ -220,7 +220,7 @@ class TestAdminClientAuthPriority:
         client = AdminClient('http://localhost:8080', auth=True)
 
         # Verify auth file was used
-        assert client._http.headers.get('Authorization') == 'Bearer file-token'
+        assert client._get_token == mock_service_instance.get_token
 
     @patch('amp.admin.client.os.getenv')
     def test_admin_no_auth_when_nothing_provided(self, mock_getenv):
