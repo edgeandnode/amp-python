@@ -142,6 +142,7 @@ select = [
 ]
 exclude = [
     "src/amp/FlightSql_pb2.py",     # Generated protobuf file
+    "src/amp/registry/models.py",   # Generated from OpenAPI spec
     "*notebook*"
 ]
 
