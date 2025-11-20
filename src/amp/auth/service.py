@@ -1,6 +1,6 @@
 """Auth service for managing Privy authentication.
 
-Handles loading, refreshing, and persisting auth tokens from ~/.amp-cli-config.
+Handles loading, refreshing, and persisting auth tokens from ~/.amp/cache.
 Compatible with the TypeScript CLI authentication system.
 """
 
@@ -17,15 +17,15 @@ from .models import AuthStorage, RefreshTokenResponse
 AUTH_PLATFORM_URL = 'https://auth.amp.thegraph.com/'
 
 # Storage location (matches TypeScript implementation)
-# TypeScript CLI uses: ~/.amp-cli-config/amp_cli_auth (directory with file inside)
-AUTH_CONFIG_DIR = Path.home() / '.amp-cli-config'
+# TypeScript CLI uses: ~/.amp/cache/amp_cli_auth (directory with file inside)
+AUTH_CONFIG_DIR = Path.home() / '.amp' / 'cache'
 AUTH_CONFIG_FILE = AUTH_CONFIG_DIR / 'amp_cli_auth'
 
 
 class AuthService:
     """Service for managing Privy authentication tokens.
 
-    Loads tokens from ~/.amp-cli-config (shared with TypeScript CLI),
+    Loads tokens from ~/.amp/cache (shared with TypeScript CLI),
     automatically refreshes expired tokens, and persists updates.
 
     Example:
@@ -38,7 +38,7 @@ class AuthService:
         """Initialize auth service.
 
         Args:
-            config_path: Optional custom path to config file (defaults to ~/.amp-cli-config/amp_cli_auth)
+            config_path: Optional custom path to config file (defaults to ~/.amp/cache/amp_cli_auth)
         """
         self.config_path = config_path or AUTH_CONFIG_FILE
         self._http = httpx.Client(timeout=30.0)
@@ -47,7 +47,7 @@ class AuthService:
         """Check if user is authenticated.
 
         Returns:
-            True if valid auth exists in ~/.amp-cli-config
+            True if valid auth exists in ~/.amp/cache
         """
         try:
             auth = self.load_auth()
@@ -56,7 +56,7 @@ class AuthService:
             return False
 
     def load_auth(self) -> Optional[AuthStorage]:
-        """Load auth from ~/.amp-cli-config/amp_cli_auth file.
+        """Load auth from ~/.amp/cache/amp_cli_auth file.
 
         Returns:
             AuthStorage if found, None if not authenticated
@@ -75,7 +75,7 @@ class AuthService:
         return AuthStorage.model_validate(auth_data)
 
     def save_auth(self, auth: AuthStorage) -> None:
-        """Save auth to ~/.amp-cli-config/amp_cli_auth file.
+        """Save auth to ~/.amp/cache/amp_cli_auth file.
 
         Args:
             auth: Auth data to persist
@@ -97,7 +97,7 @@ class AuthService:
             Valid access token string
 
         Raises:
-            FileNotFoundError: If not authenticated (no ~/.amp-cli-config)
+            FileNotFoundError: If not authenticated (no ~/.amp/cache)
             ValueError: If auth data is invalid or refresh fails
         """
         auth = self.load_auth()
@@ -228,7 +228,7 @@ class AuthService:
         """Perform interactive browser-based login.
 
         Opens browser for OAuth2 device authorization flow with PKCE.
-        Saves authentication tokens to ~/.amp-cli-config/amp_cli_auth.
+        Saves authentication tokens to ~/.amp/cache/amp_cli_auth.
 
         Args:
             verbose: Print progress messages
@@ -240,7 +240,7 @@ class AuthService:
         Example:
             >>> auth = AuthService()
             >>> auth.login()  # Opens browser for authentication
-            >>> # Auth tokens saved to ~/.amp-cli-config/amp_cli_auth
+            >>> # Auth tokens saved to ~/.amp/cache/amp_cli_auth
         """
         from .device_flow import interactive_device_login
 

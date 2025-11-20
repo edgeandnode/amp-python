@@ -21,12 +21,12 @@ class AdminClient:
     Args:
         base_url: Base URL for Admin API (e.g., 'http://localhost:8080')
         auth_token: Optional Bearer token for authentication (highest priority)
-        auth: If True, load auth token from ~/.amp-cli-config (shared with TS CLI)
+        auth: If True, load auth token from ~/.amp/cache (shared with TS CLI)
 
     Authentication Priority (highest to lowest):
         1. Explicit auth_token parameter
         2. AMP_AUTH_TOKEN environment variable
-        3. auth=True - reads from ~/.amp-cli-config/amp_cli_auth
+        3. auth=True - reads from ~/.amp/cache/amp_cli_auth
 
     Example:
         >>> # Use amp auth from file
@@ -46,7 +46,7 @@ class AdminClient:
         Args:
             base_url: Base URL for Admin API (e.g., 'http://localhost:8080')
             auth_token: Optional Bearer token for authentication
-            auth: If True, load auth token from ~/.amp-cli-config
+            auth: If True, load auth token from ~/.amp/cache
 
         Raises:
             ValueError: If both auth=True and auth_token are provided

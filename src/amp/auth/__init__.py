@@ -1,7 +1,7 @@
 """Authentication module for amp Python client.
 
 Provides Privy authentication support compatible with the TypeScript CLI.
-Reads and manages auth tokens from ~/.amp-cli-config.
+Reads and manages auth tokens from ~/.amp/cache.
 """
 
 from .device_flow import interactive_device_login

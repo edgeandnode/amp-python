@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 
 class AuthStorage(BaseModel):
-    """Auth storage schema for ~/.amp-cli-config file.
+    """Auth storage schema for ~/.amp/cache/amp_cli_auth file.
 
     Matches the TypeScript AuthStorageSchema so they can share auth.
     """

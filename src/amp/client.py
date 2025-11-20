@@ -272,12 +272,12 @@ class Client:
         query_url: Query endpoint URL via Flight SQL (e.g., 'grpc://localhost:1602')
         admin_url: Optional Admin API URL (e.g., 'http://localhost:8080')
         auth_token: Optional Bearer token for authentication (highest priority)
-        auth: If True, load auth token from ~/.amp-cli-config (shared with TS CLI)
+        auth: If True, load auth token from ~/.amp/cache (shared with TS CLI)
 
     Authentication Priority (highest to lowest):
         1. Explicit auth_token parameter
         2. AMP_AUTH_TOKEN environment variable
-        3. auth=True - reads from ~/.amp-cli-config/amp_cli_auth
+        3. auth=True - reads from ~/.amp/cache/amp_cli_auth
 
     Example:
         >>> # Query-only client (backward compatible)
@@ -320,7 +320,7 @@ class Client:
             def get_token():
                 return env_token
         elif auth:
-            # Priority 3: Load from ~/.amp-cli-config/amp_cli_auth (auto-refreshing)
+            # Priority 3: Load from ~/.amp/cache/amp_cli_auth (auto-refreshing)
             from amp.auth import AuthService
 
             auth_service = AuthService()
