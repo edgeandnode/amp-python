@@ -1,6 +1,7 @@
 """Registry API client."""
 
 import logging
+import os
 from typing import Optional
 
 import httpx
@@ -17,15 +18,25 @@ class RegistryClient:
 
     Args:
         base_url: Base URL for the Registry API (default: staging registry)
-        auth_token: Optional Bearer token for authenticated operations
+        auth_token: Optional Bearer token for authenticated operations (highest priority)
+        auth: If True, load auth token from ~/.amp/cache (shared with TS CLI)
+
+    Authentication Priority (highest to lowest):
+        1. Explicit auth_token parameter
+        2. AMP_AUTH_TOKEN environment variable
+        3. auth=True - reads from ~/.amp/cache/amp_cli_auth
 
     Example:
         >>> # Read-only operations (no auth required)
         >>> client = RegistryClient()
         >>> datasets = client.datasets.search('ethereum')
         >>>
-        >>> # Authenticated operations (publishing, etc.)
+        >>> # Authenticated operations with explicit token
         >>> client = RegistryClient(auth_token='your-token')
+        >>> client.datasets.publish(...)
+        >>>
+        >>> # Authenticated operations with auth file (auto-refresh)
+        >>> client = RegistryClient(auth=True)
         >>> client.datasets.publish(...)
     """
 
@@ -33,28 +44,53 @@ class RegistryClient:
         self,
         base_url: str = 'https://api.registry.amp.staging.thegraph.com',
         auth_token: Optional[str] = None,
+        auth: bool = False,
     ):
         """Initialize Registry client.
 
         Args:
             base_url: Base URL for the Registry API
             auth_token: Optional Bearer token for authentication
+            auth: If True, load auth token from ~/.amp/cache
+
+        Raises:
+            ValueError: If both auth=True and auth_token are provided
         """
+        if auth and auth_token:
+            raise ValueError('Cannot specify both auth=True and auth_token. Choose one authentication method.')
+
         self.base_url = base_url.rstrip('/')
-        self.auth_token = auth_token
 
-        # Build headers
-        headers = {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-        }
+        # Resolve auth token provider with priority: explicit param > env var > auth file
+        self._get_token = None
         if auth_token:
-            headers['Authorization'] = f'Bearer {auth_token}'
+            # Priority 1: Explicit auth_token parameter (static token)
+            def get_token():
+                return auth_token
 
-        # Create HTTP client
+            self._get_token = get_token
+        elif os.getenv('AMP_AUTH_TOKEN'):
+            # Priority 2: AMP_AUTH_TOKEN environment variable (static token)
+            env_token = os.getenv('AMP_AUTH_TOKEN')
+
+            def get_token():
+                return env_token
+
+            self._get_token = get_token
+        elif auth:
+            # Priority 3: Load from ~/.amp/cache/amp_cli_auth (auto-refreshing)
+            from amp.auth import AuthService
+
+            auth_service = AuthService()
+            self._get_token = auth_service.get_token  # Callable that auto-refreshes
+
+        # Create HTTP client (no auth header yet - will be added per-request)
         self._http = httpx.Client(
             base_url=self.base_url,
-            headers=headers,
+            headers={
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+            },
             timeout=30.0,
         )
 
@@ -91,6 +127,12 @@ class RegistryClient:
             RegistryError: If the request fails
         """
         url = path if path.startswith('http') else f'{self.base_url}{path}'
+
+        # Add auth header dynamically (auto-refreshes if needed)
+        headers = kwargs.get('headers', {})
+        if self._get_token:
+            headers['Authorization'] = f'Bearer {self._get_token()}'
+            kwargs['headers'] = headers
 
         try:
             response = self._http.request(method, url, **kwargs)

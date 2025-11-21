@@ -149,7 +149,8 @@ class TestClientAuthPriority:
         Client(query_url='grpc://localhost:1602', auth=True)
 
         # Verify auth file was used
-        mock_auth_service.assert_called_once()
+        # Note: AuthService is called twice - once for Flight SQL, once for RegistryClient
+        assert mock_auth_service.call_count == 2
         mock_connect.assert_called_once()
         call_args = mock_connect.call_args
         middleware = call_args[1].get('middleware', [])

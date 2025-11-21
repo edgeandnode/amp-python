@@ -357,12 +357,13 @@ class Client:
         if admin_url:
             from amp.admin.client import AdminClient
 
-            # Pass through the same auth configuration to maintain consistent behavior
+            # Pass through auth parameters to AdminClient so it can set up its own auth
+            # (AdminClient needs to manage its own AuthService for token refresh)
             if auth:
-                # Use auth file (auto-refreshing via AuthService)
+                # Use auth file - AdminClient will set up AuthService for auto-refresh
                 self._admin_client = AdminClient(admin_url, auth=True)
             elif auth_token or os.getenv('AMP_AUTH_TOKEN'):
-                # Use static token (explicit param takes priority over env var)
+                # Use static token (explicit param takes priority)
                 token = auth_token or os.getenv('AMP_AUTH_TOKEN')
                 self._admin_client = AdminClient(admin_url, auth_token=token)
             else:
@@ -375,12 +376,17 @@ class Client:
         if registry_url:
             from amp.registry import RegistryClient
 
-            # Use the same auth approach - get current token value
-            # Registry client doesn't call APIs per-request, so static token is fine
-            if get_token:
-                current_token = get_token()
-                self._registry_client = RegistryClient(registry_url, auth_token=current_token)
+            # Pass through auth parameters to RegistryClient so it can set up its own auth
+            # (RegistryClient needs to manage its own AuthService for token refresh)
+            if auth:
+                # Use auth file - RegistryClient will set up AuthService for auto-refresh
+                self._registry_client = RegistryClient(registry_url, auth=True)
+            elif auth_token or os.getenv('AMP_AUTH_TOKEN'):
+                # Use static token (explicit param takes priority)
+                token = auth_token or os.getenv('AMP_AUTH_TOKEN')
+                self._registry_client = RegistryClient(registry_url, auth_token=token)
             else:
+                # No authentication
                 self._registry_client = RegistryClient(registry_url)
         else:
             self._registry_client = None
