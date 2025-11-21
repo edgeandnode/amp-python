@@ -183,10 +183,10 @@ for ds in results.datasets[:5]:
 
 # Step 2: Inspect a dataset
 print("\nInspecting dataset structure:")
-registry.datasets.inspect('graphops', 'ethereum-mainnet')
+registry.datasets.inspect('edgeandnode', 'ethereum-mainnet')
 
 # Step 3: Get schema programmatically
-schema = registry.datasets.describe('graphops', 'ethereum-mainnet')
+schema = registry.datasets.describe('edgeandnode', 'ethereum-mainnet')
 
 # Step 4: Query based on discovered schema
 client = Client(query_url='grpc://your-server:1602', auth=True)

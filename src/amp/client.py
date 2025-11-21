@@ -508,9 +508,9 @@ class Client:
             >>> # Search for datasets
             >>> results = client.registry.datasets.search('ethereum blocks')
             >>> # Get a specific dataset
-            >>> dataset = client.registry.datasets.get('graphops', 'ethereum-mainnet')
+            >>> dataset = client.registry.datasets.get('edgeandnode', 'ethereum-mainnet')
             >>> # Fetch manifest
-            >>> manifest = client.registry.datasets.get_manifest('graphops', 'ethereum-mainnet', 'latest')
+            >>> manifest = client.registry.datasets.get_manifest('edgeandnode', 'ethereum-mainnet', 'latest')
         """
         if not self._registry_client:
             raise ValueError(

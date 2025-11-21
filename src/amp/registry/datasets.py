@@ -117,7 +117,7 @@ class RegistryDatasetsClient:
         """Get detailed information about a specific dataset.
 
         Args:
-            namespace: Dataset namespace (e.g., 'graphops', 'edgeandnode')
+            namespace: Dataset namespace (e.g., 'edgeandnode', 'edgeandnode')
             name: Dataset name (e.g., 'ethereum-mainnet')
 
         Returns:
@@ -125,7 +125,7 @@ class RegistryDatasetsClient:
 
         Example:
             >>> client = RegistryClient()
-            >>> dataset = client.datasets.get('graphops', 'ethereum-mainnet')
+            >>> dataset = client.datasets.get('edgeandnode', 'ethereum-mainnet')
             >>> print(f"Latest version: {dataset.latest_version}")
             >>> print(f"Visibility: {dataset.visibility}")
         """
@@ -147,7 +147,7 @@ class RegistryDatasetsClient:
 
         Example:
             >>> client = RegistryClient()
-            >>> versions = client.datasets.list_versions('graphops', 'ethereum-mainnet')
+            >>> versions = client.datasets.list_versions('edgeandnode', 'ethereum-mainnet')
             >>> for version in versions:
             ...     print(f"  - v{version.version} ({version.status})")
         """
@@ -168,7 +168,7 @@ class RegistryDatasetsClient:
 
         Example:
             >>> client = RegistryClient()
-            >>> version = client.datasets.get_version('graphops', 'ethereum-mainnet', 'latest')
+            >>> version = client.datasets.get_version('edgeandnode', 'ethereum-mainnet', 'latest')
             >>> print(f"Version: {version.version}")
             >>> print(f"Created: {version.created_at}")
         """
@@ -191,7 +191,7 @@ class RegistryDatasetsClient:
 
         Example:
             >>> client = RegistryClient()
-            >>> manifest = client.datasets.get_manifest('graphops', 'ethereum-mainnet', 'latest')
+            >>> manifest = client.datasets.get_manifest('edgeandnode', 'ethereum-mainnet', 'latest')
             >>> print(f"Dependencies: {list(manifest.get('dependencies', {}).keys())}")
             >>> print(f"Tables: {list(manifest.get('tables', {}).keys())}")
         """
@@ -241,8 +241,8 @@ class RegistryDatasetsClient:
 
         Example:
             >>> client = RegistryClient()
-            >>> client.datasets.inspect('graphops', 'ethereum-mainnet')
-            Dataset: graphops/ethereum-mainnet@latest
+            >>> client.datasets.inspect('edgeandnode', 'ethereum-mainnet')
+            Dataset: edgeandnode/ethereum-mainnet@latest
 
             blocks (4 columns)
               block_num          UInt64          NOT NULL

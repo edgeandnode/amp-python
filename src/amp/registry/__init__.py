@@ -12,8 +12,8 @@ Example:
     ...     print(f"{dataset.namespace}/{dataset.name} - Score: {dataset.score}")
     >>>
     >>> # Get a specific dataset
-    >>> dataset = client.datasets.get('graphops', 'ethereum-mainnet')
-    >>> manifest = client.datasets.get_manifest('graphops', 'ethereum-mainnet', 'latest')
+    >>> dataset = client.datasets.get('edgeandnode', 'ethereum-mainnet')
+    >>> manifest = client.datasets.get_manifest('edgeandnode', 'ethereum-mainnet', 'latest')
     >>>
     >>> # Authenticated operations
     >>> client = RegistryClient(auth_token='your-token')
