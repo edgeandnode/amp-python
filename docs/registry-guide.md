@@ -29,7 +29,7 @@ client = Client(
     query_url='grpc://localhost:1602',      # Flight SQL queries
     admin_url='http://localhost:8080',      # Admin operations
     registry_url='https://api.registry.amp.staging.thegraph.com',  # Registry (default)
-    auth=True  # Use ~/.amp-cli-config for authentication
+    auth=True  # Use ~/.amp/cache/amp_cli_auth for authentication
 )
 
 # Search registry
@@ -43,7 +43,7 @@ manifest = client.registry.datasets.get_manifest(
     dataset.latest_version.version_tag
 )
 
-client.admin.datasets.register(
+client.datasets.register(
     namespace=dataset.namespace,
     name=dataset.name,
     revision=dataset.latest_version.version_tag,
@@ -165,7 +165,7 @@ print(f'Dependencies: {list(manifest.get("dependencies", {}).keys())}')
 Publishing requires authentication. Set up your auth token:
 
 ```python
-# Option 1: Use existing auth from ~/.amp-cli-config
+# Option 1: Use existing auth from ~/.amp/cache/amp_cli_auth
 from amp import Client
 client = Client(auth=True)
 
@@ -328,21 +328,21 @@ manifest = client.registry.datasets.get_manifest(
 
 # 4. Deploy dependency to local node
 print(f'Deploying {dataset.namespace}/{dataset.name}...')
-client.admin.datasets.register(
+client.datasets.register(
     namespace=dataset.namespace,
     name=dataset.name,
     revision=full_dataset.latest_version.version_tag,
     manifest=manifest
 )
 
-deploy_response = client.admin.datasets.deploy(
+deploy_response = client.datasets.deploy(
     dataset.namespace,
     dataset.name,
     full_dataset.latest_version.version_tag
 )
 
 # Wait for deployment
-client.admin.jobs.wait_for_completion(deploy_response.job_id)
+client.jobs.wait_for_completion(deploy_response.job_id)
 print('Dependency deployed!')
 
 # 5. Create derived dataset
@@ -371,15 +371,15 @@ derived_manifest = {
 }
 
 # 6. Deploy derived dataset
-client.admin.datasets.register(
+client.datasets.register(
     namespace='_',
     name='my_sample',
     revision='1.0.0',
     manifest=derived_manifest
 )
 
-deploy_response = client.admin.datasets.deploy('_', 'my_sample', '1.0.0')
-client.admin.jobs.wait_for_completion(deploy_response.job_id)
+deploy_response = client.datasets.deploy('_', 'my_sample', '1.0.0')
+client.jobs.wait_for_completion(deploy_response.job_id)
 print('Derived dataset deployed!')
 
 # 7. Query the data
@@ -480,6 +480,6 @@ registry = RegistryClient(
 
 The Registry client uses the same authentication as the Admin API:
 
-1. Interactive login: `~/.amp-cli-config`
+1. Interactive login: `~/.amp/cache/amp_cli_auth`
 2. Direct token: Pass `auth_token='your-token'`
 3. Unified client: Set `auth=True` to use saved credentials

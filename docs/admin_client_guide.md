@@ -140,7 +140,7 @@ client = Client(
 )
 
 # Query operations (Flight SQL)
-df = client.query("SELECT * FROM eth.blocks LIMIT 10").to_pandas()
+df = client.sql("SELECT * FROM eth.blocks LIMIT 10").to_pandas()
 
 # Admin operations (HTTP API)
 datasets = client.datasets.list_all()
@@ -170,7 +170,7 @@ The legacy `url` parameter still works for Flight SQL:
 ```python
 # This still works
 client = Client(url="grpc://localhost:8815")
-client.query("SELECT * FROM eth.blocks")
+client.sql("SELECT * FROM eth.blocks")
 ```
 
 ### Environment Variables
@@ -376,7 +376,7 @@ The QueryBuilder provides a fluent API for generating manifests from SQL queries
 
 ```python
 # Build a query
-query = client.query("SELECT block_num, hash FROM eth.blocks")
+query = client.sql("SELECT block_num, hash FROM eth.blocks")
 
 # Add dependencies
 query = query.with_dependency('eth', '_/eth_firehose@1.0.0')
@@ -409,7 +409,7 @@ The most powerful pattern combines query building, manifest generation, registra
 ```python
 # Build, register, and deploy in one chain
 job = (
-    client.query("SELECT block_num, hash FROM eth.blocks")
+    client.sql("SELECT block_num, hash FROM eth.blocks")
     .with_dependency('eth', '_/eth_firehose@1.0.0')
     .register_as(
         namespace='_',
@@ -432,7 +432,7 @@ print(f"Deployment completed: {job.status}")
 
 ```python
 manifest = (
-    client.query("""
+    client.sql("""
         SELECT
             t.token_address,
             t.amount,
@@ -453,8 +453,7 @@ manifest = (
 
 ```python
 # 1. Develop query locally
-# REVIEW: IS THIS CORRECT?? 
-query = client.query("""
+query = client.sql("""
     SELECT
         block_num,
         COUNT(*) as tx_count
@@ -506,7 +505,7 @@ if job.status == 'Completed':
 ```python
 # Register production version
 context = (
-    client.query("SELECT * FROM processed_data")
+    client.sql("SELECT * FROM processed_data")
     .with_dependency('raw', '_/raw_data@2.0.0')
     .register_as('_', 'processed_data', '2.0.0', 'data', 'mainnet')
 )
@@ -691,7 +690,7 @@ thread.start()
 ```python
 # Always specify full dependency references
 query = (
-    client.query("SELECT * FROM base.data")
+    client.sql("SELECT * FROM base.data")
     .with_dependency('base', '_/base_dataset@1.0.0')  # Include version!
 )
 
@@ -700,6 +699,6 @@ query = (
 
 ## Next Steps
 
-- See [API Reference](api/admin_api.md) for complete API documentation
+- See [API Reference](api/client_api.md) for complete API documentation
 - Check [examples/admin/](../examples/admin/) for more code samples
 - Review the [Admin API OpenAPI spec](../specs/admin.spec.json) for endpoint details

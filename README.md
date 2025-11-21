@@ -7,7 +7,7 @@
 
 ## Overview
 
-Python client for Amp - a high-performance data infrastructure for blockchain data.
+Python client for Amp - a database for blockchain data.
 
 **Features:**
 - **Query Client**: Issue Flight SQL queries to Amp servers
@@ -45,7 +45,7 @@ from amp import Client
 client = Client(url="grpc://localhost:8815")
 
 # Execute query and convert to pandas
-df = client.query("SELECT * FROM eth.blocks LIMIT 10").to_pandas()
+df = client.sql("SELECT * FROM eth.blocks LIMIT 10").to_arrow().to_pandas()
 print(df)
 ```
 
@@ -63,7 +63,7 @@ client = Client(
 
 # Register and deploy a dataset
 job = (
-    client.query("SELECT block_num, hash FROM eth.blocks")
+    client.sql("SELECT block_num, hash FROM eth.blocks")
     .with_dependency('eth', '_/eth_firehose@1.0.0')
     .register_as('_', 'my_dataset', '1.0.0', 'blocks', 'mainnet')
     .deploy(parallelism=4, end_block='latest', wait=True)
@@ -76,12 +76,11 @@ print(f"Deployment completed: {job.status}")
 
 ```python
 # Load query results into PostgreSQL
-loader = client.query("SELECT * FROM eth.blocks").load(
-    loader_type='postgresql',
+result = client.sql("SELECT * FROM eth.blocks").load(
     connection='my_pg_connection',
-    table_name='eth_blocks'
+    destination='eth_blocks'
 )
-print(f"Loaded {loader.rows_written} rows")
+print(f"Loaded {result.rows_loaded} rows")
 ```
 
 ## Usage
@@ -108,7 +107,7 @@ uv run apps/execute_query.py
 
 ### Getting Started
 - **[Admin Client Guide](docs/admin_client_guide.md)** - Complete guide for dataset management and deployment
-- **[Admin API Reference](docs/api/admin_api.md)** - Full API documentation for admin operations
+- **[Admin API Reference](docs/api/client_api.md)** - Full API documentation for admin operations
 
 ### Features
 - **[Parallel Streaming Usage Guide](docs/parallel_streaming_usage.md)** - User guide for high-throughput parallel data loading
