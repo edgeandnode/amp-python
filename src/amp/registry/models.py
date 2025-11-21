@@ -115,9 +115,7 @@ class ManifestKind(Enum):
 class ManifestTag(BaseModel):
     created_at: Annotated[
         str,
-        Field(
-            description='Timestamp when the ManifestTag record was created (immutable).'
-        ),
+        Field(description='Timestamp when the ManifestTag record was created (immutable).'),
     ]
     dataset_reference: Annotated[
         str,
@@ -231,27 +229,13 @@ class UpdateDatasetMetadataDto(BaseModel):
     - description
     """
 
-    description: Annotated[Optional[str], Field(description='Dataset description')] = (
-        None
-    )
-    indexing_chains: Annotated[
-        list[str], Field(description='Chains being indexed by the dataset')
-    ]
-    keywords: Annotated[
-        Optional[list[str]], Field(description='Keywords for dataset discovery')
-    ] = None
-    license: Annotated[
-        Optional[str], Field(description='License covering the dataset')
-    ] = None
-    readme: Annotated[
-        Optional[str], Field(description='User-defined README for the dataset')
-    ] = None
-    repository_url: Annotated[
-        Optional[str], Field(description='VCS repository URL')
-    ] = None
-    source: Annotated[
-        Optional[list[str]], Field(description='Source of data being materialized')
-    ] = None
+    description: Annotated[Optional[str], Field(description='Dataset description')] = None
+    indexing_chains: Annotated[list[str], Field(description='Chains being indexed by the dataset')]
+    keywords: Annotated[Optional[list[str]], Field(description='Keywords for dataset discovery')] = None
+    license: Annotated[Optional[str], Field(description='License covering the dataset')] = None
+    readme: Annotated[Optional[str], Field(description='User-defined README for the dataset')] = None
+    repository_url: Annotated[Optional[str], Field(description='VCS repository URL')] = None
+    source: Annotated[Optional[list[str]], Field(description='Source of data being materialized')] = None
 
 
 class UpdateDatasetVersionStatusDto(BaseModel):
@@ -272,9 +256,7 @@ class UpdateDatasetVisibilityDto(BaseModel):
     Input for updating a Dataset's visibility
     """
 
-    visibility: Annotated[
-        DatasetVisibility, Field(description='The new visibility level for the dataset')
-    ]
+    visibility: Annotated[DatasetVisibility, Field(description='The new visibility level for the dataset')]
 
 
 class DatasetVersion(BaseModel):
@@ -315,9 +297,7 @@ class DatasetVersion(BaseModel):
     ]
     descendants: Annotated[
         Optional[list[DatasetVersionAncestry]],
-        Field(
-            description='Array of descendant DatasetVersion references that extend from this version.'
-        ),
+        Field(description='Array of descendant DatasetVersion references that extend from this version.'),
     ] = None
     status: DatasetVersionStatus
     version_tag: Annotated[
@@ -414,9 +394,7 @@ class DatasetWithScore(BaseModel):
         Optional[str],
         Field(
             description='User-defined README for the Dataset providing usage examples and documentation.',
-            examples=[
-                '# ETH Transfers\\n\\nThis dataset indexes all Ethereum transfers...'
-            ],
+            examples=['# ETH Transfers\\n\\nThis dataset indexes all Ethereum transfers...'],
         ),
     ] = None
     repository_url: Annotated[
@@ -449,9 +427,7 @@ class DatasetWithScore(BaseModel):
     ]
     versions: Annotated[
         Optional[list[DatasetVersion]],
-        Field(
-            description='Link to all DatasetVersion records that this Dataset is a parent of.'
-        ),
+        Field(description='Link to all DatasetVersion records that this Dataset is a parent of.'),
     ] = None
     visibility: DatasetVisibility
 
@@ -506,9 +482,7 @@ class Manifest(BaseModel):
         str,
         Field(
             description='The SHA256 unique hash that represents that Manifest JSON content.',
-            examples=[
-                'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
-            ],
+            examples=['e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'],
             pattern='^[0-9a-fA-F]{64}$',
         ),
     ]
@@ -607,9 +581,7 @@ class Dataset(BaseModel):
         Optional[str],
         Field(
             description='User-defined README for the Dataset providing usage examples and documentation.',
-            examples=[
-                '# ETH Transfers\n\nThis dataset indexes all Ethereum transfers...'
-            ],
+            examples=['# ETH Transfers\n\nThis dataset indexes all Ethereum transfers...'],
         ),
     ] = None
     repository_url: Annotated[
@@ -635,9 +607,7 @@ class Dataset(BaseModel):
     ]
     versions: Annotated[
         Optional[list[DatasetVersion]],
-        Field(
-            description='Link to all DatasetVersion records that this Dataset is a parent of.'
-        ),
+        Field(description='Link to all DatasetVersion records that this Dataset is a parent of.'),
     ] = None
     visibility: DatasetVisibility
 
@@ -650,12 +620,8 @@ class DatasetListResponse(BaseModel):
         list[Dataset],
         Field(description='List of the datasets being returned in this page'),
     ]
-    has_next_page: Annotated[
-        bool, Field(description='If true, there are more datasets that can be fetched')
-    ]
-    total_count: Annotated[
-        int, Field(description='Total number of datasets matching the query filters')
-    ]
+    has_next_page: Annotated[bool, Field(description='If true, there are more datasets that can be fetched')]
+    total_count: Annotated[int, Field(description='Total number of datasets matching the query filters')]
 
 
 class DatasetSearchResponse(BaseModel):
@@ -663,12 +629,8 @@ class DatasetSearchResponse(BaseModel):
         list[DatasetWithScore],
         Field(description='List of the datasets being returned in this page'),
     ]
-    has_next_page: Annotated[
-        bool, Field(description='If true, there are more datasets that can be fetched')
-    ]
-    total_count: Annotated[
-        int, Field(description='Total number of datasets matching the query filters')
-    ]
+    has_next_page: Annotated[bool, Field(description='If true, there are more datasets that can be fetched')]
+    total_count: Annotated[int, Field(description='Total number of datasets matching the query filters')]
 
 
 class InsertDataset(BaseModel):
@@ -727,9 +689,7 @@ class InsertDataset(BaseModel):
         Optional[str],
         Field(
             description='User-defined README for the Dataset providing usage examples and documentation.',
-            examples=[
-                '# ETH Transfers\\n\\nThis dataset indexes all Ethereum transfers...'
-            ],
+            examples=['# ETH Transfers\\n\\nThis dataset indexes all Ethereum transfers...'],
         ),
     ] = None
     repository_url: Annotated[
@@ -756,12 +716,8 @@ class OwnerDatasetListResponse(BaseModel):
         list[Dataset],
         Field(description='List of the datasets being returned in this page'),
     ]
-    has_next_page: Annotated[
-        bool, Field(description='If true, there are more datasets that can be fetched')
-    ]
-    total_count: Annotated[
-        int, Field(description='Total number of datasets matching the query filters')
-    ]
+    has_next_page: Annotated[bool, Field(description='If true, there are more datasets that can be fetched')]
+    total_count: Annotated[int, Field(description='Total number of datasets matching the query filters')]
 
 
 class AuthUserOwnedDatasetListResponse(BaseModel):
@@ -769,12 +725,8 @@ class AuthUserOwnedDatasetListResponse(BaseModel):
         list[Dataset],
         Field(description='List of the datasets being returned in this page'),
     ]
-    has_next_page: Annotated[
-        bool, Field(description='If true, there are more datasets that can be fetched')
-    ]
-    total_count: Annotated[
-        int, Field(description='Total number of datasets matching the query filters')
-    ]
+    has_next_page: Annotated[bool, Field(description='If true, there are more datasets that can be fetched')]
+    total_count: Annotated[int, Field(description='Total number of datasets matching the query filters')]
 
 
 ManifestTag.model_rebuild()

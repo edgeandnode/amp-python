@@ -371,9 +371,7 @@ class RegistryDatasetsClient:
         response = self._registry._request('PATCH', path, json=body)
         return models.Dataset.model_validate(response.json())
 
-    def update_version_status(
-        self, namespace: str, name: str, version: str, status: str
-    ) -> models.DatasetVersion:
+    def update_version_status(self, namespace: str, name: str, version: str, status: str) -> models.DatasetVersion:
         """Update the status of a dataset version.
 
         Requires authentication and ownership of the dataset.

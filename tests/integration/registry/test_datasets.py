@@ -129,9 +129,7 @@ class TestDatasetVersions:
             pytest.skip('No versions available for dataset')
 
         # Get specific version
-        version_detail = registry_client.datasets.get_version(
-            dataset.namespace, dataset.name, versions[0].version_tag
-        )
+        version_detail = registry_client.datasets.get_version(dataset.namespace, dataset.name, versions[0].version_tag)
 
         assert version_detail.version_tag == versions[0].version_tag
         assert version_detail.status
