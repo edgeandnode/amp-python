@@ -1,4 +1,4 @@
-# Admin API Reference
+# Client API Reference
 
 Complete API reference for the Amp Admin Client.
 
@@ -90,7 +90,7 @@ Access the SchemaClient for schema operations.
 
 #### Methods
 
-##### `query(sql: str) -> QueryBuilder`
+##### `sql(sql: str) -> QueryBuilder`
 
 Create a QueryBuilder for the given SQL query.
 
@@ -103,7 +103,7 @@ Create a QueryBuilder for the given SQL query.
 **Example:**
 
 ```python
-qb = client.query("SELECT * FROM eth.blocks LIMIT 10")
+qb = client.sql("SELECT * FROM eth.blocks LIMIT 10")
 df = qb.to_pandas()
 ```
 
@@ -832,7 +832,7 @@ with_dependency(alias: str, reference: str) -> QueryBuilder
 
 ```python
 qb = (
-    client.query("SELECT * FROM eth.blocks")
+    client.sql("SELECT * FROM eth.blocks")
     .with_dependency('eth', '_/eth_firehose@1.0.0')
 )
 ```
@@ -856,7 +856,7 @@ to_manifest(table_name: str, network: str = 'mainnet') -> dict
 
 ```python
 manifest = (
-    client.query("SELECT * FROM eth.blocks")
+    client.sql("SELECT * FROM eth.blocks")
     .with_dependency('eth', '_/eth_firehose@1.0.0')
     .to_manifest('blocks', 'mainnet')
 )
@@ -890,7 +890,7 @@ register_as(
 
 ```python
 job = (
-    client.query("SELECT * FROM eth.blocks")
+    client.sql("SELECT * FROM eth.blocks")
     .with_dependency('eth', '_/eth_firehose@1.0.0')
     .register_as('_', 'my_dataset', '1.0.0', 'blocks')
     .deploy(parallelism=4, wait=True)
@@ -937,7 +937,7 @@ deploy(
 
 ```python
 # Deploy and return immediately
-context = client.query(...).register_as(...)
+context = client.sql(...).register_as(...)
 job = context.deploy(parallelism=4)
 print(f"Started job {job.id}")
 
@@ -965,7 +965,7 @@ client = Client(
 
 try:
     # Build and test query
-    query = client.query("""
+    query = client.sql("""
         SELECT block_num, hash, timestamp
         FROM eth.blocks
         WHERE block_num > 1000000
