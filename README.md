@@ -12,9 +12,12 @@ Python client for Amp - a database for blockchain data.
 **Features:**
 - **Query Client**: Issue Flight SQL queries to Amp servers
 - **Admin Client**: Manage datasets, deployments, and jobs programmatically
+- **Registry Client**: Discover, search, and publish datasets to the Registry
+- **Dataset Inspection**: Explore dataset schemas with `inspect()` and `describe()` methods
 - **Data Loaders**: Zero-copy loading into PostgreSQL, Redis, Snowflake, Delta Lake, Iceberg, and more
 - **Parallel Streaming**: High-throughput parallel data ingestion with automatic resume
 - **Manifest Generation**: Fluent API for creating and deploying datasets from SQL queries
+- **Auto-Refreshing Auth**: Seamless authentication with automatic token refresh
 
 ## Dependencies
 1. Rust
@@ -83,6 +86,92 @@ result = client.sql("SELECT * FROM eth.blocks").load(
 print(f"Loaded {result.rows_loaded} rows")
 ```
 
+### Authentication
+
+The client supports three authentication methods (in priority order):
+
+```python
+from amp import Client
+
+# 1. Explicit token (highest priority)
+client = Client(
+    url="grpc://localhost:8815",
+    auth_token="your-token"
+)
+
+# 2. Environment variable
+# export AMP_AUTH_TOKEN="your-token"
+client = Client(url="grpc://localhost:8815")
+
+# 3. Shared auth file (auto-refresh, recommended)
+# Uses ~/.amp/cache/amp_cli_auth (shared with TypeScript CLI)
+client = Client(
+    url="grpc://localhost:8815",
+    auth=True  # Automatically refreshes expired tokens
+)
+```
+
+### Registry - Discovering Datasets
+
+```python
+from amp import Client
+
+# Connect with registry support
+client = Client(
+    query_url="grpc://localhost:8815",
+    registry_url="https://api.registry.amp.staging.thegraph.com",
+    auth=True
+)
+
+# Search for datasets
+results = client.registry.datasets.search('ethereum blocks')
+for dataset in results.datasets[:5]:
+    print(f"{dataset.namespace}/{dataset.name} - {dataset.description}")
+
+# Get dataset details
+dataset = client.registry.datasets.get('edgeandnode', 'ethereum-mainnet')
+print(f"Latest version: {dataset.latest_version}")
+
+# Inspect dataset schema
+client.registry.datasets.inspect('edgeandnode', 'ethereum-mainnet')
+```
+
+### Dataset Inspection
+
+Explore dataset schemas before querying:
+
+```python
+from amp.registry import RegistryClient
+
+client = RegistryClient()
+
+# Pretty-print dataset structure (interactive)
+client.datasets.inspect('edgeandnode', 'ethereum-mainnet')
+# Output:
+# Dataset: edgeandnode/ethereum-mainnet@latest
+#
+# blocks (21 columns)
+#   block_num          UInt64                    NOT NULL
+#   timestamp          Timestamp(Nanosecond)     NOT NULL
+#   hash               FixedSizeBinary(32)       NOT NULL
+#   ...
+
+# Get structured schema data (programmatic)
+schema = client.datasets.describe('edgeandnode', 'ethereum-mainnet')
+
+# Find tables with specific columns
+for table_name, columns in schema.items():
+    col_names = [col['name'] for col in columns]
+    if 'block_num' in col_names:
+        print(f"Table '{table_name}' has block_num column")
+
+# Find all address columns (20-byte binary)
+for table_name, columns in schema.items():
+    addresses = [col['name'] for col in columns if col['type'] == 'FixedSizeBinary(20)']
+    if addresses:
+        print(f"{table_name}: {', '.join(addresses)}")
+```
+
 ## Usage
 
 ### Marimo
@@ -107,6 +196,8 @@ uv run apps/execute_query.py
 
 ### Getting Started
 - **[Admin Client Guide](docs/admin_client_guide.md)** - Complete guide for dataset management and deployment
+- **[Registry Guide](docs/registry-guide.md)** - Discover and search datasets in the Registry
+- **[Dataset Inspection](docs/inspecting_datasets.md)** - Explore dataset schemas with `inspect()` and `describe()`
 - **[Admin API Reference](docs/api/client_api.md)** - Full API documentation for admin operations
 
 ### Features
