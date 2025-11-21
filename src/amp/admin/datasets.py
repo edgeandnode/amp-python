@@ -4,7 +4,9 @@ This module provides the DatasetsClient class for managing datasets,
 including registration, deployment, versioning, and manifest operations.
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Dict, Optional
+
+from amp.utils.manifest_inspector import describe_manifest, print_schema
 
 from . import models
 
@@ -197,6 +199,77 @@ class DatasetsClient:
         path = f'/datasets/{namespace}/{name}/versions/{revision}/manifest'
         response = self._admin._request('GET', path)
         return response.json()
+
+    def describe(self, namespace: str, name: str, revision: str = 'latest') -> Dict[str, list[Dict[str, str | bool]]]:
+        """Get a structured summary of tables and columns in a dataset.
+
+        Returns a dictionary mapping table names to lists of column information,
+        making it easy to programmatically inspect the dataset schema.
+
+        Args:
+            namespace: Dataset namespace
+            name: Dataset name
+            revision: Version tag (default: 'latest')
+
+        Returns:
+            dict: Mapping of table names to column information. Each column is a dict with:
+                - name: Column name (str)
+                - type: Arrow type (str, simplified representation)
+                - nullable: Whether the column allows NULL values (bool)
+
+        Example:
+            >>> client = AdminClient('http://localhost:8080')
+            >>> schema = client.datasets.describe('_', 'eth_firehose', 'latest')
+            >>> for table_name, columns in schema.items():
+            ...     print(f"\\nTable: {table_name}")
+            ...     for col in columns:
+            ...         nullable = "NULL" if col['nullable'] else "NOT NULL"
+            ...         print(f"  {col['name']}: {col['type']} {nullable}")
+        """
+        manifest = self.get_manifest(namespace, name, revision)
+        return describe_manifest(manifest)
+
+    def inspect(self, namespace: str, name: str, revision: str = 'latest') -> None:
+        """Pretty-print the structure of a dataset for easy inspection.
+
+        Displays tables and their columns in a human-readable format.
+        This is perfect for exploring datasets interactively.
+
+        Args:
+            namespace: Dataset namespace
+            name: Dataset name
+            revision: Version tag (default: 'latest')
+
+        Example:
+            >>> client = AdminClient('http://localhost:8080')
+            >>> client.datasets.inspect('_', 'eth_firehose')
+            Dataset: _/eth_firehose@latest
+
+            blocks (21 columns)
+              block_num          UInt64          NOT NULL
+              timestamp          Timestamp       NOT NULL
+              hash               FixedSizeBinary(32)  NOT NULL
+              ...
+
+            transactions (24 columns)
+              tx_hash            FixedSizeBinary(32)  NOT NULL
+              from               FixedSizeBinary(20)  NOT NULL
+              to                 FixedSizeBinary(20)  NULL
+              ...
+        """
+        header = f'Dataset: {namespace}/{name}@{revision}'
+
+        # Try to get version info for additional context (optional, might not always work)
+        try:
+            version_info = self.get_version(namespace, name, revision)
+            if hasattr(version_info, 'kind'):
+                header += f'\nKind: {version_info.kind}'
+        except Exception:
+            # If we can't get version info, that's okay - just continue
+            pass
+
+        schema = self.describe(namespace, name, revision)
+        print_schema(schema, header=header)
 
     def delete(self, namespace: str, name: str) -> None:
         """Delete all versions and metadata for a dataset.

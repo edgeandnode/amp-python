@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+from amp.utils.manifest_inspector import describe_manifest, print_schema
+
 from . import models
 
 if TYPE_CHECKING:
@@ -196,6 +198,72 @@ class RegistryDatasetsClient:
         path = f'/api/v1/datasets/{namespace}/{name}/versions/{version}/manifest'
         response = self._registry._request('GET', path)
         return response.json()
+
+    def describe(self, namespace: str, name: str, version: str = 'latest') -> Dict[str, list[Dict[str, str | bool]]]:
+        """Get a structured summary of tables and columns in a dataset.
+
+        Returns a dictionary mapping table names to lists of column information,
+        making it easy to programmatically inspect the dataset schema.
+
+        Args:
+            namespace: Dataset namespace
+            name: Dataset name
+            version: Version tag (default: 'latest')
+
+        Returns:
+            dict: Mapping of table names to column information. Each column is a dict with:
+                - name: Column name (str)
+                - type: Arrow type (str, simplified representation)
+                - nullable: Whether the column allows NULL values (bool)
+
+        Example:
+            >>> client = RegistryClient()
+            >>> schema = client.datasets.describe('edgeandnode', 'ethereum-mainnet', 'latest')
+            >>> for table_name, columns in schema.items():
+            ...     print(f"\\nTable: {table_name}")
+            ...     for col in columns:
+            ...         nullable = "NULL" if col['nullable'] else "NOT NULL"
+            ...         print(f"  {col['name']}: {col['type']} {nullable}")
+        """
+        manifest = self.get_manifest(namespace, name, version)
+        return describe_manifest(manifest)
+
+    def inspect(self, namespace: str, name: str, version: str = 'latest') -> None:
+        """Pretty-print the structure of a dataset for easy inspection.
+
+        Displays tables and their columns in a human-readable format.
+        This is perfect for exploring datasets interactively.
+
+        Args:
+            namespace: Dataset namespace
+            name: Dataset name
+            version: Version tag (default: 'latest')
+
+        Example:
+            >>> client = RegistryClient()
+            >>> client.datasets.inspect('graphops', 'ethereum-mainnet')
+            Dataset: graphops/ethereum-mainnet@latest
+
+            blocks (4 columns)
+              block_num          UInt64          NOT NULL
+              timestamp          Timestamp       NOT NULL
+              hash               FixedSizeBinary(32)  NOT NULL
+              parent_hash        FixedSizeBinary(32)  NOT NULL
+
+            transactions (23 columns)
+              block_num          UInt64          NOT NULL
+              tx_hash            FixedSizeBinary(32)  NOT NULL
+              ...
+        """
+        # Get dataset info
+        dataset = self.get(namespace, name)
+        header = f'Dataset: {namespace}/{name}@{version}'
+        if dataset.description:
+            header += f'\nDescription: {dataset.description}'
+
+        # Get schema and print
+        schema = self.describe(namespace, name, version)
+        print_schema(schema, header=header)
 
     # Write Operations (Require Authentication)
 
