@@ -4,6 +4,7 @@ This module provides the core AdminClient class for communicating
 with the Amp Admin API over HTTP.
 """
 
+import os
 from typing import Optional
 
 import httpx
@@ -19,31 +20,61 @@ class AdminClient:
 
     Args:
         base_url: Base URL for Admin API (e.g., 'http://localhost:8080')
-        auth_token: Optional Bearer token for authentication
+        auth_token: Optional Bearer token for authentication (highest priority)
+        auth: If True, load auth token from ~/.amp/cache (shared with TS CLI)
+
+    Authentication Priority (highest to lowest):
+        1. Explicit auth_token parameter
+        2. AMP_AUTH_TOKEN environment variable
+        3. auth=True - reads from ~/.amp/cache/amp_cli_auth
 
     Example:
+        >>> # Use amp auth from file
+        >>> client = AdminClient('http://localhost:8080', auth=True)
+        >>>
+        >>> # Use manual token
+        >>> client = AdminClient('http://localhost:8080', auth_token='your-token')
+        >>>
+        >>> # Use environment variable
+        >>> # export AMP_AUTH_TOKEN="eyJhbGci..."
         >>> client = AdminClient('http://localhost:8080')
-        >>> datasets = client.datasets.list_all()
     """
 
-    def __init__(self, base_url: str, auth_token: Optional[str] = None):
+    def __init__(self, base_url: str, auth_token: Optional[str] = None, auth: bool = False):
         """Initialize Admin API client.
 
         Args:
             base_url: Base URL for Admin API (e.g., 'http://localhost:8080')
             auth_token: Optional Bearer token for authentication
+            auth: If True, load auth token from ~/.amp/cache
+
+        Raises:
+            ValueError: If both auth=True and auth_token are provided
         """
+        if auth and auth_token:
+            raise ValueError('Cannot specify both auth=True and auth_token. Choose one authentication method.')
+
         self.base_url = base_url.rstrip('/')
 
-        # Build headers
-        headers = {}
+        # Resolve auth token provider with priority: explicit param > env var > auth file
+        self._get_token = None
         if auth_token:
-            headers['Authorization'] = f'Bearer {auth_token}'
+            # Priority 1: Explicit auth_token parameter (static token)
+            self._get_token = lambda: auth_token
+        elif os.getenv('AMP_AUTH_TOKEN'):
+            # Priority 2: AMP_AUTH_TOKEN environment variable (static token)
+            env_token = os.getenv('AMP_AUTH_TOKEN')
+            self._get_token = lambda: env_token
+        elif auth:
+            # Priority 3: Load from ~/.amp-cli-config/amp_cli_auth (auto-refreshing)
+            from amp.auth import AuthService
 
-        # Create HTTP client
+            auth_service = AuthService()
+            self._get_token = auth_service.get_token  # Callable that auto-refreshes
+
+        # Create HTTP client (no auth header yet - will be added per-request)
         self._http = httpx.Client(
             base_url=self.base_url,
-            headers=headers,
             timeout=30.0,
             follow_redirects=True,
         )
@@ -66,6 +97,12 @@ class AdminClient:
         Raises:
             AdminAPIError: If the API returns an error response
         """
+        # Add auth header dynamically (auto-refreshes if needed)
+        headers = kwargs.get('headers', {})
+        if self._get_token:
+            headers['Authorization'] = f'Bearer {self._get_token()}'
+            kwargs['headers'] = headers
+
         response = self._http.request(method, path, json=json, params=params, **kwargs)
 
         # Handle error responses

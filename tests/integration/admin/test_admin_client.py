@@ -25,8 +25,7 @@ class TestAdminClientHTTP:
         """Test AdminClient with authentication token."""
         client = AdminClient('http://localhost:8080', auth_token='test-token')
 
-        assert 'Authorization' in client._http.headers
-        assert client._http.headers['Authorization'] == 'Bearer test-token'
+        assert client._get_token() == 'test-token'
 
     @respx.mock
     def test_request_success(self):

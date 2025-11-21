@@ -7,7 +7,7 @@ actual Flight SQL connections or Admin API calls.
 
 import json
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -85,6 +85,154 @@ class TestClientInitialization:
         """Test that Client requires either url or query_url"""
         with pytest.raises(ValueError, match='Either url or query_url must be provided'):
             Client()
+
+
+@pytest.mark.unit
+class TestClientAuthPriority:
+    """Test Client authentication priority (explicit token > env var > auth file)"""
+
+    @patch('amp.client.os.getenv')
+    @patch('amp.client.flight.connect')
+    def test_explicit_token_highest_priority(self, mock_connect, mock_getenv):
+        """Test that explicit auth_token parameter has highest priority"""
+        mock_getenv.return_value = 'env-var-token'
+
+        Client(query_url='grpc://localhost:1602', auth_token='explicit-token')
+
+        # Verify that explicit token was used (not env var)
+        mock_connect.assert_called_once()
+        call_args = mock_connect.call_args
+        middleware = call_args[1].get('middleware', [])
+        assert len(middleware) == 1
+        assert middleware[0].get_token() == 'explicit-token'
+
+    @patch('amp.client.os.getenv')
+    @patch('amp.client.flight.connect')
+    def test_env_var_second_priority(self, mock_connect, mock_getenv):
+        """Test that AMP_AUTH_TOKEN env var has second priority"""
+
+        # Return 'env-var-token' for AMP_AUTH_TOKEN, None for others
+        def getenv_side_effect(key, default=None):
+            if key == 'AMP_AUTH_TOKEN':
+                return 'env-var-token'
+            return default
+
+        mock_getenv.side_effect = getenv_side_effect
+
+        Client(query_url='grpc://localhost:1602')
+
+        # Verify env var was checked
+        calls = [str(call) for call in mock_getenv.call_args_list]
+        assert any('AMP_AUTH_TOKEN' in call for call in calls)
+        mock_connect.assert_called_once()
+        call_args = mock_connect.call_args
+        middleware = call_args[1].get('middleware', [])
+        assert len(middleware) == 1
+        assert middleware[0].get_token() == 'env-var-token'
+
+    @patch('amp.auth.AuthService')
+    @patch('amp.client.os.getenv')
+    @patch('amp.client.flight.connect')
+    def test_auth_file_lowest_priority(self, mock_connect, mock_getenv, mock_auth_service):
+        """Test that auth=True has lowest priority"""
+
+        # Return None for all getenv calls
+        def getenv_side_effect(key, default=None):
+            return default
+
+        mock_getenv.side_effect = getenv_side_effect
+
+        mock_service_instance = Mock()
+        mock_service_instance.get_token.return_value = 'file-token'
+        mock_auth_service.return_value = mock_service_instance
+
+        Client(query_url='grpc://localhost:1602', auth=True)
+
+        # Verify auth file was used
+        mock_auth_service.assert_called_once()
+        mock_connect.assert_called_once()
+        call_args = mock_connect.call_args
+        middleware = call_args[1].get('middleware', [])
+        assert len(middleware) == 1
+        # The middleware should use the auth service's get_token method directly
+        assert middleware[0].get_token == mock_service_instance.get_token
+
+    @patch('amp.client.os.getenv')
+    @patch('amp.client.flight.connect')
+    def test_no_auth_when_nothing_provided(self, mock_connect, mock_getenv):
+        """Test that no auth middleware is added when no auth is provided"""
+
+        # Return None/default for all getenv calls
+        def getenv_side_effect(key, default=None):
+            return default
+
+        mock_getenv.side_effect = getenv_side_effect
+
+        Client(query_url='grpc://localhost:1602')
+
+        # Verify no middleware was added
+        mock_connect.assert_called_once()
+        call_args = mock_connect.call_args
+        middleware = call_args[1].get('middleware')
+        assert middleware is None or len(middleware) == 0
+
+
+@pytest.mark.unit
+class TestAdminClientAuthPriority:
+    """Test AdminClient authentication priority"""
+
+    @patch('amp.admin.client.os.getenv')
+    def test_admin_explicit_token_highest_priority(self, mock_getenv):
+        """Test that explicit auth_token parameter has highest priority for AdminClient"""
+        from amp.admin.client import AdminClient
+
+        mock_getenv.return_value = 'env-var-token'
+
+        client = AdminClient('http://localhost:8080', auth_token='explicit-token')
+
+        # Verify explicit token was used (check get_token callable)
+        assert client._get_token() == 'explicit-token'
+
+    @patch('amp.admin.client.os.getenv')
+    def test_admin_env_var_second_priority(self, mock_getenv):
+        """Test that AMP_AUTH_TOKEN env var has second priority for AdminClient"""
+        from amp.admin.client import AdminClient
+
+        mock_getenv.return_value = 'env-var-token'
+
+        client = AdminClient('http://localhost:8080')
+
+        # Verify env var was used
+        mock_getenv.assert_called_with('AMP_AUTH_TOKEN')
+        assert client._get_token() == 'env-var-token'
+
+    @patch('amp.auth.AuthService')
+    @patch('amp.admin.client.os.getenv')
+    def test_admin_auth_file_lowest_priority(self, mock_getenv, mock_auth_service):
+        """Test that auth=True has lowest priority for AdminClient"""
+        from amp.admin.client import AdminClient
+
+        mock_getenv.return_value = None
+        mock_service_instance = Mock()
+        mock_service_instance.get_token.return_value = 'file-token'
+        mock_auth_service.return_value = mock_service_instance
+
+        client = AdminClient('http://localhost:8080', auth=True)
+
+        # Verify auth file was used
+        assert client._get_token == mock_service_instance.get_token
+
+    @patch('amp.admin.client.os.getenv')
+    def test_admin_no_auth_when_nothing_provided(self, mock_getenv):
+        """Test that no auth header is added when no auth is provided"""
+        from amp.admin.client import AdminClient
+
+        mock_getenv.return_value = None
+
+        client = AdminClient('http://localhost:8080')
+
+        # Verify no auth header
+        assert 'Authorization' not in client._http.headers
 
 
 @pytest.mark.unit

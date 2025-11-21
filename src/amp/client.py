@@ -1,9 +1,11 @@
 import logging
+import os
 from typing import Dict, Iterator, List, Optional, Union
 
 import pyarrow as pa
 from google.protobuf.any_pb2 import Any
 from pyarrow import flight
+from pyarrow.flight import ClientMiddleware, ClientMiddlewareFactory
 
 from . import FlightSql_pb2
 from .config.connection_manager import ConnectionManager
@@ -17,6 +19,38 @@ from .streaming import (
     ResumeWatermark,
     StreamingResultIterator,
 )
+
+
+class AuthMiddleware(ClientMiddleware):
+    """Flight middleware to add Bearer token authentication header."""
+
+    def __init__(self, get_token):
+        """Initialize auth middleware.
+
+        Args:
+            get_token: Callable that returns the current access token
+        """
+        self.get_token = get_token
+
+    def sending_headers(self):
+        """Add Authorization header to outgoing requests."""
+        return {'authorization': f'Bearer {self.get_token()}'}
+
+
+class AuthMiddlewareFactory(ClientMiddlewareFactory):
+    """Factory for creating auth middleware instances."""
+
+    def __init__(self, get_token):
+        """Initialize auth middleware factory.
+
+        Args:
+            get_token: Callable that returns the current access token
+        """
+        self.get_token = get_token
+
+    def start_call(self, info):
+        """Create auth middleware for each call."""
+        return AuthMiddleware(self.get_token)
 
 
 class QueryBuilder:
@@ -237,17 +271,28 @@ class Client:
         url: Flight SQL URL (for backward compatibility, treated as query_url)
         query_url: Query endpoint URL via Flight SQL (e.g., 'grpc://localhost:1602')
         admin_url: Optional Admin API URL (e.g., 'http://localhost:8080')
-        auth_token: Optional Bearer token for Admin API authentication
+        auth_token: Optional Bearer token for authentication (highest priority)
+        auth: If True, load auth token from ~/.amp/cache (shared with TS CLI)
+
+    Authentication Priority (highest to lowest):
+        1. Explicit auth_token parameter
+        2. AMP_AUTH_TOKEN environment variable
+        3. auth=True - reads from ~/.amp/cache/amp_cli_auth
 
     Example:
         >>> # Query-only client (backward compatible)
         >>> client = Client(url='grpc://localhost:1602')
         >>>
-        >>> # Client with admin capabilities
+        >>> # Client with amp auth from file
         >>> client = Client(
         ...     query_url='grpc://localhost:1602',
-        ...     admin_url='http://localhost:8080'
+        ...     admin_url='http://localhost:8080',
+        ...     auth=True
         ... )
+        >>>
+        >>> # Client with auth from environment variable
+        >>> # export AMP_AUTH_TOKEN="eyJhbGci..."
+        >>> client = Client(query_url='grpc://localhost:1602')
     """
 
     def __init__(
@@ -256,14 +301,39 @@ class Client:
         query_url: Optional[str] = None,
         admin_url: Optional[str] = None,
         auth_token: Optional[str] = None,
+        auth: bool = False,
     ):
         # Backward compatibility: url parameter → query_url
         if url and not query_url:
             query_url = url
 
+        # Resolve auth token provider with priority: explicit param > env var > auth file
+        get_token = None
+        if auth_token:
+            # Priority 1: Explicit auth_token parameter (static token)
+            def get_token():
+                return auth_token
+        elif os.getenv('AMP_AUTH_TOKEN'):
+            # Priority 2: AMP_AUTH_TOKEN environment variable (static token)
+            env_token = os.getenv('AMP_AUTH_TOKEN')
+
+            def get_token():
+                return env_token
+        elif auth:
+            # Priority 3: Load from ~/.amp/cache/amp_cli_auth (auto-refreshing)
+            from amp.auth import AuthService
+
+            auth_service = AuthService()
+            get_token = auth_service.get_token  # Callable that auto-refreshes
+
         # Initialize Flight SQL client
         if query_url:
-            self.conn = flight.connect(query_url)
+            # Add auth middleware if token provider exists
+            if get_token:
+                middleware = [AuthMiddlewareFactory(get_token)]
+                self.conn = flight.connect(query_url, middleware=middleware)
+            else:
+                self.conn = flight.connect(query_url)
         else:
             raise ValueError('Either url or query_url must be provided for Flight SQL connection')
 
@@ -276,7 +346,18 @@ class Client:
         if admin_url:
             from amp.admin.client import AdminClient
 
-            self._admin_client = AdminClient(admin_url, auth_token)
+            # Pass auth=True if we have a get_token callable from auth file
+            # Otherwise pass the static token if available
+            if auth:
+                # Use auth file (auto-refreshing)
+                self._admin_client = AdminClient(admin_url, auth=True)
+            elif auth_token or os.getenv('AMP_AUTH_TOKEN'):
+                # Use static token
+                static_token = auth_token or os.getenv('AMP_AUTH_TOKEN')
+                self._admin_client = AdminClient(admin_url, auth_token=static_token)
+            else:
+                # No auth
+                self._admin_client = AdminClient(admin_url)
         else:
             self._admin_client = None
 
