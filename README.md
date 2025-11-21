@@ -16,6 +16,10 @@ Python client for Amp - a high-performance data infrastructure for blockchain da
 - **Parallel Streaming**: High-throughput parallel data ingestion with automatic resume
 - **Manifest Generation**: Fluent API for creating and deploying datasets from SQL queries
 
+## Dependencies
+1. Rust
+   `brew install rust`
+
 ## Installation
  
 1. Ensure you have [`uv`](https://docs.astral.sh/uv/getting-started/installation/) installed locally.
@@ -23,9 +27,11 @@ Python client for Amp - a high-performance data infrastructure for blockchain da
     ```bash
     uv build 
    ```
-3. Activate a virtual environment 
+3. Activate a virtual environment
+
+   Python 3.13 is the highest version supported `brew install python@3.13`
     ```bash
-    uv venv
+    uv venv --python 3.13
    ```
 
 ## Quick Start
