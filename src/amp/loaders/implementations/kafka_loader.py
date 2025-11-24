@@ -22,7 +22,7 @@ class KafkaConfig:
 class KafkaLoader(DataLoader[KafkaConfig]):
     SUPPORTED_MODES = {LoadMode.APPEND}
     REQUIRES_SCHEMA_MATCH = False
-    SUPPORTS_TRANSACTIONS = False
+    SUPPORTS_TRANSACTIONS = True
 
     def __init__(self, config: Dict[str, Any], label_manager=None) -> None:
         super().__init__(config, label_manager)
@@ -37,7 +37,10 @@ class KafkaLoader(DataLoader[KafkaConfig]):
                 bootstrap_servers=self.config.bootstrap_servers,
                 client_id=self.config.client_id,
                 value_serializer=lambda x: json.dumps(x, default=str).encode('utf-8'),
+                transactional_id=f'{self.config.client_id}-txn',
             )
+
+            self._producer.init_transactions()
 
             metadata = self._producer.bootstrap_connected()
             self.logger.info(f'Connection status: {metadata}')
@@ -52,7 +55,6 @@ class KafkaLoader(DataLoader[KafkaConfig]):
 
     def disconnect(self) -> None:
         if self._producer:
-            self._producer.flush()
             self._producer.close()
             self._producer = None
 
@@ -73,17 +75,23 @@ class KafkaLoader(DataLoader[KafkaConfig]):
         if num_rows == 0:
             return 0
 
-        for i in range(num_rows):
-            row = {field: values[i] for field, values in data_dict.items()}
-            row['_type'] = 'data'
+        self._producer.begin_transaction()
+        try:
+            for i in range(num_rows):
+                row = {field: values[i] for field, values in data_dict.items()}
+                row['_type'] = 'data'
 
-            key = self._extract_message_key(row)
+                key = self._extract_message_key(row)
 
-            self._producer.send(topic=table_name, key=key, value=row)
+                self._producer.send(topic=table_name, key=key, value=row)
 
-        self._producer.flush()
+            self._producer.commit_transaction()
+            self.logger.debug(f'Committed transaction with {num_rows} messages to topic {table_name}')
 
-        self.logger.debug(f'Sent {num_rows} messages to topic {table_name}')
+        except Exception as e:
+            self._producer.abort_transaction()
+            self.logger.error(f'Transaction aborted due to error: {e}')
+            raise
 
         return num_rows
 
@@ -111,22 +119,29 @@ class KafkaLoader(DataLoader[KafkaConfig]):
             self.logger.warning('Producer not connected, skipping reorg handling')
             return
 
-        for invalidation_range in invalidation_ranges:
-            reorg_message = {
-                '_type': 'reorg',
-                'network': invalidation_range.network,
-                'start_block': invalidation_range.start,
-                'end_block': invalidation_range.end,
-            }
+        self._producer.begin_transaction()
+        try:
+            for invalidation_range in invalidation_ranges:
+                reorg_message = {
+                    '_type': 'reorg',
+                    'network': invalidation_range.network,
+                    'start_block': invalidation_range.start,
+                    'end_block': invalidation_range.end,
+                }
 
-            self._producer.send(
-                topic=table_name, key=f'reorg:{invalidation_range.network}'.encode('utf-8'), value=reorg_message
-            )
+                self._producer.send(
+                    topic=table_name, key=f'reorg:{invalidation_range.network}'.encode('utf-8'), value=reorg_message
+                )
 
-            self.logger.info(
-                f'Sent reorg event to {table_name}: '
-                f'{invalidation_range.network} blocks {invalidation_range.start}-{invalidation_range.end}'
-            )
+                self.logger.info(
+                    f'Sent reorg event to {table_name}: '
+                    f'{invalidation_range.network} blocks {invalidation_range.start}-{invalidation_range.end}'
+                )
 
-        self._producer.flush()
-        self.logger.info(f'Flushed {len(invalidation_ranges)} reorg events to {table_name}')
+            self._producer.commit_transaction()
+            self.logger.info(f'Committed {len(invalidation_ranges)} reorg events to {table_name}')
+
+        except Exception as e:
+            self._producer.abort_transaction()
+            self.logger.error(f'Reorg transaction aborted due to error: {e}')
+            raise
