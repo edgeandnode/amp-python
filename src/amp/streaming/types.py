@@ -168,12 +168,16 @@ class ResumeWatermark:
     sequence: Optional[int] = None
 
     def to_json(self) -> str:
-        """Serialize to JSON string for HTTP headers"""
-        data = {'ranges': [r.to_dict() for r in self.ranges]}
-        if self.timestamp:
-            data['timestamp'] = self.timestamp
-        if self.sequence is not None:
-            data['sequence'] = self.sequence
+        """Serialize to JSON string for HTTP headers.
+
+        Server expects format: {"network_name": {"number": block_num, "hash": "0x..."}, ...}
+        """
+        data = {}
+        for r in self.ranges:
+            if r.hash is None:
+                raise ValueError(f"BlockRange for network '{r.network}' must have a hash for watermark")
+
+            data[r.network] = {'number': r.end, 'hash': r.hash}
         return json.dumps(data)
 
     @classmethod
