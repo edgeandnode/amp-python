@@ -3,7 +3,11 @@
 Test ERC20 query with label joining
 """
 
+import json
 import os
+import time
+
+from kafka import KafkaConsumer
 
 from amp.client import Client
 from amp.loaders.types import LabelJoinConfig
@@ -76,10 +80,6 @@ print('\n' + '=' * 60)
 print('Reading back from Kafka')
 print('=' * 60)
 
-from kafka import KafkaConsumer
-import json
-import time
-
 time.sleep(1)
 
 consumer = KafkaConsumer(
@@ -90,7 +90,7 @@ consumer = KafkaConsumer(
     consumer_timeout_ms=5000,
 )
 
-print(f'\nConsuming messages from topic "erc20_transfers":\n')
+print('\nConsuming messages from topic "erc20_transfers":\n')
 msg_count = 0
 for message in consumer:
     msg_count += 1
