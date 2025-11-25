@@ -220,7 +220,12 @@ def kafka_container():
     if not TESTCONTAINERS_AVAILABLE:
         pytest.skip('Testcontainers not available')
 
+    # Configure Kafka for transactions in single-broker setup
+    # These settings are required for transactional producers to work
     container = KafkaContainer(image='confluentinc/cp-kafka:7.6.0')
+    container.with_env('KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR', '1')
+    container.with_env('KAFKA_TRANSACTION_STATE_LOG_MIN_ISR', '1')
+    container.with_env('KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR', '1')
     container.start()
 
     time.sleep(10)
