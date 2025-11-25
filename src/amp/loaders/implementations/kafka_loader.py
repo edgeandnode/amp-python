@@ -105,12 +105,17 @@ class KafkaLoader(DataLoader[KafkaConfig]):
 
         return str(key_value).encode('utf-8')
 
-    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str) -> None:
+    def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str, connection_name: str) -> None:
         """
         Handle blockchain reorganization by sending reorg events to the same topic.
 
         Reorg events are sent as special messages with _type='reorg' so consumers
         can detect and handle invalidated block ranges.
+
+        Args:
+            invalidation_ranges: List of block ranges to invalidate
+            table_name: The Kafka topic name to send reorg events to
+            connection_name: Connection identifier (unused for Kafka, but required by base class)
         """
         if not invalidation_ranges:
             return
