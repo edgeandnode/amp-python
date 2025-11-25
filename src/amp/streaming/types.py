@@ -164,6 +164,7 @@ class ResumeWatermark:
     """Watermark for resuming streaming queries"""
 
     ranges: List[BlockRange]
+    # TODO: timestamp and sequence are unused. Remove?
     timestamp: Optional[str] = None
     sequence: Optional[int] = None
 
@@ -180,6 +181,7 @@ class ResumeWatermark:
             data[r.network] = {'number': r.end, 'hash': r.hash}
         return json.dumps(data)
 
+    # TODO: ResumeWatermark.from_json appears to be unused. Remove?
     @classmethod
     def from_json(cls, json_str: str) -> 'ResumeWatermark':
         """Deserialize from JSON string"""
