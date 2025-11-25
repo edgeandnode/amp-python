@@ -336,11 +336,11 @@ class TestResumeWatermark:
     """Test ResumeWatermark serialization"""
 
     def test_to_json_full_data(self):
-        """Test serializing watermark with all fields"""
+        """Test serializing watermark to server format"""
         watermark = ResumeWatermark(
             ranges=[
-                BlockRange(network='ethereum', start=100, end=200),
-                BlockRange(network='polygon', start=50, end=150),
+                BlockRange(network='ethereum', start=100, end=200, hash='0xabc123'),
+                BlockRange(network='polygon', start=50, end=150, hash='0xdef456'),
             ],
             timestamp='2024-01-01T00:00:00Z',
             sequence=42,
@@ -349,22 +349,27 @@ class TestResumeWatermark:
         json_str = watermark.to_json()
         data = json.loads(json_str)
 
-        assert len(data['ranges']) == 2
-        assert data['ranges'][0]['network'] == 'ethereum'
-        assert data['timestamp'] == '2024-01-01T00:00:00Z'
-        assert data['sequence'] == 42
+        assert len(data) == 2
+        assert 'ethereum' in data
+        assert data['ethereum']['number'] == 200
+        assert data['ethereum']['hash'] == '0xabc123'
+        assert 'polygon' in data
+        assert data['polygon']['number'] == 150
+        assert data['polygon']['hash'] == '0xdef456'
 
     def test_to_json_minimal_data(self):
         """Test serializing watermark with only ranges"""
-        watermark = ResumeWatermark(ranges=[BlockRange(network='ethereum', start=100, end=200)])
+        watermark = ResumeWatermark(ranges=[BlockRange(network='ethereum', start=100, end=200, hash='0xabc123')])
 
         json_str = watermark.to_json()
         data = json.loads(json_str)
 
-        assert len(data['ranges']) == 1
-        assert 'timestamp' not in data
-        assert 'sequence' not in data
+        assert len(data) == 1
+        assert 'ethereum' in data
+        assert data['ethereum']['number'] == 200
+        assert data['ethereum']['hash'] == '0xabc123'
 
+    # TODO: ResumeWatermark.from_json appears to be unused. Remove?
     def test_from_json_full_data(self):
         """Test deserializing watermark with all fields"""
         json_str = json.dumps(
@@ -386,22 +391,21 @@ class TestResumeWatermark:
         assert watermark.sequence == 42
 
     def test_round_trip_serialization(self):
-        """Test that serialization round-trip preserves data"""
-        original = ResumeWatermark(
+        """Test that to_json produces server format (not reversible via from_json)"""
+        watermark = ResumeWatermark(
             ranges=[
-                BlockRange(network='ethereum', start=100, end=200),
-                BlockRange(network='polygon', start=50, end=150),
+                BlockRange(network='ethereum', start=100, end=200, hash='0xabc123'),
+                BlockRange(network='polygon', start=50, end=150, hash='0xdef456'),
             ],
-            timestamp='2024-01-01T00:00:00Z',
-            sequence=42,
         )
 
-        json_str = original.to_json()
-        restored = ResumeWatermark.from_json(json_str)
+        json_str = watermark.to_json()
+        data = json.loads(json_str)
 
-        assert len(restored.ranges) == len(original.ranges)
-        assert restored.timestamp == original.timestamp
-        assert restored.sequence == original.sequence
+        assert 'ethereum' in data
+        assert data['ethereum']['number'] == 200
+        assert 'polygon' in data
+        assert data['polygon']['number'] == 150
 
 
 @pytest.mark.unit
