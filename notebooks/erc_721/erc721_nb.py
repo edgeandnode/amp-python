@@ -28,8 +28,8 @@ def _():
 
     from amp.client import Client
     from amp.loaders import PSQLClient
-    from amp.util import process_query, to_hex
-    from amp.util import Abi
+    from amp.utils.abi import process_query, to_hex
+    from amp.utils.abi import Abi
     return Abi, Client, PSQLClient, pc, process_query, to_hex
 
 

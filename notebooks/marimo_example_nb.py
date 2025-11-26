@@ -15,7 +15,7 @@ def _():
 @app.cell
 def _():
     from amp.client import Client
-    from amp.util import to_hex
+    from amp.utils.abi import to_hex
 
     return Client, to_hex
 
