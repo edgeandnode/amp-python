@@ -129,11 +129,11 @@ for dataset in results.datasets[:5]:
     print(f"{dataset.namespace}/{dataset.name} - {dataset.description}")
 
 # Get dataset details
-dataset = client.registry.datasets.get('edgeandnode', 'ethereum-mainnet')
+dataset = client.registry.datasets.get('edgeandnode', 'ethereum_mainnet')
 print(f"Latest version: {dataset.latest_version}")
 
 # Inspect dataset schema
-client.registry.datasets.inspect('edgeandnode', 'ethereum-mainnet')
+client.registry.datasets.inspect('edgeandnode', 'ethereum_mainnet')
 ```
 
 ### Dataset Inspection
@@ -146,9 +146,9 @@ from amp.registry import RegistryClient
 client = RegistryClient()
 
 # Pretty-print dataset structure (interactive)
-client.datasets.inspect('edgeandnode', 'ethereum-mainnet')
+client.datasets.inspect('edgeandnode', 'ethereum_mainnet')
 # Output:
-# Dataset: edgeandnode/ethereum-mainnet@latest
+# Dataset: edgeandnode/ethereum_mainnet@latest
 #
 # blocks (21 columns)
 #   block_num          UInt64                    NOT NULL
@@ -157,7 +157,7 @@ client.datasets.inspect('edgeandnode', 'ethereum-mainnet')
 #   ...
 
 # Get structured schema data (programmatic)
-schema = client.datasets.describe('edgeandnode', 'ethereum-mainnet')
+schema = client.datasets.describe('edgeandnode', 'ethereum_mainnet')
 
 # Find tables with specific columns
 for table_name, columns in schema.items():
