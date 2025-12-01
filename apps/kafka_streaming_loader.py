@@ -57,7 +57,15 @@ def main(
     else:
         label_config = None
 
-    client.configure_connection('kafka', 'kafka', {'bootstrap_servers': kafka_brokers, 'client_id': 'amp-kafka-loader'})
+    client.configure_connection(
+        'kafka',
+        'kafka',
+        {
+            'bootstrap_servers': kafka_brokers,
+            'client_id': 'amp-kafka-loader',
+            'state': {'enabled': True, 'storage': 'lmdb'},
+        },
+    )
 
     with open(query_file) as f:
         query = f.read()

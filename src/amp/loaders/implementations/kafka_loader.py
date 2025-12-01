@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 import pyarrow as pa
 from kafka import KafkaProducer
 
+from ...streaming.lmdb_state import LMDBStreamStateStore
 from ...streaming.types import BlockRange
 from ..base import DataLoader, LoadMode
 
@@ -47,6 +48,10 @@ class KafkaLoader(DataLoader[KafkaConfig]):
             self.logger.info(f'Connected to Kafka at {self.config.bootstrap_servers}')
             self.logger.info(f'Client ID: {self.config.client_id}')
 
+            if self.state_enabled and self.state_storage == 'lmdb':
+                self.state_store = LMDBStreamStateStore(connection_name=self.config.client_id)
+                self.logger.info(f'Initialized LMDB state store at {self.state_store.data_dir}')
+
             self._is_connected = True
 
         except Exception as e:
@@ -57,6 +62,9 @@ class KafkaLoader(DataLoader[KafkaConfig]):
         if self._producer:
             self._producer.close()
             self._producer = None
+
+        if isinstance(self.state_store, LMDBStreamStateStore):
+            self.state_store.close()
 
         self._is_connected = False
         self.logger.info('Disconnected from Kafka')
