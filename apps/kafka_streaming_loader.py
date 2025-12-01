@@ -63,7 +63,7 @@ def main(
         query = f.read()
 
     if start_block is None:
-        start_block = get_latest_block(client, raw_dataset) - 10
+        start_block = get_latest_block(client, raw_dataset)
 
     print(f'Starting from block {start_block}')
 
