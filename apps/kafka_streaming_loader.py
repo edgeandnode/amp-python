@@ -73,12 +73,9 @@ def main(
     if start_block is None:
         start_block = get_latest_block(client, raw_dataset)
 
-    print(f'Starting from block {start_block}')
-
     resume_watermark = create_watermark(client, raw_dataset, network, start_block) if start_block > 0 else None
-    if resume_watermark:
-        print(f'Watermark: {resume_watermark.to_json()}')
 
+    print(f'Starting query from block {start_block}')
     print(f'Streaming to Kafka: {kafka_brokers} -> {topic}\n')
 
     batch_count = 0
