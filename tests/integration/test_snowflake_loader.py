@@ -1105,3 +1105,111 @@ class TestSnowpipeStreamingIntegration:
             # and ignores columns that don't exist in the table
             assert result.success is True
             assert result.rows_loaded == 2
+
+    def test_microbatch_deduplication(self, snowflake_config, test_table_name, cleanup_tables):
+        """
+        Test that multiple RecordBatches within the same microbatch are all loaded,
+        and deduplication only happens at microbatch boundaries when ranges_complete=True.
+
+        This test verifies the fix for the critical bug where we were marking batches
+        as processed after every RecordBatch instead of waiting for ranges_complete=True.
+        """
+        from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
+
+        cleanup_tables.append(test_table_name)
+
+        # Enable state management to test deduplication
+        config_with_state = {
+            **snowflake_config,
+            'state': {'enabled': True, 'storage': 'memory', 'store_batch_id': True},
+        }
+        loader = SnowflakeLoader(config_with_state)
+
+        with loader:
+            # Simulate a microbatch sent as 3 RecordBatches with the same BlockRange
+            # This happens when the server sends large microbatches in smaller chunks
+
+            # First RecordBatch of the microbatch (ranges_complete=False)
+            batch1_data = pa.RecordBatch.from_pydict({'id': [1, 2], 'value': [100, 200]})
+            response1 = ResponseBatch.data_batch(
+                data=batch1_data,
+                metadata=BatchMetadata(
+                    ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc123')],
+                    ranges_complete=False,  # Not the last batch in this microbatch
+                ),
+            )
+
+            # Second RecordBatch of the microbatch (ranges_complete=False)
+            batch2_data = pa.RecordBatch.from_pydict({'id': [3, 4], 'value': [300, 400]})
+            response2 = ResponseBatch.data_batch(
+                data=batch2_data,
+                metadata=BatchMetadata(
+                    ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc123')],  # Same BlockRange!
+                    ranges_complete=False,  # Still not the last batch
+                ),
+            )
+
+            # Third RecordBatch of the microbatch (ranges_complete=True)
+            batch3_data = pa.RecordBatch.from_pydict({'id': [5, 6], 'value': [500, 600]})
+            response3 = ResponseBatch.data_batch(
+                data=batch3_data,
+                metadata=BatchMetadata(
+                    ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc123')],  # Same BlockRange!
+                    ranges_complete=True,  # Last batch in this microbatch - safe to mark as processed
+                ),
+            )
+
+            # Process the microbatch stream
+            stream = [response1, response2, response3]
+            results = list(
+                loader.load_stream_continuous(iter(stream), test_table_name, connection_name='test_connection')
+            )
+
+            # CRITICAL: All 3 RecordBatches should be loaded successfully
+            # Before the fix, only the first batch would load (the other 2 would be skipped as "duplicates")
+            assert len(results) == 3, 'All RecordBatches within microbatch should be processed'
+            assert all(r.success for r in results), 'All batches should succeed'
+            assert results[0].rows_loaded == 2, 'First batch should load 2 rows'
+            assert results[1].rows_loaded == 2, 'Second batch should load 2 rows (not skipped!)'
+            assert results[2].rows_loaded == 2, 'Third batch should load 2 rows (not skipped!)'
+
+            # Verify total rows in table (all batches loaded)
+            loader.cursor.execute(f'SELECT COUNT(*) as count FROM {test_table_name}')
+            total_count = loader.cursor.fetchone()['COUNT']
+            assert total_count == 6, 'All 6 rows from 3 RecordBatches should be in the table'
+
+            # Verify the actual IDs are present
+            loader.cursor.execute(f'SELECT "id" FROM {test_table_name} ORDER BY "id"')
+            all_ids = [row['id'] for row in loader.cursor.fetchall()]
+            assert all_ids == [1, 2, 3, 4, 5, 6], 'All rows from all RecordBatches should be present'
+
+            # Now test that re-sending the complete microbatch is properly deduplicated
+            # This time, the first batch has ranges_complete=True (entire microbatch in one RecordBatch)
+            duplicate_batch = pa.RecordBatch.from_pydict({'id': [7, 8], 'value': [700, 800]})
+            duplicate_response = ResponseBatch.data_batch(
+                data=duplicate_batch,
+                metadata=BatchMetadata(
+                    ranges=[
+                        BlockRange(network='ethereum', start=100, end=110, hash='0xabc123')
+                    ],  # Same range as before!
+                    ranges_complete=True,  # Complete microbatch
+                ),
+            )
+
+            # Process duplicate microbatch
+            duplicate_results = list(
+                loader.load_stream_continuous(
+                    iter([duplicate_response]), test_table_name, connection_name='test_connection'
+                )
+            )
+
+            # The duplicate microbatch should be skipped (already processed)
+            assert len(duplicate_results) == 1
+            assert duplicate_results[0].success is True
+            assert duplicate_results[0].rows_loaded == 0, 'Duplicate microbatch should be skipped'
+            assert duplicate_results[0].metadata.get('operation') == 'skip_duplicate', 'Should be marked as duplicate'
+
+            # Verify row count unchanged (duplicate was skipped)
+            loader.cursor.execute(f'SELECT COUNT(*) as count FROM {test_table_name}')
+            final_count = loader.cursor.fetchone()['COUNT']
+            assert final_count == 6, 'Row count should not increase after duplicate microbatch'

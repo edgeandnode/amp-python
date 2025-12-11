@@ -119,6 +119,7 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
         table_name: str,
         connection_name: str,
         ranges: List[BlockRange],
+        ranges_complete: bool = False,
     ) -> int:
         """
         Load a batch with transactional exactly-once semantics using in-memory state.
@@ -135,6 +136,7 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
             table_name: Target table name
             connection_name: Connection identifier for tracking
             ranges: Block ranges covered by this batch
+            ranges_complete: True when this RecordBatch completes a microbatch (streaming only)
 
         Returns:
             Number of rows loaded (0 if duplicate)
@@ -149,24 +151,27 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
             self.logger.warning(f'Cannot create batch identifiers: {e}. Loading without duplicate check.')
             batch_ids = []
 
-        # Check if already processed (using in-memory state)
-        if batch_ids and self.state_store.is_processed(connection_name, table_name, batch_ids):
+        # Check if already processed ONLY when microbatch is complete
+        # Multiple RecordBatches can share the same microbatch ID (BlockRange)
+        if batch_ids and ranges_complete and self.state_store.is_processed(connection_name, table_name, batch_ids):
             self.logger.info(
                 f'Batch already processed (ranges: {[f"{r.network}:{r.start}-{r.end}" for r in ranges]}), '
                 f'skipping (state check)'
             )
             return 0
 
-        # Load data
+        # Load data (always load, even if part of larger microbatch)
         conn = self.pool.getconn()
         try:
             with conn.cursor() as cur:
                 self._copy_arrow_data(cur, batch, table_name)
                 conn.commit()
 
-            # Mark as processed after successful load
-            if batch_ids:
+            # Mark as processed ONLY when microbatch is complete
+            # This ensures we don't skip subsequent RecordBatches within the same microbatch
+            if batch_ids and ranges_complete:
                 self.state_store.mark_processed(connection_name, table_name, batch_ids)
+                self.logger.debug(f'Marked microbatch as processed: {len(batch_ids)} batch IDs')
 
             self.logger.debug(
                 f'Batch load committed: {batch.num_rows} rows, '
