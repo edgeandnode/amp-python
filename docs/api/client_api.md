@@ -599,16 +599,18 @@ Validate SQL query and get its output Arrow schema without executing it.
 ```python
 get_output_schema(
     sql_query: str,
-    is_sql_dataset: bool = True
-) -> models.OutputSchemaResponse
+    dependencies: Optional[dict[str, str]] = None
+) -> models.TableSchemaWithNetworks
 ```
 
 **Parameters:**
 
-- `sql_query` (str): SQL query to analyze.
-- `is_sql_dataset` (bool, optional): Whether this is for a SQL dataset. Default: True.
+| Parameter | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `sql_query` | `str` | `required` | SQL query to analyze |
+| `dependencies` | `dict[str, str]` | `None` | Optional map of alias -> dataset reference for compilation |
 
-**Returns:** `OutputSchemaResponse` with Arrow schema.
+**Returns:** `TableSchemaWithNetworks` with Arrow schema and network references.
 
 **Raises:**
 
@@ -620,7 +622,7 @@ get_output_schema(
 ```python
 response = client.schema.get_output_schema(
     'SELECT block_num, hash FROM eth.blocks WHERE block_num > 1000000',
-    is_sql_dataset=True
+    dependencies={'eth': '_/eth_firehose@1.0.0'}
 )
 
 print(response.schema)  # Arrow schema dict
@@ -712,13 +714,14 @@ Response from deploying a dataset.
 
 - `job_id` (int): ID of the created job
 
-#### `OutputSchemaResponse`
+#### `TableSchemaWithNetworks`
 
-Response containing Arrow schema for a query.
+Response containing Arrow schema for a query and associated networks.
 
 **Fields:**
 
 - `schema` (dict): Arrow schema dictionary
+- `networks` (list[str]): List of referenced networks
 
 ### Request Models
 
@@ -733,14 +736,15 @@ Request to register a dataset.
 - `version` (str, optional): Version string
 - `manifest` (dict): Dataset manifest
 
-#### `OutputSchemaRequest`
+#### `SchemaRequest`
 
-Request to get output schema for a query.
+Request for schema analysis with dependencies, tables, and functions.
 
 **Fields:**
 
-- `sql_query` (str): SQL query
-- `is_sql_dataset` (bool): Whether this is for a SQL dataset
+- `dependencies` (dict[str, str], optional): External dataset dependencies
+- `tables` (dict[str, str], optional): Table definitions
+- `functions` (dict[str, Any], optional): User-defined functions
 
 ---
 
@@ -976,7 +980,10 @@ try:
     print(f"Query returns {len(df)} rows")
 
     # Validate schema
-    schema = client.schema.get_output_schema(query.query, True)
+    schema = client.schema.get_output_schema(
+        query.query, 
+        dependencies={'eth': '_/eth_firehose@1.0.0'}
+    )
     print(f"Schema: {schema.schema}")
 
     # Register and deploy

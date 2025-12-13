@@ -355,7 +355,7 @@ The schema client validates SQL queries and returns their output schemas without
 # Validate a query and get its schema
 schema_response = client.schema.get_output_schema(
     sql_query='SELECT block_num, hash, timestamp FROM eth.blocks WHERE block_num > 1000000',
-    is_sql_dataset=True
+    dependencies={'eth': '_/eth_firehose@1.0.0'}
 )
 
 # Inspect the Arrow schema
@@ -651,7 +651,7 @@ with Client(query_url=..., admin_url=..., auth_token=...) as client:
 
 ```python
 # Validate before registration
-schema = client.schema.get_output_schema(sql_query, True)
+schema = client.schema.get_output_schema(sql_query, dependencies={...})
 print(f"Query will produce {len(schema.schema['fields'])} columns")
 ```
 

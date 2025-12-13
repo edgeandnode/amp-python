@@ -59,19 +59,25 @@ class TestJobModels:
 class TestSchemaModels:
     """Test schema-related models."""
 
-    def test_output_schema_request(self):
-        """Test OutputSchemaRequest model."""
-        request = models.OutputSchemaRequest(sql_query='SELECT * FROM eth.blocks', is_sql_dataset=True)
+    def test_schema_request(self):
+        """Test SchemaRequest model."""
+        request = models.SchemaRequest(
+            tables={'t1': 'SELECT * FROM eth.blocks'},
+            dependencies={'eth': 'ns/eth@1.0.0'},
+            functions={},
+        )
 
-        assert request.sql_query == 'SELECT * FROM eth.blocks'
-        assert request.is_sql_dataset is True
+        assert request.tables == {'t1': 'SELECT * FROM eth.blocks'}
+        assert request.dependencies == {'eth': 'ns/eth@1.0.0'}
+        assert request.functions == {}
 
-    def test_output_schema_request_defaults(self):
-        """Test OutputSchemaRequest with default values."""
-        request = models.OutputSchemaRequest(sql_query='SELECT 1')
+    def test_schema_request_defaults(self):
+        """Test SchemaRequest with default values."""
+        request = models.SchemaRequest()
 
-        assert request.sql_query == 'SELECT 1'
-        # is_sql_dataset should have a default if defined in the model
+        assert request.tables is None
+        assert request.dependencies is None
+        assert request.functions is None
 
 
 class TestEndBlockModel:
@@ -79,18 +85,19 @@ class TestEndBlockModel:
 
     def test_end_block_with_value(self):
         """Test EndBlock with a value."""
-        end_block = models.EndBlock(value='latest')
+        end_block = models.EndBlock(root='latest')
 
-        assert end_block.value == 'latest'
+        assert end_block.root == 'latest'
 
     def test_end_block_none(self):
         """Test EndBlock with None (continuous)."""
-        end_block = models.EndBlock(value=None)
+        end_block = models.EndBlock(root=None)
 
-        assert end_block.value is None
+        assert end_block.root is None
 
     def test_end_block_default(self):
         """Test EndBlock with default (no value provided)."""
-        end_block = models.EndBlock()
+        # Pydantic V2 RootModel with Optional[str] requires explicit root=None if no default
+        end_block = models.EndBlock(root=None)
 
-        assert end_block.value is None
+        assert end_block.root is None
