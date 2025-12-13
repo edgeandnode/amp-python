@@ -4,7 +4,7 @@ This module provides the SchemaClient class for querying output schemas
 of SQL queries without executing them.
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from . import models
 
@@ -23,7 +23,10 @@ class SchemaClient:
 
     Example:
         >>> client = AdminClient('http://localhost:8080')
-        >>> schema = client.schema.get_output_schema('SELECT * FROM eth.blocks', dependencies={'eth': '_/eth_firehose@0.0.0'})
+        >>> response = client.schema.get_output_schema(
+        ...     tables={'t1': 'SELECT * FROM eth.blocks'},
+        ...     dependencies={'eth': '_/eth_firehose@0.0.0'}
+        ... )
     """
 
     def __init__(self, admin_client: 'AdminClient'):
@@ -35,47 +38,41 @@ class SchemaClient:
         self._admin = admin_client
 
     def get_output_schema(
-        self, sql_query: str, dependencies: Optional[dict[str, str]] = None
-    ) -> models.TableSchemaWithNetworks:
-        """Get output schema for a SQL query.
+        self,
+        tables: Optional[dict[str, str]] = None,
+        dependencies: Optional[dict[str, str]] = None,
+        functions: Optional[dict[str, Any]] = None,
+    ) -> models.SchemaResponse:
+        """Get output schema for tables and functions.
 
-        Validates the query and returns the Arrow schema that would be produced,
-        without actually executing the query.
+        Validates the queries and returns the Arrow schemas that would be produced,
+        without actually executing the queries.
 
         Args:
-            sql_query: SQL query to analyze
+            tables: Optional map of table_name -> sql_query
             dependencies: Optional map of alias -> dataset reference
+            functions: Optional map of function_name -> function_definition
 
         Returns:
-            TableSchemaWithNetworks with Arrow schema
+            SchemaResponse containing schemas for all requested tables
 
         Raises:
             GetOutputSchemaError: If schema analysis fails
             DependencyValidationError: If query references invalid dependencies
 
         Example:
-            >>> schema_resp = client.schema.get_output_schema(
-            ...     'SELECT block_num, hash FROM eth.blocks WHERE block_num > 1000000',
+            >>> response = client.schema.get_output_schema(
+            ...     tables={'my_table': 'SELECT block_num FROM eth.blocks'},
             ...     dependencies={'eth': '_/eth_firehose@0.0.0'}
             ... )
-            >>> print(schema_resp.schema)
+            >>> print(response.schemas['my_table'].schema)
         """
-        # Wrap query in a temporary table for validation
-        temp_table_name = 'query_analysis'
-
         request_data = models.SchemaRequest(
-            tables={temp_table_name: sql_query},
-            dependencies=dependencies or {},
-            functions={},
+            tables=tables,
+            dependencies=dependencies,
+            functions=functions,
         )
 
         response = self._admin._request('POST', '/schema', json=request_data.model_dump(mode='json', exclude_none=True))
 
-        schema_response = models.SchemaResponse.model_validate(response.json())
-
-        # Extract the schema for our temporary table
-        if temp_table_name not in schema_response.schemas:
-            # This should theoretically not happen if the server returns 200 OK
-            raise KeyError(f"Server did not return schema for table '{temp_table_name}'")
-
-        return schema_response.schemas[temp_table_name]
+        return models.SchemaResponse.model_validate(response.json())
