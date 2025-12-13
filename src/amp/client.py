@@ -201,7 +201,7 @@ class QueryBuilder:
             'manifest'
         """
         # Get schema from Admin API
-        schema_response = self.client.schema.get_output_schema(self.query, is_sql_dataset=True)
+        schema_response = self.client.schema.get_output_schema(self.query, dependencies=self._dependencies)
 
         # Build manifest structure matching tests/config/manifests/*.json format
         manifest = {
@@ -250,7 +250,6 @@ class QueryBuilder:
 
         # Generate manifest
         manifest = self.to_manifest(table_name, network)
-
         # Register with Admin API
         self.client.datasets.register(namespace, name, version, manifest)
 
