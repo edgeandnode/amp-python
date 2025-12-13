@@ -598,19 +598,21 @@ Validate SQL query and get its output Arrow schema without executing it.
 
 ```python
 get_output_schema(
-    sql_query: str,
-    dependencies: Optional[dict[str, str]] = None
-) -> models.TableSchemaWithNetworks
+    tables: Optional[dict[str, str]] = None,
+    dependencies: Optional[dict[str, str]] = None,
+    functions: Optional[dict[str, Any]] = None
+) -> models.SchemaResponse
 ```
 
 **Parameters:**
 
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `sql_query` | `str` | `required` | SQL query to analyze |
-| `dependencies` | `dict[str, str]` | `None` | Optional map of alias -> dataset reference for compilation |
+| `tables` | `dict[str, str]` | `None` | Optional map of table names to SQL queries |
+| `dependencies` | `dict[str, str]` | `None` | Optional map of alias -> dataset reference |
+| `functions` | `dict[str, Any]` | `None` | Optional map of function definitions |
 
-**Returns:** `TableSchemaWithNetworks` with Arrow schema and network references.
+**Returns:** `SchemaResponse` containing schemas for all requested tables.
 
 **Raises:**
 
@@ -621,11 +623,11 @@ get_output_schema(
 
 ```python
 response = client.schema.get_output_schema(
-    'SELECT block_num, hash FROM eth.blocks WHERE block_num > 1000000',
+    tables={'my_table': 'SELECT block_num FROM eth.blocks'},
     dependencies={'eth': '_/eth_firehose@1.0.0'}
 )
 
-print(response.schema)  # Arrow schema dict
+print(response.schemas['my_table'].schema)  # Arrow schema dict
 ```
 
 ---
@@ -713,6 +715,14 @@ Response from deploying a dataset.
 **Fields:**
 
 - `job_id` (int): ID of the created job
+
+#### `SchemaResponse`
+
+Response containing schemas for one or more tables.
+
+**Fields:**
+
+- `schemas` (dict[str, TableSchemaWithNetworks]): Map of table names to their schemas
 
 #### `TableSchemaWithNetworks`
 
