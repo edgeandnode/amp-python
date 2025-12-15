@@ -6,32 +6,36 @@ Stream blockchain data to Kafka topics in real-time.
 
 ```bash
 uv run python apps/kafka_streaming_loader.py \
-  --topic anvil_logs \
-  --query-file apps/queries/anvil_logs.sql \
-  --raw-dataset anvil \
-  --start-block 0
+  --amp-server 'grpc+tls://gateway.amp.staging.thegraph.com:443' \
+  --kafka-brokers localhost:9092 \
+  --topic erc20_transfers \
+  --query-file apps/queries/erc20_transfers_activity.sql \
+  --raw-dataset 'edgeandnode/ethereum_mainnet' \
+  --network ethereum-mainnet
 ```
 
 ## Basic Usage
 
-### Minimal Example
+### Minimal Example (Staging Gateway)
 
 ```bash
 uv run python apps/kafka_streaming_loader.py \
+  --amp-server 'grpc+tls://gateway.amp.staging.thegraph.com:443' \
+  --kafka-brokers localhost:9092 \
   --topic my_topic \
   --query-file my_query.sql \
-  --raw-dataset eth_firehose
+  --raw-dataset 'edgeandnode/ethereum_mainnet' \
+  --network ethereum-mainnet
 ```
 
-### With Common Options
+### Local Development (Anvil)
 
 ```bash
 uv run python apps/kafka_streaming_loader.py \
-  --kafka-brokers localhost:9092 \
-  --topic erc20_transfers \
-  --query-file apps/queries/erc20_transfers.sql \
-  --raw-dataset eth_firehose \
-  --start-block 19000000
+  --topic anvil_logs \
+  --query-file apps/queries/anvil_logs.sql \
+  --raw-dataset anvil \
+  --start-block 0
 ```
 
 ## Configuration Options
@@ -42,17 +46,17 @@ uv run python apps/kafka_streaming_loader.py \
 |----------|-------------|
 | `--topic NAME` | Kafka topic name |
 | `--query-file PATH` | Path to SQL query file |
-| `--raw-dataset NAME` | Dataset name (e.g., `eth_firehose`, `anvil`) |
+| `--raw-dataset NAME` | Dataset name (e.g., `edgeandnode/ethereum_mainnet`, `anvil`) |
 
 ### Optional Arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
+| `--amp-server URL` | `grpc://127.0.0.1:1602` | AMP server URL (use `grpc+tls://gateway.amp.staging.thegraph.com:443` for staging) |
 | `--kafka-brokers` | `localhost:9092` | Kafka broker addresses |
+| `--network NAME` | `anvil` | Network identifier (e.g., `ethereum-mainnet`, `anvil`) |
 | `--start-block N` | Latest block | Start streaming from this block |
-| `--network NAME` | `anvil` | Network identifier |
 | `--label-csv PATH` | - | CSV file for data enrichment |
-| `--amp-server URL` | `grpc://127.0.0.1:1602` | AMP server URL |
 
 ## Message Format
 
@@ -87,7 +91,70 @@ Consumers should invalidate data in the specified block range.
 
 ## Examples
 
-### Stream Anvil Logs
+### Stream ERC20 Transfers
+
+Stream ERC20 transfer events with the activity schema:
+
+```bash
+uv run python apps/kafka_streaming_loader.py \
+  --amp-server 'grpc+tls://gateway.amp.staging.thegraph.com:443' \
+  --kafka-brokers localhost:9092 \
+  --topic erc20_transfers \
+  --query-file apps/queries/erc20_transfers_activity.sql \
+  --raw-dataset 'edgeandnode/ethereum_mainnet' \
+  --network ethereum-mainnet
+```
+
+#### Token Metadata Enrichment (Optional)
+
+To enrich transfer events with token metadata (symbol, name, decimals), add a CSV file:
+
+1. **Obtain the token metadata CSV**:
+   - Download from your token metadata source
+   - Or export from a database with token information
+   - Required columns: `token_address`, `symbol`, `name`, `decimals`
+
+2. **Place the CSV file** in the `data/` directory:
+   ```bash
+   mkdir -p data
+   # Copy your CSV file
+   cp /path/to/your/tokens.csv data/eth_mainnet_token_metadata.csv
+   ```
+
+3. **Run with label enrichment**:
+   ```bash
+   uv run python apps/kafka_streaming_loader.py \
+     --amp-server 'grpc+tls://gateway.amp.staging.thegraph.com:443' \
+     --kafka-brokers localhost:9092 \
+     --topic erc20_transfers \
+     --query-file apps/queries/erc20_transfers_activity.sql \
+     --raw-dataset 'edgeandnode/ethereum_mainnet' \
+     --network ethereum-mainnet \
+     --label-csv data/eth_mainnet_token_metadata.csv
+   ```
+
+**CSV Format Example**:
+```csv
+token_address,symbol,name,decimals
+0xe0f066cb646256d33cae9a32c7b144ccbd248fdd,gg unluck,gg unluck,18
+0xabb2a7bec4604491e85a959177cc0e95f60c6bd5,RTX,Remittix,3
+```
+
+Without the CSV file, `token_symbol`, `token_name`, and `token_decimals` will be `null` in the output.
+
+### Stream from Latest Blocks
+
+```bash
+uv run python apps/kafka_streaming_loader.py \
+  --amp-server 'grpc+tls://gateway.amp.staging.thegraph.com:443' \
+  --kafka-brokers localhost:9092 \
+  --topic eth_live_logs \
+  --query-file apps/queries/all_logs.sql \
+  --raw-dataset 'edgeandnode/ethereum_mainnet' \
+  --network ethereum-mainnet
+```
+
+### Local Development (Anvil)
 
 ```bash
 uv run python apps/kafka_streaming_loader.py \
@@ -95,26 +162,6 @@ uv run python apps/kafka_streaming_loader.py \
   --query-file apps/queries/anvil_logs.sql \
   --raw-dataset anvil \
   --start-block 0
-```
-
-### Stream ERC20 Transfers
-
-```bash
-uv run python apps/kafka_streaming_loader.py \
-  --topic erc20_transfers \
-  --query-file apps/queries/erc20_transfers.sql \
-  --raw-dataset eth_firehose \
-  --start-block 19000000 \
-  --label-csv data/eth_mainnet_token_metadata.csv
-```
-
-### Stream from Latest Blocks
-
-```bash
-uv run python apps/kafka_streaming_loader.py \
-  --topic eth_live_logs \
-  --query-file apps/queries/all_logs.sql \
-  --raw-dataset eth_firehose
 ```
 
 ## Consuming Messages
