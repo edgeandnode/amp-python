@@ -25,12 +25,14 @@
 --   - token_address: Binary address of the ERC20 token contract
 --
 -- Example usage:
---   uv apps/kafka_streaming_loader.py \
---     --query-file apps/queries/erc20_transfers_activity.sql \
+--   uv run python apps/kafka_streaming_loader.py \
+--     --amp-server 'grpc+tls://gateway.amp.staging.thegraph.com:443' \
+--     --kafka-brokers localhost:9092 \
 --     --topic erc20_transfers \
---     --label-csv data/eth_mainnet_token_metadata.csv \
---     --raw-dataset eth_firehose \
---     --network ethereum
+--     --query-file apps/queries/erc20_transfers_activity.sql \
+--     --raw-dataset 'edgeandnode/ethereum_mainnet' \
+--     --network ethereum-mainnet \
+--     --label-csv data/eth_mainnet_token_metadata.csv
 
 select
     1.0 as version,
@@ -61,7 +63,7 @@ select
     cast(null as string) as token_symbol,
     cast(null as string) as token_name,
     cast(null as int) as token_decimals
-from eth_firehose.logs l
+from "edgeandnode/ethereum_mainnet".logs l
 where
     l.topic0 = evm_topic('Transfer(address indexed from, address indexed to, uint256 value)') and
     l.topic3 IS NULL
