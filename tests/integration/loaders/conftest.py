@@ -121,6 +121,9 @@ class LoaderTestBase:
 
         This fixture dynamically retrieves the loader config from the
         fixture name specified in LoaderTestConfig.config_fixture_name.
+
+        For streaming tests, state management is enabled by default to support
+        reorg operations and batch tracking.
         """
         if self.config is None:
             raise ValueError('Test class must define a config attribute')
@@ -131,6 +134,18 @@ class LoaderTestBase:
 
         # Get the loader config from the specified fixture
         loader_config = request.getfixturevalue(self.config.config_fixture_name)
+
+        # Enable state management for streaming tests (needed for reorg)
+        # Make a copy to avoid modifying the original fixture
+        if isinstance(loader_config, dict):
+            loader_config = loader_config.copy()
+            # Only enable state if not explicitly configured
+            if 'state' not in loader_config:
+                loader_config['state'] = {
+                    'enabled': True,
+                    'storage': 'memory',
+                    'store_batch_id': True
+                }
 
         # Create and return the loader instance
         return self.config.loader_class(loader_config)

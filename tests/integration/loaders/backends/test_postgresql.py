@@ -14,6 +14,7 @@ try:
     from src.amp.loaders.implementations.postgresql_loader import PostgreSQLLoader
     from tests.integration.loaders.conftest import LoaderTestConfig
     from tests.integration.loaders.test_base_loader import BaseLoaderTests
+    from tests.integration.loaders.test_base_streaming import BaseStreamingTests
 except ImportError:
     pytest.skip('amp modules not available', allow_module_level=True)
 
@@ -105,6 +106,13 @@ class PostgreSQLTestConfig(LoaderTestConfig):
 @pytest.mark.postgresql
 class TestPostgreSQLCore(BaseLoaderTests):
     """PostgreSQL core loader tests (inherited from base)"""
+
+    config = PostgreSQLTestConfig()
+
+
+@pytest.mark.postgresql
+class TestPostgreSQLStreaming(BaseStreamingTests):
+    """PostgreSQL streaming tests (inherited from base)"""
 
     config = PostgreSQLTestConfig()
 
