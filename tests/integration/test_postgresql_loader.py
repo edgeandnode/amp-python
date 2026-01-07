@@ -541,19 +541,31 @@ class TestPostgreSQLLoaderStreaming:
             # Create response batches with hashes
             response1 = ResponseBatch.data_batch(
                 data=batch1,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=102, hash='0xaaa')]),
+                metadata=BatchMetadata(
+                    ranges=[BlockRange(network='ethereum', start=100, end=102, hash='0xaaa')],
+                    ranges_complete=True,  # Mark as complete so it gets tracked in state store
+                ),
             )
             response2 = ResponseBatch.data_batch(
                 data=batch2,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=103, end=104, hash='0xbbb')]),
+                metadata=BatchMetadata(
+                    ranges=[BlockRange(network='ethereum', start=103, end=104, hash='0xbbb')],
+                    ranges_complete=True,  # Mark as complete so it gets tracked in state store
+                ),
             )
             response3 = ResponseBatch.data_batch(
                 data=batch3,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=105, end=106, hash='0xccc')]),
+                metadata=BatchMetadata(
+                    ranges=[BlockRange(network='ethereum', start=105, end=106, hash='0xccc')],
+                    ranges_complete=True,  # Mark as complete so it gets tracked in state store
+                ),
             )
             response4 = ResponseBatch.data_batch(
                 data=batch4,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=107, end=108, hash='0xddd')]),
+                metadata=BatchMetadata(
+                    ranges=[BlockRange(network='ethereum', start=107, end=108, hash='0xddd')],
+                    ranges_complete=True,  # Mark as complete so it gets tracked in state store
+                ),
             )
 
             # Load via streaming API
@@ -605,7 +617,10 @@ class TestPostgreSQLLoaderStreaming:
 
             response = ResponseBatch.data_batch(
                 data=batch,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=150, end=175, hash='0xaaa')]),
+                metadata=BatchMetadata(
+                    ranges=[BlockRange(network='ethereum', start=150, end=175, hash='0xaaa')],
+                    ranges_complete=True,  # Mark as complete so it gets tracked in state store
+                ),
             )
 
             # Load via streaming API
@@ -658,11 +673,17 @@ class TestPostgreSQLLoaderStreaming:
 
             response_eth = ResponseBatch.data_batch(
                 data=batch_eth,
-                metadata=BatchMetadata(ranges=[BlockRange(network='ethereum', start=100, end=100, hash='0xaaa')]),
+                metadata=BatchMetadata(
+                    ranges=[BlockRange(network='ethereum', start=100, end=100, hash='0xaaa')],
+                    ranges_complete=True,  # Mark as complete so it gets tracked in state store
+                ),
             )
             response_poly = ResponseBatch.data_batch(
                 data=batch_poly,
-                metadata=BatchMetadata(ranges=[BlockRange(network='polygon', start=100, end=100, hash='0xbbb')]),
+                metadata=BatchMetadata(
+                    ranges=[BlockRange(network='polygon', start=100, end=100, hash='0xbbb')],
+                    ranges_complete=True,  # Mark as complete so it gets tracked in state store
+                ),
             )
 
             # Load both batches via streaming API
