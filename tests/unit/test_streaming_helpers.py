@@ -171,7 +171,7 @@ class TestProcessBatchTransactional:
 
         # Verify method call (no batch_hash in current implementation)
         mock_loader.load_batch_transactional.assert_called_once_with(
-            sample_batch, 'test_table', 'test_conn', sample_ranges
+            sample_batch, 'test_table', 'test_conn', sample_ranges, False
         )
 
     def test_transactional_duplicate_detection(self, mock_loader, sample_batch, sample_ranges):
@@ -217,7 +217,7 @@ class TestProcessBatchNonTransactional:
     """Test _process_batch_non_transactional helper method"""
 
     def test_successful_non_transactional_load(self, mock_loader, sample_batch, sample_ranges):
-        """Test successful non-transactional batch load"""
+        """Test successful non-transactional batch processing"""
         # Setup - mock state store for new unified system
         mock_loader.state_store.is_processed = Mock(return_value=False)
         mock_loader.state_store.mark_processed = Mock()
@@ -228,12 +228,13 @@ class TestProcessBatchNonTransactional:
         )
         mock_loader.load_batch = Mock(return_value=success_result)
 
-        # Execute
+        # Execute with ranges_complete=True to trigger duplicate check
         result = mock_loader._process_batch_non_transactional(
             batch_data=sample_batch,
             table_name='test_table',
             connection_name='test_conn',
             ranges=sample_ranges,
+            ranges_complete=True,  # Must be True for duplicate check and mark_processed
             batch_hash='hash123',
         )
 
@@ -252,12 +253,13 @@ class TestProcessBatchNonTransactional:
         mock_loader.state_store.is_processed = Mock(return_value=True)
         mock_loader.load_batch = Mock()  # Should not be called
 
-        # Execute
+        # Execute with ranges_complete=True to trigger duplicate check
         result = mock_loader._process_batch_non_transactional(
             batch_data=sample_batch,
             table_name='test_table',
             connection_name='test_conn',
             ranges=sample_ranges,
+            ranges_complete=True,  # Must be True for duplicate check
             batch_hash='hash123',
         )
 
@@ -307,6 +309,7 @@ class TestProcessBatchNonTransactional:
             table_name='test_table',
             connection_name='test_conn',
             ranges=sample_ranges,
+            ranges_complete=True,  # Must be True for mark_processed to be called
             batch_hash='hash123',
         )
 
