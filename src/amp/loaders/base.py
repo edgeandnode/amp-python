@@ -484,6 +484,7 @@ class DataLoader(ABC, Generic[TConfig]):
                             table_name,
                             connection_name,
                             response.metadata.ranges,
+                            ranges_complete=response.metadata.ranges_complete,
                         )
                     else:
                         # Non-transactional loading (separate check, load, mark)
@@ -494,6 +495,7 @@ class DataLoader(ABC, Generic[TConfig]):
                             table_name,
                             connection_name,
                             response.metadata.ranges,
+                            ranges_complete=response.metadata.ranges_complete,
                             **filtered_kwargs,
                         )
 
@@ -611,6 +613,7 @@ class DataLoader(ABC, Generic[TConfig]):
         table_name: str,
         connection_name: str,
         ranges: List[BlockRange],
+        ranges_complete: bool = False,
     ) -> LoadResult:
         """
         Process a data batch using transactional exactly-once semantics.
@@ -622,6 +625,7 @@ class DataLoader(ABC, Generic[TConfig]):
             table_name: Target table name
             connection_name: Connection identifier
             ranges: Block ranges for this batch
+            ranges_complete: True when this RecordBatch completes a microbatch (streaming only)
 
         Returns:
             LoadResult with operation outcome
@@ -630,13 +634,17 @@ class DataLoader(ABC, Generic[TConfig]):
         try:
             # Delegate to loader-specific transactional implementation
             # Loaders that support transactions implement load_batch_transactional()
-            rows_loaded_batch = self.load_batch_transactional(batch_data, table_name, connection_name, ranges)
+            rows_loaded_batch = self.load_batch_transactional(
+                batch_data, table_name, connection_name, ranges, ranges_complete
+            )
             duration = time.time() - start_time
 
-            # Mark batches as processed in state store after successful transaction
-            if ranges:
+            # Mark batches as processed ONLY when microbatch is complete
+            # multiple RecordBatches can share the same microbatch ID
+            if ranges and ranges_complete:
                 batch_ids = [BatchIdentifier.from_block_range(br) for br in ranges]
                 self.state_store.mark_processed(connection_name, table_name, batch_ids)
+                self.logger.debug(f'Marked microbatch as processed: {len(batch_ids)} batch IDs')
 
             return LoadResult(
                 rows_loaded=rows_loaded_batch,
@@ -648,6 +656,7 @@ class DataLoader(ABC, Generic[TConfig]):
                 metadata={
                     'operation': 'transactional_load' if rows_loaded_batch > 0 else 'skip_duplicate',
                     'ranges': [r.to_dict() for r in ranges],
+                    'ranges_complete': ranges_complete,
                 },
             )
 
@@ -670,6 +679,7 @@ class DataLoader(ABC, Generic[TConfig]):
         table_name: str,
         connection_name: str,
         ranges: Optional[List[BlockRange]],
+        ranges_complete: bool = False,
         **kwargs,
     ) -> Optional[LoadResult]:
         """
@@ -682,13 +692,17 @@ class DataLoader(ABC, Generic[TConfig]):
             table_name: Target table name
             connection_name: Connection identifier
             ranges: Block ranges for this batch (if available)
+            ranges_complete: True when this RecordBatch completes a microbatch (streaming only)
             **kwargs: Additional options passed to load_batch
 
         Returns:
             LoadResult, or None if batch was skipped as duplicate
         """
         # Check if batch already processed (idempotency / exactly-once)
-        if ranges and self.state_enabled:
+        # For streaming: only check when ranges_complete=True (end of microbatch)
+        # Multiple RecordBatches can share the same microbatch ID, so we must wait
+        # until the entire microbatch is delivered before checking/marking as processed
+        if ranges and self.state_enabled and ranges_complete:
             try:
                 batch_ids = [BatchIdentifier.from_block_range(br) for br in ranges]
                 is_duplicate = self.state_store.is_processed(connection_name, table_name, batch_ids)
@@ -696,7 +710,7 @@ class DataLoader(ABC, Generic[TConfig]):
                 if is_duplicate:
                     # Skip this batch - already processed
                     self.logger.info(
-                        f'Skipping duplicate batch: {len(ranges)} ranges already processed for {table_name}'
+                        f'Skipping duplicate microbatch: {len(ranges)} ranges already processed for {table_name}'
                     )
                     return LoadResult(
                         rows_loaded=0,
@@ -711,14 +725,16 @@ class DataLoader(ABC, Generic[TConfig]):
                 # BlockRange missing hash - log and continue without idempotency check
                 self.logger.warning(f'Cannot check for duplicates: {e}. Processing batch anyway.')
 
-        # Load batch
+        # Load batch (always load, even if part of larger microbatch)
         result = self.load_batch(batch_data, table_name, **kwargs)
 
-        if result.success and ranges and self.state_enabled:
-            # Mark batch as processed (for exactly-once semantics)
+        # Mark batch as processed ONLY when microbatch is complete
+        # This ensures we don't skip subsequent RecordBatches within the same microbatch
+        if result.success and ranges and self.state_enabled and ranges_complete:
             try:
                 batch_ids = [BatchIdentifier.from_block_range(br) for br in ranges]
                 self.state_store.mark_processed(connection_name, table_name, batch_ids)
+                self.logger.debug(f'Marked microbatch as processed: {len(batch_ids)} batch IDs')
             except Exception as e:
                 self.logger.error(f'Failed to mark batches as processed: {e}')
                 # Continue anyway - state store provides resume capability
