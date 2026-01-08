@@ -831,13 +831,10 @@ class SnowflakeLoader(DataLoader[SnowflakeConnectionConfig]):
                 self._create_stage()
 
             # Replace in-memory state store with Snowflake-backed store if configured
-            state_config = getattr(self.config, 'state', None)
-            if state_config:
-                storage = getattr(state_config, 'storage', None)
-                enabled = getattr(state_config, 'enabled', True)
-                if storage == 'snowflake' and enabled:
-                    self.logger.info('Using Snowflake-backed persistent state store')
-                    self.state_store = SnowflakeStreamStateStore(self.connection, self.cursor, self.logger)
+            # Base class already parsed state config and stored it in self.state_storage and self.state_enabled
+            if self.state_storage == 'snowflake' and self.state_enabled:
+                self.logger.info('Using Snowflake-backed persistent state store')
+                self.state_store = SnowflakeStreamStateStore(self.connection, self.cursor, self.logger)
             # Otherwise, state store is initialized in base class with in-memory storage (default)
 
             self._is_connected = True
