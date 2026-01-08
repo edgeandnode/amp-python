@@ -4,7 +4,7 @@ This module provides the SchemaClient class for querying output schemas
 of SQL queries without executing them.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 
 from . import models
 
@@ -23,7 +23,10 @@ class SchemaClient:
 
     Example:
         >>> client = AdminClient('http://localhost:8080')
-        >>> schema = client.schema.get_output_schema('SELECT * FROM eth.blocks', True)
+        >>> response = client.schema.get_output_schema(
+        ...     tables={'t1': 'SELECT * FROM eth.blocks'},
+        ...     dependencies={'eth': '_/eth_firehose@0.0.0'}
+        ... )
     """
 
     def __init__(self, admin_client: 'AdminClient'):
@@ -34,31 +37,42 @@ class SchemaClient:
         """
         self._admin = admin_client
 
-    def get_output_schema(self, sql_query: str, is_sql_dataset: bool = True) -> models.OutputSchemaResponse:
-        """Get output schema for a SQL query.
+    def get_output_schema(
+        self,
+        tables: Optional[dict[str, str]] = None,
+        dependencies: Optional[dict[str, str]] = None,
+        functions: Optional[dict[str, Any]] = None,
+    ) -> models.SchemaResponse:
+        """Get output schema for tables and functions.
 
-        Validates the query and returns the Arrow schema that would be produced,
-        without actually executing the query.
+        Validates the queries and returns the Arrow schemas that would be produced,
+        without actually executing the queries.
 
         Args:
-            sql_query: SQL query to analyze
-            is_sql_dataset: Whether this is for a SQL dataset (default: True)
+            tables: Optional map of table_name -> sql_query
+            dependencies: Optional map of alias -> dataset reference
+            functions: Optional map of function_name -> function_definition
 
         Returns:
-            OutputSchemaResponse with Arrow schema
+            SchemaResponse containing schemas for all requested tables
 
         Raises:
             GetOutputSchemaError: If schema analysis fails
             DependencyValidationError: If query references invalid dependencies
 
         Example:
-            >>> schema_resp = client.schema.get_output_schema(
-            ...     'SELECT block_num, hash FROM eth.blocks WHERE block_num > 1000000',
-            ...     is_sql_dataset=True
+            >>> response = client.schema.get_output_schema(
+            ...     tables={'my_table': 'SELECT block_num FROM eth.blocks'},
+            ...     dependencies={'eth': '_/eth_firehose@0.0.0'}
             ... )
-            >>> print(schema_resp.schema)
+            >>> print(response.schemas['my_table'].schema)
         """
-        request_data = models.OutputSchemaRequest(sql_query=sql_query, is_sql_dataset=is_sql_dataset)
+        request_data = models.SchemaRequest(
+            tables=tables,
+            dependencies=dependencies,
+            functions=functions,
+        )
 
-        response = self._admin._request('POST', '/schema', json=request_data.model_dump(mode='json'))
-        return models.OutputSchemaResponse.model_validate(response.json())
+        response = self._admin._request('POST', '/schema', json=request_data.model_dump(mode='json', exclude_none=True))
+
+        return models.SchemaResponse.model_validate(response.json())

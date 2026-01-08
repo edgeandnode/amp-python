@@ -15,7 +15,7 @@ from pathlib import Path
 
 def main():
     """Generate Pydantic models from OpenAPI spec."""
-    from datamodel_code_generator import InputFileType, generate
+    from datamodel_code_generator import DataModelType, InputFileType, generate
 
     # Define paths
     spec_file = Path('specs/admin.spec.json')
@@ -35,6 +35,7 @@ def main():
         input_=spec_file,
         output=output_file,
         input_file_type=InputFileType.OpenAPI,
+        output_model_type=DataModelType.PydanticV2BaseModel,
         use_schema_description=True,
         use_field_description=True,
         field_constraints=True,

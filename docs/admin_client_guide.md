@@ -354,12 +354,12 @@ The schema client validates SQL queries and returns their output schemas without
 ```python
 # Validate a query and get its schema
 schema_response = client.schema.get_output_schema(
-    sql_query='SELECT block_num, hash, timestamp FROM eth.blocks WHERE block_num > 1000000',
-    is_sql_dataset=True
+    tables={'query_analysis': 'SELECT block_num, hash, timestamp FROM eth.blocks WHERE block_num > 1000000'},
+    dependencies={'eth': '_/eth_firehose@1.0.0'}
 )
 
 # Inspect the Arrow schema
-print(schema_response.schema)
+print(schema_response.schemas['query_analysis'].schema)
 ```
 
 This is particularly useful for:
@@ -651,8 +651,11 @@ with Client(query_url=..., admin_url=..., auth_token=...) as client:
 
 ```python
 # Validate before registration
-schema = client.schema.get_output_schema(sql_query, True)
-print(f"Query will produce {len(schema.schema['fields'])} columns")
+response = client.schema.get_output_schema(
+    tables={'t': sql_query},
+    dependencies={...}
+)
+print(f"Query will produce {len(response.schemas['t'].schema['fields'])} columns")
 ```
 
 ### 3. Version Your Datasets

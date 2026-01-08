@@ -201,7 +201,15 @@ class QueryBuilder:
             'manifest'
         """
         # Get schema from Admin API
-        schema_response = self.client.schema.get_output_schema(self.query, is_sql_dataset=True)
+        schema_response = self.client.schema.get_output_schema(
+            tables={table_name: self.query}, dependencies=self._dependencies
+        )
+
+        # Extract the schema for our table
+        if table_name not in schema_response.schemas:
+            raise KeyError(f"Server did not return schema for table '{table_name}'")
+
+        table_schema = schema_response.schemas[table_name]
 
         # Build manifest structure matching tests/config/manifests/*.json format
         manifest = {
@@ -210,7 +218,7 @@ class QueryBuilder:
             'tables': {
                 table_name: {
                     'input': {'sql': self.query},
-                    'schema': schema_response.schema_,  # Use schema_ field (schema is aliased in Pydantic)
+                    'schema': table_schema.schema_,  # Use schema_ field (schema is aliased in Pydantic)
                     'network': network,
                 }
             },
@@ -250,7 +258,6 @@ class QueryBuilder:
 
         # Generate manifest
         manifest = self.to_manifest(table_name, network)
-
         # Register with Admin API
         self.client.datasets.register(namespace, name, version, manifest)
 
@@ -481,7 +488,10 @@ class Client:
 
         Example:
             >>> client = Client(query_url='...', admin_url='http://localhost:8080')
-            >>> schema_resp = client.schema.get_output_schema('SELECT * FROM eth.blocks', True)
+            >>> schema_resp = client.schema.get_output_schema(
+            ...     tables={'t1': 'SELECT * FROM eth.blocks'},
+            ...     dependencies={'eth': '_/eth_firehose@1.0.0'}
+            ... )
         """
         if not self._admin_client:
             raise ValueError(

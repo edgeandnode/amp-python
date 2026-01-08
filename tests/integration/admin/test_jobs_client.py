@@ -15,7 +15,14 @@ class TestJobsClient:
     @respx.mock
     def test_get_job(self):
         """Test getting job by ID."""
-        job_response = {'id': 123, 'status': 'Running', 'descriptor': {}, 'node_id': 'worker-1'}
+        job_response = {
+            'id': 123,
+            'status': 'Running',
+            'descriptor': {},
+            'node_id': 'worker-1',
+            'created_at': '2025-01-01T00:00:00Z',
+            'updated_at': '2025-01-01T00:00:01Z',
+        }
         respx.get('http://localhost:8080/jobs/123').mock(return_value=Response(200, json=job_response))
 
         client = AdminClient('http://localhost:8080')
@@ -41,8 +48,22 @@ class TestJobsClient:
         """Test listing jobs with pagination."""
         jobs_response = {
             'jobs': [
-                {'id': 123, 'status': 'Running', 'descriptor': {}, 'node_id': 'worker-1'},
-                {'id': 124, 'status': 'Completed', 'descriptor': {}, 'node_id': 'worker-2'},
+                {
+                    'id': 123,
+                    'status': 'Running',
+                    'descriptor': {},
+                    'node_id': 'worker-1',
+                    'created_at': '2025-01-01T00:00:00Z',
+                    'updated_at': '2025-01-01T00:00:01Z',
+                },
+                {
+                    'id': 124,
+                    'status': 'Completed',
+                    'descriptor': {},
+                    'node_id': 'worker-2',
+                    'created_at': '2025-01-01T00:00:00Z',
+                    'updated_at': '2025-01-01T00:00:01Z',
+                },
             ],
             'next_cursor': 125,
         }
@@ -73,8 +94,22 @@ class TestJobsClient:
         """Test waiting for job completion."""
         # First call: job is Running
         # Second call: job is Completed
-        job_running = {'id': 123, 'status': 'Running', 'descriptor': {}, 'node_id': 'worker-1'}
-        job_completed = {'id': 123, 'status': 'Completed', 'descriptor': {}, 'node_id': 'worker-1'}
+        job_running = {
+            'id': 123,
+            'status': 'Running',
+            'descriptor': {},
+            'node_id': 'worker-1',
+            'created_at': '2025-01-01T00:00:00Z',
+            'updated_at': '2025-01-01T00:00:01Z',
+        }
+        job_completed = {
+            'id': 123,
+            'status': 'Completed',
+            'descriptor': {},
+            'node_id': 'worker-1',
+            'created_at': '2025-01-01T00:00:00Z',
+            'updated_at': '2025-01-01T00:00:02Z',
+        }
 
         route = respx.get('http://localhost:8080/jobs/123')
         route.side_effect = [Response(200, json=job_running), Response(200, json=job_completed)]
@@ -87,7 +122,14 @@ class TestJobsClient:
     @respx.mock
     def test_wait_for_completion_timeout(self):
         """Test waiting for job with timeout."""
-        job_running = {'id': 123, 'status': 'Running', 'descriptor': {}, 'node_id': 'worker-1'}
+        job_running = {
+            'id': 123,
+            'status': 'Running',
+            'descriptor': {},
+            'node_id': 'worker-1',
+            'created_at': '2025-01-01T00:00:00Z',
+            'updated_at': '2025-01-01T00:00:01Z',
+        }
         respx.get('http://localhost:8080/jobs/123').mock(return_value=Response(200, json=job_running))
 
         client = AdminClient('http://localhost:8080')

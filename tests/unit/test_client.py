@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.amp.admin.models import OutputSchemaResponse
+from src.amp.admin.models import TableSchemaWithNetworks
 from src.amp.client import Client, QueryBuilder
 
 
@@ -244,9 +244,12 @@ class TestQueryBuilderManifest:
         """Test that to_manifest generates correct manifest structure"""
         # Create a mock client with admin API
         mock_client = Mock()
-        mock_schema_response = OutputSchemaResponse(
+        table_schema = TableSchemaWithNetworks(
             networks=['mainnet'], schema={'fields': [{'name': 'block_num', 'type': 'int64'}]}
         )
+        mock_schema_response = Mock()
+        mock_schema_response.schemas = {'blocks': table_schema}
+
         mock_client.schema.get_output_schema.return_value = mock_schema_response
 
         # Create QueryBuilder and generate manifest
@@ -265,9 +268,12 @@ class TestQueryBuilderManifest:
         """Test that to_manifest includes dependencies"""
         # Create a mock client with admin API
         mock_client = Mock()
-        mock_schema_response = OutputSchemaResponse(
+        table_schema = TableSchemaWithNetworks(
             networks=['mainnet'], schema={'fields': [{'name': 'block_num', 'type': 'int64'}]}
         )
+        mock_schema_response = Mock()
+        mock_schema_response.schemas = {'blocks': table_schema}
+
         mock_client.schema.get_output_schema.return_value = mock_schema_response
 
         # Create QueryBuilder with dependencies
@@ -279,13 +285,21 @@ class TestQueryBuilderManifest:
         # Verify dependencies are included
         assert manifest['dependencies'] == {'eth': '_/eth_firehose@0.0.0'}
 
+        # Verify schema API was called with dependencies
+        mock_client.schema.get_output_schema.assert_called_once_with(
+            tables={'blocks': 'SELECT block_num FROM eth.blocks'}, dependencies={'eth': '_/eth_firehose@0.0.0'}
+        )
+
     def test_to_manifest_with_multiple_dependencies(self):
         """Test that to_manifest includes multiple dependencies"""
         # Create a mock client with admin API
         mock_client = Mock()
-        mock_schema_response = OutputSchemaResponse(
+        table_schema = TableSchemaWithNetworks(
             networks=['mainnet'], schema={'fields': [{'name': 'block_num', 'type': 'int64'}]}
         )
+        mock_schema_response = Mock()
+        mock_schema_response.schemas = {'blocks': table_schema}
+
         mock_client.schema.get_output_schema.return_value = mock_schema_response
 
         # Create QueryBuilder with multiple dependencies
@@ -297,13 +311,22 @@ class TestQueryBuilderManifest:
         # Verify all dependencies are included
         assert manifest['dependencies'] == {'eth': '_/eth_firehose@0.0.0', 'btc': '_/btc_firehose@1.2.3'}
 
+        # Verify schema API was called with dependencies
+        mock_client.schema.get_output_schema.assert_called_once_with(
+            tables={'blocks': 'SELECT e.block_num FROM eth.blocks e JOIN btc.blocks b'},
+            dependencies={'eth': '_/eth_firehose@0.0.0', 'btc': '_/btc_firehose@1.2.3'},
+        )
+
     def test_to_manifest_custom_network(self):
         """Test that to_manifest respects custom network parameter"""
         # Create a mock client with admin API
         mock_client = Mock()
-        mock_schema_response = OutputSchemaResponse(
+        table_schema = TableSchemaWithNetworks(
             networks=['polygon'], schema={'fields': [{'name': 'block_num', 'type': 'int64'}]}
         )
+        mock_schema_response = Mock()
+        mock_schema_response.schemas = {'blocks': table_schema}
+
         mock_client.schema.get_output_schema.return_value = mock_schema_response
 
         # Create QueryBuilder
@@ -317,9 +340,12 @@ class TestQueryBuilderManifest:
         """Test that to_manifest calls the schema API with correct parameters"""
         # Create a mock client with admin API
         mock_client = Mock()
-        mock_schema_response = OutputSchemaResponse(
+        table_schema = TableSchemaWithNetworks(
             networks=['mainnet'], schema={'fields': [{'name': 'block_num', 'type': 'int64'}]}
         )
+        mock_schema_response = Mock()
+        mock_schema_response.schemas = {'blocks': table_schema}
+
         mock_client.schema.get_output_schema.return_value = mock_schema_response
 
         # Create QueryBuilder
@@ -328,7 +354,7 @@ class TestQueryBuilderManifest:
         qb.to_manifest('blocks')
 
         # Verify schema API was called correctly
-        mock_client.schema.get_output_schema.assert_called_once_with(query, is_sql_dataset=True)
+        mock_client.schema.get_output_schema.assert_called_once_with(tables={'blocks': query}, dependencies={})
 
     def test_to_manifest_matches_expected_format(self):
         """
@@ -347,7 +373,10 @@ class TestQueryBuilderManifest:
 
         # Create a mock client with admin API
         mock_client = Mock()
-        mock_schema_response = OutputSchemaResponse(networks=['mainnet'], schema=expected_schema)
+        table_schema = TableSchemaWithNetworks(networks=['mainnet'], schema=expected_schema)
+        mock_schema_response = Mock()
+        mock_schema_response.schemas = {'erc20_transfers': table_schema}
+
         mock_client.schema.get_output_schema.return_value = mock_schema_response
 
         # Create QueryBuilder with the same query and dependency
@@ -374,14 +403,22 @@ class TestQueryBuilderManifest:
         # Verify schema fields match exactly
         assert generated_table['schema']['arrow']['fields'] == expected_table['schema']['arrow']['fields']
 
+        # Verify schema API was called with dependencies
+        mock_client.schema.get_output_schema.assert_called_once_with(
+            tables={'erc20_transfers': expected_query}, dependencies={'eth_firehose': '_/eth_firehose@0.0.0'}
+        )
+
     def test_to_manifest_serializes_to_valid_json(self):
         """Test that to_manifest generates a manifest that serializes to valid JSON with double quotes"""
         # Create a mock client with admin API
         mock_client = Mock()
-        mock_schema_response = OutputSchemaResponse(
+        table_schema = TableSchemaWithNetworks(
             networks=['mainnet'],
             schema={'arrow': {'fields': [{'name': 'block_num', 'type': 'UInt64', 'nullable': False}]}},
         )
+        mock_schema_response = Mock()
+        mock_schema_response.schemas = {'blocks': table_schema}
+
         mock_client.schema.get_output_schema.return_value = mock_schema_response
 
         # Create QueryBuilder
