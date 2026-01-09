@@ -35,7 +35,7 @@ class BaseStreamingTests(LoaderTestBase):
         # Create test data with metadata
         data = {
             'block_number': [100, 101, 102],
-            'transaction_hash': ['0xabc', '0xdef', '0x123'],
+            'tx_hash': ['0xabc', '0xdef', '0x123'],  # Use tx_hash for consistency with other streaming tests
             'value': [1.0, 2.0, 3.0],
         }
         batch = pa.RecordBatch.from_pydict(data)
@@ -281,8 +281,8 @@ class BaseStreamingTests(LoaderTestBase):
         from src.amp.streaming.types import BatchMetadata, BlockRange, ResponseBatch
 
         with loader:
-            # Create table first from the schema
-            batch1_data = pa.RecordBatch.from_pydict({'id': [1, 2], 'value': [100, 200]})
+            # Create table first from the schema (include tx_hash for Redis key pattern compatibility)
+            batch1_data = pa.RecordBatch.from_pydict({'id': [1, 2], 'tx_hash': ['0x1', '0x2'], 'value': [100, 200]})
             loader._create_table_from_schema(batch1_data.schema, test_table_name)
 
             # Simulate a microbatch sent as 3 RecordBatches with the same BlockRange
@@ -296,7 +296,7 @@ class BaseStreamingTests(LoaderTestBase):
             )
 
             # Second RecordBatch (same BlockRange, ranges_complete=False)
-            batch2_data = pa.RecordBatch.from_pydict({'id': [3, 4], 'value': [300, 400]})
+            batch2_data = pa.RecordBatch.from_pydict({'id': [3, 4], 'tx_hash': ['0x3', '0x4'], 'value': [300, 400]})
             response2 = ResponseBatch.data_batch(
                 data=batch2_data,
                 metadata=BatchMetadata(
@@ -306,7 +306,7 @@ class BaseStreamingTests(LoaderTestBase):
             )
 
             # Third RecordBatch (same BlockRange, ranges_complete=True)
-            batch3_data = pa.RecordBatch.from_pydict({'id': [5, 6], 'value': [500, 600]})
+            batch3_data = pa.RecordBatch.from_pydict({'id': [5, 6], 'tx_hash': ['0x5', '0x6'], 'value': [500, 600]})
             response3 = ResponseBatch.data_batch(
                 data=batch3_data,
                 metadata=BatchMetadata(

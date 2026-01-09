@@ -77,15 +77,17 @@ class LMDBTestConfig(LoaderTestConfig):
 
     def get_column_names(self, loader: LMDBLoader, table_name: str) -> List[str]:
         """Get column names from LMDB database (from first record)"""
-        import json
+        import pyarrow as pa
 
         db = loader._get_or_create_db(getattr(loader.config, 'database_name', None))
         with loader.env.begin(db=db) as txn:
             cursor = txn.cursor()
             for _key, value in cursor:
                 try:
-                    row_data = json.loads(value.decode())
-                    return list(row_data.keys())
+                    # Deserialize Arrow IPC format (LMDB stores Arrow batches, not JSON)
+                    reader = pa.ipc.open_stream(value)
+                    batch = reader.read_next_batch()
+                    return batch.schema.names  # Returns all column names including metadata
                 except Exception:
                     return ['_value']  # Fallback
         return []
@@ -197,7 +199,7 @@ class TestLMDBSpecific:
         data = {'network': ['eth', 'eth', 'poly'], 'block': [100, 101, 100], 'tx_index': [0, 0, 0]}
         test_data = pa.Table.from_pydict(data)
 
-        config = {**lmdb_config, 'key_columns': ['network', 'block', 'tx_index']}
+        config = {**lmdb_config, 'composite_key_columns': ['network', 'block', 'tx_index']}
         loader = LMDBLoader(config)
 
         with loader:
@@ -280,6 +282,8 @@ class TestLMDBSpecific:
 
     def test_data_persistence(self, lmdb_config, small_test_data):
         """Test that data persists after closing and reopening"""
+        import pyarrow as pa
+
         from src.amp.loaders.base import LoadMode
 
         # Load data
@@ -298,8 +302,17 @@ class TestLMDBSpecific:
                 count = sum(1 for _ in cursor)
                 assert count == 5
 
-            # Can append more
-            result2 = loader2.load_table(small_test_data, 'test_table', mode=LoadMode.APPEND)
+            # Can append more (use different IDs to avoid key conflicts in key-value store)
+            additional_data = pa.Table.from_pydict({
+                'id': [6, 7, 8, 9, 10],
+                'name': ['f', 'g', 'h', 'i', 'j'],
+                'value': [60.6, 70.7, 80.8, 90.9, 100.0],
+                'year': [2024, 2024, 2024, 2024, 2024],
+                'month': [1, 1, 1, 1, 1],
+                'day': [6, 7, 8, 9, 10],
+                'active': [False, True, False, True, False],
+            })
+            result2 = loader2.load_table(additional_data, 'test_table', mode=LoadMode.APPEND)
             assert result2.success == True
 
             # Now should have 10

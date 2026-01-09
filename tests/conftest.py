@@ -203,6 +203,16 @@ def redis_test_config(request):
         return request.getfixturevalue('redis_config')
 
 
+@pytest.fixture
+def redis_streaming_config(redis_test_config):
+    """Redis config for streaming tests with blockchain data (uses tx_hash instead of id)"""
+    return {
+        **redis_test_config,
+        'key_pattern': '{table}:{tx_hash}',  # Use tx_hash from blockchain data
+        'data_structure': 'hash',
+    }
+
+
 @pytest.fixture(scope='session')
 def delta_test_env():
     """Create Delta Lake test environment for the session"""

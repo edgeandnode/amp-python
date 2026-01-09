@@ -25,12 +25,23 @@ class RedisTestConfig(LoaderTestConfig):
     """Redis-specific test configuration"""
 
     loader_class = RedisLoader
-    config_fixture_name = 'redis_test_config'
 
     supports_overwrite = True
     supports_streaming = True
     supports_multi_network = True
     supports_null_values = True
+    requires_existing_table = False  # Redis auto-creates keys/structures
+
+    def __init__(self, config_fixture_name='redis_test_config'):
+        """
+        Initialize Redis test config.
+
+        Args:
+            config_fixture_name: Name of the pytest fixture providing loader config
+                                 (default: 'redis_test_config' for core tests,
+                                  use 'redis_streaming_config' for streaming tests)
+        """
+        self.config_fixture_name = config_fixture_name
 
     def get_row_count(self, loader: RedisLoader, table_name: str) -> int:
         """Get row count from Redis based on data structure"""
@@ -157,7 +168,7 @@ class TestRedisCore(BaseLoaderTests):
 class TestRedisStreaming(BaseStreamingTests):
     """Redis streaming tests (inherited from base)"""
 
-    config = RedisTestConfig()
+    config = RedisTestConfig('redis_streaming_config')
 
 
 @pytest.mark.redis
@@ -171,7 +182,7 @@ class TestRedisSpecific:
         table_name = 'test_hash'
         patterns_to_clean.append(f'{table_name}:*')
 
-        config = {**redis_test_config, 'data_structure': 'hash', 'key_field': 'id'}
+        config = {**redis_test_config, 'data_structure': 'hash'}  # Uses default key_pattern {table}:{id}
         loader = RedisLoader(config)
 
         with loader:
@@ -195,7 +206,7 @@ class TestRedisSpecific:
         table_name = 'test_string'
         patterns_to_clean.append(f'{table_name}:*')
 
-        config = {**redis_test_config, 'data_structure': 'string', 'key_field': 'id'}
+        config = {**redis_test_config, 'data_structure': 'string'}  # Uses default key_pattern {table}:{id}
         loader = RedisLoader(config)
 
         with loader:
@@ -219,7 +230,8 @@ class TestRedisSpecific:
         """Test Redis stream data structure storage"""
         keys_to_clean, patterns_to_clean = cleanup_redis
         table_name = 'test_stream'
-        keys_to_clean.append(table_name)
+        stream_key = f'{table_name}:stream'  # Stream keys use table_name:stream format
+        keys_to_clean.append(stream_key)
 
         config = {**redis_test_config, 'data_structure': 'stream'}
         loader = RedisLoader(config)
@@ -229,8 +241,8 @@ class TestRedisSpecific:
             assert result.success == True
             assert result.rows_loaded == 5
 
-            # Verify data is in stream
-            stream_len = loader.redis_client.xlen(table_name)
+            # Verify data is in stream (Redis stream key format is table_name:stream)
+            stream_len = loader.redis_client.xlen(stream_key)
             assert stream_len == 5
 
     def test_set_storage(self, redis_test_config, small_test_data, cleanup_redis):
@@ -239,7 +251,7 @@ class TestRedisSpecific:
         table_name = 'test_set'
         patterns_to_clean.append(f'{table_name}:*')
 
-        config = {**redis_test_config, 'data_structure': 'set', 'key_field': 'id'}
+        config = {**redis_test_config, 'data_structure': 'set'}  # Uses default key_pattern {table}:{id}
         loader = RedisLoader(config)
 
         with loader:
@@ -255,7 +267,7 @@ class TestRedisSpecific:
         table_name = 'test_ttl'
         patterns_to_clean.append(f'{table_name}:*')
 
-        config = {**redis_test_config, 'data_structure': 'hash', 'key_field': 'id', 'ttl': 2}  # 2 second TTL
+        config = {**redis_test_config, 'data_structure': 'hash', 'ttl': 2}  # 2 second TTL, uses default key_pattern
         loader = RedisLoader(config)
 
         with loader:
@@ -292,8 +304,7 @@ class TestRedisSpecific:
         config = {
             **redis_test_config,
             'data_structure': 'hash',
-            'key_field': 'user_id',
-            'key_pattern': '{table}:user:{key_value}',
+            'key_pattern': '{table}:user:{user_id}',  # Custom key pattern using user_id field
         }
         loader = RedisLoader(config)
 
@@ -325,8 +336,7 @@ class TestRedisSpecific:
             keys_to_clean.append(table_name)
 
             config = {**redis_test_config, 'data_structure': structure}
-            if structure in ['hash', 'string']:
-                config['key_field'] = 'id'
+            # Hash and string structures use default key_pattern {table}:{id}
 
             loader = RedisLoader(config)
 
@@ -368,7 +378,7 @@ class TestRedisPerformance:
         }
         large_table = pa.Table.from_pydict(large_data)
 
-        config = {**redis_test_config, 'data_structure': 'hash', 'key_field': 'id'}
+        config = {**redis_test_config, 'data_structure': 'hash'}  # Uses default key_pattern {table}:{id}
         loader = RedisLoader(config)
 
         with loader:
