@@ -777,6 +777,68 @@ class DeployRequest(BaseModel):
     """
 
 
+class TableSyncProgress(BaseModel):
+    """
+    Sync progress information for a single table
+    """
+
+    table_name: str
+    """
+    Name of the table within the dataset
+    """
+    current_block: Optional[int] = None
+    """
+    Highest block number that has been synced (null if no data yet)
+    """
+    start_block: Optional[int] = None
+    """
+    Lowest block number that has been synced (null if no data yet)
+    """
+    job_id: Optional[int] = None
+    """
+    ID of the writer job (null if no active job)
+    """
+    job_status: Optional[str] = None
+    """
+    Status of the writer job (null if no active job)
+    """
+    files_count: int
+    """
+    Number of Parquet files written for this table
+    """
+    total_size_bytes: int
+    """
+    Total size of all Parquet files in bytes
+    """
+
+
+class SyncProgressResponse(BaseModel):
+    """
+    API response containing sync progress information for a dataset
+    """
+
+    dataset_namespace: str
+    """
+    Dataset namespace
+    """
+    dataset_name: str
+    """
+    Dataset name
+    """
+    revision: str
+    """
+    Requested revision
+    """
+    manifest_hash: str
+    """
+    Resolved manifest hash
+    """
+    tables: list[TableSyncProgress]
+    """
+    Sync progress for each table in the dataset
+    """
+
+
 class WorkerDetailResponse(BaseModel):
     """
     Detailed worker information returned by the API

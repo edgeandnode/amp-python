@@ -290,3 +290,32 @@ class DatasetsClient:
         """
         path = f'/datasets/{namespace}/{name}'
         self._admin._request('DELETE', path)
+
+    def get_sync_progress(self, namespace: str, name: str, revision: str = 'latest') -> models.SyncProgressResponse:
+        """Get sync progress for a dataset version.
+
+        Returns per-table sync progress including current block numbers,
+        job status, and file statistics. This is useful for monitoring
+        the progress of data extraction jobs.
+
+        Args:
+            namespace: Dataset namespace
+            name: Dataset name
+            revision: Version tag or semantic version (default: 'latest')
+
+        Returns:
+            SyncProgressResponse with sync progress for all tables
+
+        Raises:
+            DatasetNotFoundError: If dataset/version not found
+            GetSyncProgressError: If retrieval fails
+
+        Example:
+            >>> client = AdminClient('http://localhost:8080')
+            >>> progress = client.datasets.get_sync_progress('_', 'eth_firehose', 'latest')
+            >>> for table in progress.tables:
+            ...     print(f'{table.table_name}: block {table.current_block}, status: {table.job_status}')
+        """
+        path = f'/datasets/{namespace}/{name}/versions/{revision}/sync-progress'
+        response = self._admin._request('GET', path)
+        return models.SyncProgressResponse.model_validate(response.json())
