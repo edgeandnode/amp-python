@@ -781,5 +781,3 @@ class KeyValueLoader(DataLoader[KeyValueConfig]):
             'database': self.config.database
         }
 ```
-
-This documentation provides everything needed to implement new data loaders efficiently and consistently!

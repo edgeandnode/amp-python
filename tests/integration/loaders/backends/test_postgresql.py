@@ -70,7 +70,7 @@ class PostgreSQLTestConfig(LoaderTestConfig):
                 rows = cur.fetchall()
 
                 # Convert to list of dicts
-                return [dict(zip(columns, row)) for row in rows]
+                return [dict(zip(columns, row, strict=False)) for row in rows]
         finally:
             loader.pool.putconn(conn)
 
@@ -318,8 +318,9 @@ class TestPostgreSQLPerformance:
 
     def test_large_data_loading(self, postgresql_test_config, test_table_name, cleanup_tables):
         """Test loading large datasets"""
-        import pyarrow as pa
         from datetime import datetime
+
+        import pyarrow as pa
 
         cleanup_tables.append(test_table_name)
 

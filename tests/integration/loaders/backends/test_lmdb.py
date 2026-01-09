@@ -11,8 +11,6 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 try:
-    import lmdb
-
     from src.amp.loaders.implementations.lmdb_loader import LMDBLoader
     from tests.integration.loaders.conftest import LoaderTestConfig
     from tests.integration.loaders.test_base_loader import BaseLoaderTests
@@ -37,7 +35,7 @@ class LMDBTestConfig(LoaderTestConfig):
         count = 0
         with loader.env.begin(db=loader.db) as txn:
             cursor = txn.cursor()
-            for key, value in cursor:
+            for _key, _value in cursor:
                 count += 1
         return count
 
@@ -58,7 +56,7 @@ class LMDBTestConfig(LoaderTestConfig):
                     row_data = json.loads(value.decode())
                     row_data['_key'] = key.decode()
                     rows.append(row_data)
-                except:
+                except Exception:
                     # Fallback to raw value
                     rows.append({'_key': key.decode(), '_value': value.decode()})
         return rows
@@ -79,11 +77,11 @@ class LMDBTestConfig(LoaderTestConfig):
 
         with loader.env.begin(db=loader.db) as txn:
             cursor = txn.cursor()
-            for key, value in cursor:
+            for _key, value in cursor:
                 try:
                     row_data = json.loads(value.decode())
                     return list(row_data.keys())
-                except:
+                except Exception:
                     return ['_value']  # Fallback
         return []
 
@@ -91,8 +89,8 @@ class LMDBTestConfig(LoaderTestConfig):
 @pytest.fixture
 def lmdb_test_env():
     """Create and cleanup temporary directory for LMDB databases"""
-    import tempfile
     import shutil
+    import tempfile
 
     temp_dir = tempfile.mkdtemp(prefix='lmdb_test_')
     yield temp_dir

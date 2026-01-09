@@ -138,7 +138,9 @@ class BaseStreamingTests(LoaderTestBase):
             reorg_response = ResponseBatch.reorg_batch(
                 invalidation_ranges=[BlockRange(network='ethereum', start=104, end=108)]
             )
-            reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), test_table_name, connection_name='test_conn'))
+            reorg_results = list(
+                loader.load_stream_continuous(iter([reorg_response]), test_table_name, connection_name='test_conn')
+            )
             assert len(reorg_results) == 1
             assert reorg_results[0].success
 
@@ -174,7 +176,9 @@ class BaseStreamingTests(LoaderTestBase):
             )
 
             # Load via streaming API (with connection_name for state tracking)
-            results = list(loader.load_stream_continuous(iter([response]), test_table_name, connection_name='test_conn'))
+            results = list(
+                loader.load_stream_continuous(iter([response]), test_table_name, connection_name='test_conn')
+            )
             assert len(results) == 1
             assert results[0].success
 
@@ -187,7 +191,9 @@ class BaseStreamingTests(LoaderTestBase):
             reorg_response = ResponseBatch.reorg_batch(
                 invalidation_ranges=[BlockRange(network='ethereum', start=160, end=180)]
             )
-            reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), test_table_name, connection_name='test_conn'))
+            reorg_results = list(
+                loader.load_stream_continuous(iter([reorg_response]), test_table_name, connection_name='test_conn')
+            )
             assert len(reorg_results) == 1
             assert reorg_results[0].success
 
@@ -248,7 +254,9 @@ class BaseStreamingTests(LoaderTestBase):
             reorg_response = ResponseBatch.reorg_batch(
                 invalidation_ranges=[BlockRange(network='ethereum', start=100, end=100)]
             )
-            reorg_results = list(loader.load_stream_continuous(iter([reorg_response]), test_table_name, connection_name='test_conn'))
+            reorg_results = list(
+                loader.load_stream_continuous(iter([reorg_response]), test_table_name, connection_name='test_conn')
+            )
             assert len(reorg_results) == 1
             assert reorg_results[0].success
 

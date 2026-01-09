@@ -141,11 +141,7 @@ class LoaderTestBase:
             loader_config = loader_config.copy()
             # Only enable state if not explicitly configured
             if 'state' not in loader_config:
-                loader_config['state'] = {
-                    'enabled': True,
-                    'storage': 'memory',
-                    'store_batch_id': True
-                }
+                loader_config['state'] = {'enabled': True, 'storage': 'memory', 'store_batch_id': True}
 
         # Create and return the loader instance
         return self.config.loader_class(loader_config)

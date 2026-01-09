@@ -91,7 +91,6 @@ class TestDeltaLakeSpecific:
 
     def test_partitioning(self, delta_partitioned_config, small_test_data):
         """Test DeltaLake partitioning functionality"""
-        import pyarrow as pa
 
         loader = DeltaLakeLoader(delta_partitioned_config)
 
@@ -148,7 +147,7 @@ class TestDeltaLakeSpecific:
             # Load with new schema (if schema evolution enabled)
             from src.amp.loaders.base import LoadMode
 
-            result2 = loader.load_table(extended_table, 'test_table', mode=LoadMode.APPEND)
+            loader.load_table(extended_table, 'test_table', mode=LoadMode.APPEND)
 
             # Result depends on merge_schema configuration
             dt = DeltaTable(loader.config.table_path)

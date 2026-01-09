@@ -54,7 +54,7 @@ class RedisTestConfig(LoaderTestConfig):
             # Get stream length
             try:
                 return loader.redis_client.xlen(table_name)
-            except:
+            except Exception:
                 return 0
         else:
             # For other structures, scan for keys
@@ -166,7 +166,6 @@ class TestRedisSpecific:
 
     def test_hash_storage(self, redis_test_config, small_test_data, cleanup_redis):
         """Test Redis hash data structure storage"""
-        import pyarrow as pa
 
         keys_to_clean, patterns_to_clean = cleanup_redis
         table_name = 'test_hash'
@@ -343,7 +342,7 @@ class TestRedisSpecific:
                 }
 
         # Verify all structures work
-        for structure, data in results.items():
+        for _structure, data in results.items():
             assert data['success'] == True
             assert data['rows_loaded'] == 1000
 

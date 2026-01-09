@@ -53,7 +53,7 @@ class SnowflakeTestConfig(LoaderTestConfig):
             cur.execute(query)
             columns = [col[0] for col in cur.description]
             rows = cur.fetchall()
-            return [dict(zip(columns, row)) for row in rows]
+            return [dict(zip(columns, row, strict=False)) for row in rows]
 
     def cleanup_table(self, loader: SnowflakeLoader, table_name: str) -> None:
         """Drop Snowflake table"""
@@ -87,7 +87,6 @@ class TestSnowflakeSpecific:
 
     def test_stage_loading_method(self, snowflake_config, small_test_table, test_table_name, cleanup_tables):
         """Test Snowflake stage-based loading (Snowflake-specific optimization)"""
-        import pyarrow as pa
 
         cleanup_tables.append(test_table_name)
 

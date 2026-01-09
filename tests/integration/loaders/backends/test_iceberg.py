@@ -10,9 +10,6 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 try:
-    from pyiceberg.catalog import load_catalog
-    from pyiceberg.schema import Schema
-
     from src.amp.loaders.implementations.iceberg_loader import IcebergLoader
     from tests.integration.loaders.conftest import LoaderTestConfig
     from tests.integration.loaders.test_base_loader import BaseLoaderTests
@@ -102,7 +99,6 @@ class TestIcebergSpecific:
 
     def test_partitioning(self, iceberg_basic_config, small_test_data):
         """Test Iceberg partitioning (partition spec)"""
-        import pyarrow as pa
 
         # Create config with partitioning
         config = {**iceberg_basic_config, 'partition_spec': [('year', 'identity'), ('month', 'identity')]}
@@ -147,7 +143,7 @@ class TestIcebergSpecific:
             extended_table = pa.Table.from_pydict(extended_data)
 
             # Load with new schema
-            result2 = loader.load_table(extended_table, table_name, mode=LoadMode.APPEND)
+            loader.load_table(extended_table, table_name, mode=LoadMode.APPEND)
 
             # Schema evolution depends on config
             catalog = loader._catalog
@@ -161,8 +157,9 @@ class TestIcebergSpecific:
 
     def test_timestamp_conversion(self, iceberg_basic_config):
         """Test timestamp conversion for Iceberg"""
-        import pyarrow as pa
         from datetime import datetime
+
+        import pyarrow as pa
 
         # Create data with timestamps
         data = {
@@ -193,7 +190,6 @@ class TestIcebergSpecific:
 
     def test_multiple_tables(self, iceberg_basic_config, small_test_data):
         """Test managing multiple tables with same loader"""
-        from src.amp.loaders.base import LoadMode
 
         loader = IcebergLoader(iceberg_basic_config)
 
