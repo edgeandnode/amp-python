@@ -34,7 +34,8 @@ class LMDBTestConfig(LoaderTestConfig):
     def get_row_count(self, loader: LMDBLoader, table_name: str) -> int:
         """Get row count from LMDB database"""
         count = 0
-        with loader.env.begin(db=loader.db) as txn:
+        db = loader._get_or_create_db(getattr(loader.config, 'database_name', None))
+        with loader.env.begin(db=db) as txn:
             cursor = txn.cursor()
             for _key, _value in cursor:
                 count += 1
@@ -47,7 +48,8 @@ class LMDBTestConfig(LoaderTestConfig):
         import json
 
         rows = []
-        with loader.env.begin(db=loader.db) as txn:
+        db = loader._get_or_create_db(getattr(loader.config, 'database_name', None))
+        with loader.env.begin(db=db) as txn:
             cursor = txn.cursor()
             for i, (key, value) in enumerate(cursor):
                 if i >= 100:  # Limit to 100
@@ -65,7 +67,8 @@ class LMDBTestConfig(LoaderTestConfig):
     def cleanup_table(self, loader: LMDBLoader, table_name: str) -> None:
         """Clear LMDB database"""
         # LMDB doesn't have tables - clear the entire database
-        with loader.env.begin(db=loader.db, write=True) as txn:
+        db = loader._get_or_create_db(getattr(loader.config, 'database_name', None))
+        with loader.env.begin(db=db, write=True) as txn:
             cursor = txn.cursor()
             # Delete all keys
             keys_to_delete = [key for key, _ in cursor]
@@ -76,7 +79,8 @@ class LMDBTestConfig(LoaderTestConfig):
         """Get column names from LMDB database (from first record)"""
         import json
 
-        with loader.env.begin(db=loader.db) as txn:
+        db = loader._get_or_create_db(getattr(loader.config, 'database_name', None))
+        with loader.env.begin(db=db) as txn:
             cursor = txn.cursor()
             for _key, value in cursor:
                 try:
@@ -152,7 +156,8 @@ class TestLMDBSpecific:
             assert result.rows_loaded == 5
 
             # Verify keys are based on id column
-            with loader.env.begin(db=loader.db) as txn:
+            db = loader._get_or_create_db(getattr(loader.config, 'database_name', None))
+            with loader.env.begin(db=db) as txn:
                 cursor = txn.cursor()
                 keys = [key.decode() for key, _ in cursor]
 
@@ -175,7 +180,8 @@ class TestLMDBSpecific:
             assert result.success == True
 
             # Verify custom key pattern
-            with loader.env.begin(db=loader.db) as txn:
+            db = loader._get_or_create_db(getattr(loader.config, 'database_name', None))
+            with loader.env.begin(db=db) as txn:
                 cursor = txn.cursor()
                 keys = [key.decode() for key, _ in cursor]
 
@@ -200,7 +206,8 @@ class TestLMDBSpecific:
             assert result.rows_loaded == 3
 
             # Verify composite keys
-            with loader.env.begin(db=loader.db) as txn:
+            db = loader._get_or_create_db(getattr(loader.config, 'database_name', None))
+            with loader.env.begin(db=db) as txn:
                 cursor = txn.cursor()
                 keys = [key.decode() for key, _ in cursor]
                 assert len(keys) == 3
@@ -221,7 +228,8 @@ class TestLMDBSpecific:
             assert result.rows_loaded == 3
 
             # Verify data in named database
-            with loader.env.begin(db=loader.db) as txn:
+            db = loader._get_or_create_db(getattr(loader.config, 'database_name', None))
+            with loader.env.begin(db=db) as txn:
                 cursor = txn.cursor()
                 count = sum(1 for _ in cursor)
                 assert count == 3
@@ -249,7 +257,8 @@ class TestLMDBSpecific:
             assert result.rows_loaded == 5000
 
             # Verify all data was loaded
-            with loader.env.begin(db=loader.db) as txn:
+            db = loader._get_or_create_db(getattr(loader.config, 'database_name', None))
+            with loader.env.begin(db=db) as txn:
                 cursor = txn.cursor()
                 count = sum(1 for _ in cursor)
                 assert count == 5000
@@ -283,7 +292,8 @@ class TestLMDBSpecific:
         loader2 = LMDBLoader(lmdb_config)
         with loader2:
             # Data should still be there
-            with loader2.env.begin(db=loader2.db) as txn:
+            db = loader2._get_or_create_db(getattr(loader2.config, 'database_name', None))
+            with loader2.env.begin(db=db) as txn:
                 cursor = txn.cursor()
                 count = sum(1 for _ in cursor)
                 assert count == 5
@@ -293,7 +303,8 @@ class TestLMDBSpecific:
             assert result2.success == True
 
             # Now should have 10
-            with loader2.env.begin(db=loader2.db) as txn:
+            db = loader2._get_or_create_db(getattr(loader2.config, 'database_name', None))
+            with loader2.env.begin(db=db) as txn:
                 cursor = txn.cursor()
                 count = sum(1 for _ in cursor)
                 assert count == 10
@@ -327,7 +338,8 @@ class TestLMDBPerformance:
             assert result.duration < 60  # Should complete within 60 seconds
 
             # Verify data integrity
-            with loader.env.begin(db=loader.db) as txn:
+            db = loader._get_or_create_db(getattr(loader.config, 'database_name', None))
+            with loader.env.begin(db=db) as txn:
                 cursor = txn.cursor()
                 count = sum(1 for _ in cursor)
                 assert count == 50000

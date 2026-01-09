@@ -34,7 +34,7 @@ class RedisTestConfig(LoaderTestConfig):
 
     def get_row_count(self, loader: RedisLoader, table_name: str) -> int:
         """Get row count from Redis based on data structure"""
-        data_structure = loader.config.get('data_structure', 'hash')
+        data_structure = getattr(loader.config, 'data_structure', 'hash')
 
         if data_structure == 'hash':
             # Count hash keys matching pattern
@@ -69,7 +69,7 @@ class RedisTestConfig(LoaderTestConfig):
     ) -> List[Dict[str, Any]]:
         """Query rows from Redis - limited functionality due to Redis architecture"""
         # Redis doesn't support SQL-like queries, so this is a simplified implementation
-        data_structure = loader.config.get('data_structure', 'hash')
+        data_structure = getattr(loader.config, 'data_structure', 'hash')
         rows = []
 
         if data_structure == 'hash':
@@ -99,7 +99,7 @@ class RedisTestConfig(LoaderTestConfig):
 
     def get_column_names(self, loader: RedisLoader, table_name: str) -> List[str]:
         """Get column names from Redis - return fields from first record"""
-        data_structure = loader.config.get('data_structure', 'hash')
+        data_structure = getattr(loader.config, 'data_structure', 'hash')
 
         if data_structure == 'hash':
             pattern = f'{table_name}:*'
