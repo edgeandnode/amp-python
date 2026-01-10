@@ -27,14 +27,15 @@ class SnowflakeTestConfig(LoaderTestConfig):
     loader_class = SnowflakeLoader
     config_fixture_name = 'snowflake_config'
 
-    supports_overwrite = True
+    supports_overwrite = False  # Snowflake doesn't support OVERWRITE mode
     supports_streaming = True
     supports_multi_network = True
     supports_null_values = True
+    requires_existing_table = False  # Snowflake auto-creates tables
 
     def get_row_count(self, loader: SnowflakeLoader, table_name: str) -> int:
         """Get row count from Snowflake table"""
-        with loader.conn.cursor() as cur:
+        with loader.connection.cursor() as cur:
             cur.execute(f'SELECT COUNT(*) FROM {table_name}')
             return cur.fetchone()[0]
 
@@ -49,7 +50,7 @@ class SnowflakeTestConfig(LoaderTestConfig):
             query += f' ORDER BY {order_by}'
         query += ' LIMIT 100'
 
-        with loader.conn.cursor() as cur:
+        with loader.connection.cursor() as cur:
             cur.execute(query)
             columns = [col[0] for col in cur.description]
             rows = cur.fetchall()
@@ -57,12 +58,12 @@ class SnowflakeTestConfig(LoaderTestConfig):
 
     def cleanup_table(self, loader: SnowflakeLoader, table_name: str) -> None:
         """Drop Snowflake table"""
-        with loader.conn.cursor() as cur:
+        with loader.connection.cursor() as cur:
             cur.execute(f'DROP TABLE IF EXISTS {table_name}')
 
     def get_column_names(self, loader: SnowflakeLoader, table_name: str) -> List[str]:
         """Get column names from Snowflake table"""
-        with loader.conn.cursor() as cur:
+        with loader.connection.cursor() as cur:
             cur.execute(f'SELECT * FROM {table_name} LIMIT 0')
             return [col[0] for col in cur.description]
 
@@ -79,6 +80,30 @@ class TestSnowflakeStreaming(BaseStreamingTests):
     """Snowflake streaming tests (inherited from base)"""
 
     config = SnowflakeTestConfig()
+
+
+@pytest.fixture
+def cleanup_tables(snowflake_config):
+    """Cleanup Snowflake tables after tests"""
+    tables_to_clean = []
+
+    yield tables_to_clean
+
+    # Cleanup
+    if tables_to_clean:
+        try:
+            from snowflake.connector import connect
+
+            conn = connect(**snowflake_config)
+            with conn.cursor() as cur:
+                for table_name in tables_to_clean:
+                    try:
+                        cur.execute(f'DROP TABLE IF EXISTS {table_name}')
+                    except Exception:
+                        pass
+            conn.close()
+        except Exception:
+            pass
 
 
 @pytest.mark.snowflake
@@ -100,7 +125,7 @@ class TestSnowflakeSpecific:
             assert result.rows_loaded == 100
 
             # Verify data loaded
-            with loader.conn.cursor() as cur:
+            with loader.connection.cursor() as cur:
                 cur.execute(f'SELECT COUNT(*) FROM {test_table_name}')
                 count = cur.fetchone()[0]
                 assert count == 100
@@ -169,7 +194,7 @@ class TestSnowflakeSpecific:
             assert all(r.success for r in results)
 
             # Verify total row count
-            with loader.conn.cursor() as cur:
+            with loader.connection.cursor() as cur:
                 cur.execute(f'SELECT COUNT(*) FROM {test_table_name}')
                 count = cur.fetchone()[0]
                 assert count == 10000
@@ -197,7 +222,7 @@ class TestSnowflakeSpecific:
             assert result.rows_loaded == 3
 
             # Verify columns were properly escaped
-            with loader.conn.cursor() as cur:
+            with loader.connection.cursor() as cur:
                 cur.execute(f'SELECT * FROM {test_table_name} LIMIT 1')
                 columns = [col[0] for col in cur.description]
                 # Snowflake normalizes column names
@@ -230,7 +255,7 @@ class TestSnowflakeSpecific:
             assert results[0].success
 
             # Verify initial count
-            with loader.conn.cursor() as cur:
+            with loader.connection.cursor() as cur:
                 cur.execute(f'SELECT COUNT(*) FROM {test_table_name}')
                 initial_count = cur.fetchone()[0]
                 assert initial_count == 2
@@ -269,7 +294,7 @@ class TestSnowflakePerformance:
             assert result.duration < 120  # Should complete within 2 minutes
 
             # Verify data integrity
-            with loader.conn.cursor() as cur:
+            with loader.connection.cursor() as cur:
                 cur.execute(f'SELECT COUNT(*) FROM {test_table_name}')
                 count = cur.fetchone()[0]
                 assert count == 50000
