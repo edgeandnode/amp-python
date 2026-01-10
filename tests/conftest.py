@@ -226,10 +226,12 @@ def delta_test_env():
 
 
 @pytest.fixture
-def delta_basic_config(delta_test_env):
+def delta_basic_config(delta_test_env, request):
     """Basic Delta Lake configuration for testing"""
+    # Create unique table path for each test to avoid data accumulation
+    unique_suffix = f'{request.node.name}_{id(request)}'
     return {
-        'table_path': str(Path(delta_test_env) / 'basic_table'),
+        'table_path': str(Path(delta_test_env) / f'basic_table_{unique_suffix}'),
         'partition_by': ['year', 'month'],
         'optimize_after_write': True,
         'vacuum_after_write': False,

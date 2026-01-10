@@ -127,6 +127,11 @@ class DeltaLakeLoader(DataLoader[DeltaStorageConfig]):
             self.storage_backend = 'Unknown'
             self.logger.warning(f'Unknown storage backend: {parsed_path.scheme}')
 
+    @property
+    def partition_by(self) -> Optional[List[str]]:
+        """Convenient access to partition_by configuration"""
+        return self.config.partition_by
+
     def _get_required_config_fields(self) -> list[str]:
         """Return required configuration fields"""
         return ['table_path']
@@ -462,10 +467,15 @@ class DeltaLakeLoader(DataLoader[DeltaStorageConfig]):
         mode = kwargs.get('mode', LoadMode.APPEND)
         delta_mode = self._convert_load_mode(mode)
 
+        version = table_info.get('version', 0)
+        num_files = table_info.get('num_files', 0)
+
         return {
             'write_mode': delta_mode.value,
-            'table_version': table_info.get('version', 0),
-            'total_files': table_info.get('num_files', 0),
+            'table_version': version,
+            'delta_version': version,  # Alias for compatibility
+            'total_files': num_files,
+            'files_added': num_files,  # Alias for compatibility
             'total_size_bytes': table_info.get('size_bytes', 0),
             'partition_columns': self.config.partition_by or [],
             'storage_backend': self.storage_backend,

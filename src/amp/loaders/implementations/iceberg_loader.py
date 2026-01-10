@@ -261,6 +261,7 @@ class IcebergLoader(DataLoader[IcebergStorageConfig]):
         fixed_schema = self._fix_schema_timestamps(schema)
 
         # Use create_table_if_not_exists for simpler logic
+        # PyIceberg's create_table_if_not_exists can handle partition_spec parameter
         if self.config.partition_spec:
             table = self._catalog.create_table_if_not_exists(
                 identifier=table_identifier, schema=fixed_schema, partition_spec=self.config.partition_spec
@@ -414,7 +415,22 @@ class IcebergLoader(DataLoader[IcebergStorageConfig]):
         self, table: pa.Table, duration: float, batch_count: int, **kwargs
     ) -> Dict[str, Any]:
         """Get Iceberg-specific metadata for table operation"""
-        return {'namespace': self.config.namespace}
+        metadata = {'namespace': self.config.namespace}
+
+        # Try to get snapshot info from the last loaded table
+        table_name = kwargs.get('table_name')
+        if table_name:
+            try:
+                table_identifier = f'{self.config.namespace}.{table_name}'
+                if table_identifier in self._table_cache:
+                    iceberg_table = self._table_cache[table_identifier]
+                    current_snapshot = iceberg_table.current_snapshot()
+                    if current_snapshot:
+                        metadata['snapshot_id'] = current_snapshot.snapshot_id
+            except Exception as e:
+                self.logger.debug(f'Could not get snapshot info for metadata: {e}')
+
+        return metadata
 
     def _table_exists(self, table_name: str) -> bool:
         """Check if a table exists"""

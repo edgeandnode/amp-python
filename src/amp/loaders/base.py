@@ -382,7 +382,7 @@ class DataLoader(ABC, Generic[TConfig]):
                 loader_type=self.__class__.__name__.replace('Loader', '').lower(),
                 success=len(errors) == 0,
                 error='; '.join(errors[:3]) if errors else None,
-                metadata=self._get_table_metadata(table, duration, batch_count, **kwargs),
+                metadata=self._get_table_metadata(table, duration, batch_count, table_name=table_name, **kwargs),
             )
 
         except Exception as e:
