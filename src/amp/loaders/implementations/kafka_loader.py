@@ -49,7 +49,10 @@ class KafkaLoader(DataLoader[KafkaConfig]):
             self.logger.info(f'Client ID: {self.config.client_id}')
 
             if self.state_enabled and self.state_storage == 'lmdb':
-                self.state_store = LMDBStreamStateStore(connection_name=self.config.client_id)
+                self.state_store = LMDBStreamStateStore(
+                    connection_name=self.config.client_id,
+                    data_dir=self.state_data_dir,
+                )
                 self.logger.info(f'Initialized LMDB state store at {self.state_store.data_dir}')
 
             self._is_connected = True
