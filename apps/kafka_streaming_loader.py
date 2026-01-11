@@ -44,6 +44,7 @@ def main(
     network: str,
     start_block: int = None,
     label_csv: str = None,
+    state_dir: str = '.amp_state',
 ):
     client = Client(amp_server)
     print(f'Connected to {amp_server}')
@@ -63,7 +64,7 @@ def main(
         {
             'bootstrap_servers': kafka_brokers,
             'client_id': 'amp-kafka-loader',
-            'state': {'enabled': True, 'storage': 'lmdb'},
+            'state': {'enabled': True, 'storage': 'lmdb', 'data_dir': state_dir},
         },
     )
 
@@ -103,6 +104,7 @@ if __name__ == '__main__':
     parser.add_argument('--network', default='anvil')
     parser.add_argument('--start-block', type=int, help='Start from specific block (default: latest - 10)')
     parser.add_argument('--label-csv', help='Optional CSV for label joining')
+    parser.add_argument('--state-dir', default='.amp_state', help='Directory for LMDB state storage')
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
     args = parser.parse_args()
 
@@ -121,6 +123,7 @@ if __name__ == '__main__':
             network=args.network,
             start_block=args.start_block,
             label_csv=args.label_csv,
+            state_dir=args.state_dir,
         )
     except KeyboardInterrupt:
         print('\n\nStopped by user')
