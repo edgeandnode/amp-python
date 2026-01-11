@@ -13,7 +13,7 @@ from amp.streaming import BlockRange, ResumeWatermark
 
 def get_block_hash(client: Client, raw_dataset: str, block_num: int) -> str:
     """Get block hash from dataset.blocks table."""
-    query = f'SELECT hash FROM {raw_dataset}.blocks WHERE block_num = {block_num} LIMIT 1'
+    query = f'SELECT hash FROM "{raw_dataset}".blocks WHERE block_num = {block_num} LIMIT 1'
     result = client.get_sql(query, read_all=True)
     hash_val = result.to_pydict()['hash'][0]
     return '0x' + hash_val.hex() if isinstance(hash_val, bytes) else hash_val
@@ -21,7 +21,7 @@ def get_block_hash(client: Client, raw_dataset: str, block_num: int) -> str:
 
 def get_latest_block(client: Client, raw_dataset: str) -> int:
     """Get latest block number from dataset.blocks table."""
-    query = f'SELECT block_num FROM {raw_dataset}.blocks ORDER BY block_num DESC LIMIT 1'
+    query = f'SELECT block_num FROM "{raw_dataset}".blocks ORDER BY block_num DESC LIMIT 1'
     result = client.get_sql(query, read_all=True)
     return result.to_pydict()['block_num'][0]
 
