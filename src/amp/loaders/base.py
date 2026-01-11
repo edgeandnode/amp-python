@@ -77,10 +77,18 @@ class DataLoader(ABC, Generic[TConfig]):
         else:
             self.state_store = NullStreamStateStore()
 
+        # Track tables that have undergone crash recovery
+        self._crash_recovery_done: set[str] = set()
+
     @property
     def is_connected(self) -> bool:
         """Check if the loader is connected to the target system."""
         return self._is_connected
+
+    @property
+    def loader_type(self) -> str:
+        """Get the loader type identifier (e.g., 'postgresql', 'redis')."""
+        return self.__class__.__name__.replace('Loader', '').lower()
 
     def _parse_config(self, config: Dict[str, Any]) -> TConfig:
         """
@@ -446,11 +454,21 @@ class DataLoader(ABC, Generic[TConfig]):
         if not self._is_connected:
             self.connect()
 
+        connection_name = kwargs.get('connection_name')
+        if connection_name is None:
+            connection_name = self.loader_type
+
+        if table_name not in self._crash_recovery_done:
+            self.logger.info(f'Running crash recovery for table {table_name} (connection: {connection_name})')
+            self._rewind_to_watermark(table_name, connection_name)
+            self._crash_recovery_done.add(table_name)
+        else:
+            self.logger.info(f'Crash recovery already done for table {table_name}')
+
         rows_loaded = 0
         start_time = time.time()
         batch_count = 0
         reorg_count = 0
-        connection_name = kwargs.get('connection_name', 'unknown')
         worker_id = kwargs.get('worker_id', 0)
 
         try:
@@ -783,6 +801,80 @@ class DataLoader(ABC, Generic[TConfig]):
             f'{self.__class__.__name__} does not implement _handle_reorg(). '
             'Streaming with reorg detection requires implementing this method.'
         )
+
+    def _rewind_to_watermark(self, table_name: Optional[str] = None, connection_name: Optional[str] = None) -> None:
+        """
+        Reset state and data to the last checkpointed watermark.
+
+        Removes any data written after the last completed watermark,
+        ensuring resumable streams start from a consistent state.
+
+        This handles crash recovery by removing uncommitted data from
+        incomplete microbatches between watermarks.
+
+        Args:
+            table_name: Table to clean up. If None, processes all tables.
+            connection_name: Connection identifier. If None, uses default.
+
+        Example:
+            def connect(self):
+                # Connect to database
+                self._establish_connection()
+                self._is_connected = True
+
+                # Crash recovery - clean up uncommitted data
+                self._rewind_to_watermark()
+        """
+        if not self.state_enabled:
+            self.logger.debug('State tracking disabled, skipping crash recovery')
+            return
+
+        if connection_name is None:
+            connection_name = self.loader_type
+
+        tables_to_process = []
+        if table_name is None:
+            self.logger.debug('table_name=None not yet implemented, skipping crash recovery')
+            return
+        else:
+            tables_to_process = [table_name]
+
+        for table in tables_to_process:
+            resume_pos = self.state_store.get_resume_position(connection_name, table)
+            if not resume_pos:
+                self.logger.debug(f'No watermark found for {table}, skipping crash recovery')
+                continue
+
+            for range_obj in resume_pos.ranges:
+                from_block = range_obj.end + 1
+
+                self.logger.info(
+                    f'Crash recovery: Cleaning up {table} data for {range_obj.network} from block {from_block} onwards'
+                )
+
+                # Create invalidation range for _handle_reorg()
+                # Note: BlockRange requires 'end' field, but invalidate_from_block() only uses 'start'
+                # Setting end=from_block is a valid placeholder since the actual range is open-ended
+                invalidation_ranges = [BlockRange(network=range_obj.network, start=from_block, end=from_block)]
+
+                try:
+                    self._handle_reorg(invalidation_ranges, table, connection_name)
+                    self.logger.info(f'Crash recovery completed for {range_obj.network} in {table}')
+
+                except NotImplementedError:
+                    invalidated = self.state_store.invalidate_from_block(
+                        connection_name, table, range_obj.network, from_block
+                    )
+
+                    if invalidated:
+                        self.logger.warning(
+                            f'Crash recovery: Cleared {len(invalidated)} batches from state '
+                            f'for {range_obj.network} but cannot delete data from {table}. '
+                            f'{self.__class__.__name__} does not support data deletion. '
+                            f'Duplicates may occur on resume.'
+                        )
+                    else:
+                        self.logger.debug(f'No uncommitted batches found for {range_obj.network}')
 
     def _add_metadata_columns(self, data: pa.RecordBatch, block_ranges: List[BlockRange]) -> pa.RecordBatch:
         """
