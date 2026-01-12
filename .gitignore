@@ -60,4 +60,4 @@ data/
 # Build artifacts
 *.tar.gz
 *.zip
-.amp_state/
+.amp_state

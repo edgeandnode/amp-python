@@ -4,11 +4,40 @@
 import argparse
 import logging
 import os
+import time
 from pathlib import Path
 
 from amp.client import Client
 from amp.loaders.types import LabelJoinConfig
 from amp.streaming import BlockRange, ResumeWatermark
+
+logger = logging.getLogger('amp.kafka_streaming_loader')
+
+RETRYABLE_ERRORS = (
+    ConnectionError,
+    TimeoutError,
+    OSError,
+)
+
+
+def retry_with_backoff(func, max_retries=5, initial_delay=1.0, max_delay=60.0, backoff_factor=2.0):
+    """Execute function with exponential backoff retry on transient errors."""
+    delay = initial_delay
+    last_exception = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            return func()
+        except RETRYABLE_ERRORS as e:
+            last_exception = e
+            if attempt == max_retries:
+                logger.error(f'Max retries ({max_retries}) exceeded: {e}')
+                raise
+            logger.warning(f'Attempt {attempt + 1} failed: {e}. Retrying in {delay:.1f}s...')
+            time.sleep(delay)
+            delay = min(delay * backoff_factor, max_delay)
+
+    raise last_exception
 
 
 def get_block_hash(client: Client, raw_dataset: str, block_num: int) -> str:
@@ -22,8 +51,12 @@ def get_block_hash(client: Client, raw_dataset: str, block_num: int) -> str:
 def get_latest_block(client: Client, raw_dataset: str) -> int:
     """Get latest block number from dataset.blocks table."""
     query = f'SELECT block_num FROM "{raw_dataset}".blocks ORDER BY block_num DESC LIMIT 1'
+    logger.debug(f'Fetching latest block from {raw_dataset}')
+    logger.debug(f'Query: {query}')
     result = client.get_sql(query, read_all=True)
-    return result.to_pydict()['block_num'][0]
+    block_num = result.to_pydict()['block_num'][0]
+    logger.info(f'Latest block in {raw_dataset}: {block_num}')
+    return block_num
 
 
 def create_watermark(client: Client, raw_dataset: str, network: str, start_block: int) -> ResumeWatermark:
@@ -45,13 +78,20 @@ def main(
     start_block: int = None,
     label_csv: str = None,
     state_dir: str = '.amp_state',
+    auth: bool = False,
+    auth_token: str = None,
+    max_retries: int = 5,
+    retry_delay: float = 1.0,
 ):
-    client = Client(amp_server)
-    print(f'Connected to {amp_server}')
+    def connect():
+        return Client(amp_server, auth=auth, auth_token=auth_token)
+
+    client = retry_with_backoff(connect, max_retries=max_retries, initial_delay=retry_delay)
+    logger.info(f'Connected to {amp_server}')
 
     if label_csv and Path(label_csv).exists():
         client.configure_label('tokens', label_csv)
-        print(f'Loaded {len(client.label_manager.get_label("tokens"))} labels from {label_csv}')
+        logger.info(f'Loaded {len(client.label_manager.get_label("tokens"))} labels from {label_csv}')
         label_config = LabelJoinConfig(
             label_name='tokens', label_key_column='token_address', stream_key_column='token_address'
         )
@@ -71,25 +111,30 @@ def main(
     with open(query_file) as f:
         query = f.read()
 
-    if start_block is None:
-        start_block = get_latest_block(client, raw_dataset)
-
-    resume_watermark = create_watermark(client, raw_dataset, network, start_block) if start_block > 0 else None
-
-    print(f'Starting query from block {start_block}')
-    print(f'Streaming to Kafka: {kafka_brokers} -> {topic}\n')
+    if start_block is not None:
+        resume_watermark = create_watermark(client, raw_dataset, network, start_block) if start_block > 0 else None
+        logger.info(f'Starting query from block {start_block}')
+    else:
+        resume_watermark = None
+        logger.info('Resuming from LMDB state (or starting from latest if no state)')
+    logger.info(f'Streaming to Kafka: {kafka_brokers} -> {topic}')
 
     batch_count = 0
-    for result in client.sql(query).load(
-        'kafka', topic, stream=True, label_config=label_config, resume_watermark=resume_watermark
-    ):
-        if result.success:
-            batch_count += 1
-            if batch_count == 1 and result.metadata:
-                print(f'First batch: {result.metadata.get("block_ranges")}\n')
-            print(f'Batch {batch_count}: {result.rows_loaded} rows in {result.duration:.2f}s')
-        else:
-            print(f'Error: {result.error}')
+
+    def stream_batches():
+        nonlocal batch_count
+        for result in client.sql(query).load(
+            'kafka', topic, stream=True, label_config=label_config, resume_watermark=resume_watermark
+        ):
+            if result.success:
+                batch_count += 1
+                if batch_count == 1 and result.metadata:
+                    logger.info(f'First batch: {result.metadata.get("block_ranges")}')
+                logger.info(f'Batch {batch_count}: {result.rows_loaded} rows in {result.duration:.2f}s')
+            else:
+                logger.error(f'Batch error: {result.error}')
+
+    retry_with_backoff(stream_batches, max_retries=max_retries, initial_delay=retry_delay)
 
 
 if __name__ == '__main__':
@@ -105,13 +150,16 @@ if __name__ == '__main__':
     parser.add_argument('--start-block', type=int, help='Start from specific block (default: latest - 10)')
     parser.add_argument('--label-csv', help='Optional CSV for label joining')
     parser.add_argument('--state-dir', default='.amp_state', help='Directory for LMDB state storage')
+    parser.add_argument('--auth', action='store_true', help='Enable auth using ~/.amp/cache or AMP_AUTH_TOKEN env var')
+    parser.add_argument('--auth-token', help='Explicit auth token (works independently, does not require --auth)')
+    parser.add_argument('--max-retries', type=int, default=5, help='Max retries for connection failures (default: 5)')
+    parser.add_argument('--retry-delay', type=float, default=1.0, help='Initial retry delay in seconds (default: 1.0)')
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
     args = parser.parse_args()
 
-    if args.log_level:
-        logging.basicConfig(
-            level=getattr(logging, args.log_level), format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
-        )
+    logging.basicConfig(level=logging.WARNING, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
+    log_level = getattr(logging, args.log_level) if args.log_level else logging.INFO
+    logging.getLogger('amp').setLevel(log_level)
 
     try:
         main(
@@ -124,9 +172,13 @@ if __name__ == '__main__':
             start_block=args.start_block,
             label_csv=args.label_csv,
             state_dir=args.state_dir,
+            auth=args.auth,
+            auth_token=args.auth_token,
+            max_retries=args.max_retries,
+            retry_delay=args.retry_delay,
         )
     except KeyboardInterrupt:
-        print('\n\nStopped by user')
+        logger.info('Stopped by user')
     except Exception as e:
-        print(f'\nError: {e}')
+        logger.error(f'Fatal error: {e}')
         raise
