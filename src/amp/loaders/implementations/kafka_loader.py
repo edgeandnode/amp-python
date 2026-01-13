@@ -16,8 +16,9 @@ class KafkaConfig:
     client_id: str = 'amp-kafka-loader'
     key_field: Optional[str] = 'id'
 
-    def __post_init__(self):
-        pass
+
+KAFKA_CONFIG_FIELDS = {'bootstrap_servers', 'client_id', 'key_field'}
+RESERVED_CONFIG_FIELDS = {'resilience', 'state', 'checkpoint', 'idempotency'}
 
 
 class KafkaLoader(DataLoader[KafkaConfig]):
@@ -26,6 +27,9 @@ class KafkaLoader(DataLoader[KafkaConfig]):
     SUPPORTS_TRANSACTIONS = True
 
     def __init__(self, config: Dict[str, Any], label_manager=None) -> None:
+        self._extra_producer_config = {
+            k: v for k, v in config.items() if k not in KAFKA_CONFIG_FIELDS and k not in RESERVED_CONFIG_FIELDS
+        }
         super().__init__(config, label_manager)
         self._producer = None
 
@@ -34,12 +38,16 @@ class KafkaLoader(DataLoader[KafkaConfig]):
 
     def connect(self) -> None:
         try:
-            self._producer = KafkaProducer(
-                bootstrap_servers=self.config.bootstrap_servers,
-                client_id=self.config.client_id,
-                value_serializer=lambda x: json.dumps(x, default=str).encode('utf-8'),
-                transactional_id=f'{self.config.client_id}-txn',
-            )
+            producer_config = {
+                'bootstrap_servers': self.config.bootstrap_servers,
+                'client_id': self.config.client_id,
+                'value_serializer': lambda x: json.dumps(x, default=str).encode('utf-8'),
+                'transactional_id': f'{self.config.client_id}-txn',
+                **self._extra_producer_config,
+            }
+            if self._extra_producer_config:
+                self.logger.info(f'Extra Kafka config: {list(self._extra_producer_config.keys())}')
+            self._producer = KafkaProducer(**producer_config)
 
             self._producer.init_transactions()
 

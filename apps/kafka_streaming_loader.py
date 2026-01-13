@@ -2,6 +2,7 @@
 """Stream data to Kafka with resume watermark support."""
 
 import argparse
+import json
 import logging
 import os
 import time
@@ -82,6 +83,7 @@ def main(
     auth_token: str = None,
     max_retries: int = 5,
     retry_delay: float = 1.0,
+    kafka_config: dict = None,
 ):
     def connect():
         return Client(amp_server, auth=auth, auth_token=auth_token)
@@ -98,15 +100,14 @@ def main(
     else:
         label_config = None
 
-    client.configure_connection(
-        'kafka',
-        'kafka',
-        {
-            'bootstrap_servers': kafka_brokers,
-            'client_id': 'amp-kafka-loader',
-            'state': {'enabled': True, 'storage': 'lmdb', 'data_dir': state_dir},
-        },
-    )
+    connection_config = {
+        'bootstrap_servers': kafka_brokers,
+        'client_id': 'amp-kafka-loader',
+        'state': {'enabled': True, 'storage': 'lmdb', 'data_dir': state_dir},
+    }
+    if kafka_config:
+        connection_config.update(kafka_config)
+    client.configure_connection('kafka', 'kafka', connection_config)
 
     with open(query_file) as f:
         query = f.read()
@@ -154,12 +155,31 @@ if __name__ == '__main__':
     parser.add_argument('--auth-token', help='Explicit auth token (works independently, does not require --auth)')
     parser.add_argument('--max-retries', type=int, default=5, help='Max retries for connection failures (default: 5)')
     parser.add_argument('--retry-delay', type=float, default=1.0, help='Initial retry delay in seconds (default: 1.0)')
+    parser.add_argument(
+        '--kafka-config',
+        type=str,
+        help='Extra Kafka producer config as JSON. Uses kafka-python naming (underscores). '
+        'Example: \'{"compression_type": "lz4", "linger_ms": 5}\'. '
+        'See: https://kafka-python.readthedocs.io/en/master/apidoc/KafkaProducer.html',
+    )
+    parser.add_argument(
+        '--kafka-config-file',
+        type=Path,
+        help='Path to JSON file with extra Kafka producer config',
+    )
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
     log_level = getattr(logging, args.log_level) if args.log_level else logging.INFO
     logging.getLogger('amp').setLevel(log_level)
+
+    kafka_config = {}
+    if args.kafka_config_file:
+        kafka_config = json.loads(args.kafka_config_file.read_text())
+        logger.info(f'Loaded Kafka config from {args.kafka_config_file}')
+    if args.kafka_config:
+        kafka_config.update(json.loads(args.kafka_config))
 
     try:
         main(
@@ -176,6 +196,7 @@ if __name__ == '__main__':
             auth_token=args.auth_token,
             max_retries=args.max_retries,
             retry_delay=args.retry_delay,
+            kafka_config=kafka_config or None,
         )
     except KeyboardInterrupt:
         logger.info('Stopped by user')
