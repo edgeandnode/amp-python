@@ -6,7 +6,7 @@ import logging
 from typing import Dict, Iterator, List
 
 from .iterator import StreamingResultIterator
-from .types import BlockRange, ResponseBatch
+from .types import BlockRange, ResponseBatch, ResumeWatermark
 
 
 class ReorgAwareStream:
@@ -16,19 +16,31 @@ class ReorgAwareStream:
     This class monitors the block ranges in consecutive batches to detect chain
     reorganizations (reorgs). When a reorg is detected, a ResponseBatch with
     is_reorg=True is emitted containing the invalidation ranges.
+
+    Supports cross-restart reorg detection by initializing from a resume watermark
+    that contains the last known block hashes from persistent state.
     """
 
-    def __init__(self, stream_iterator: StreamingResultIterator):
+    def __init__(self, stream_iterator: StreamingResultIterator, resume_watermark: ResumeWatermark = None):
         """
         Initialize the reorg-aware stream.
 
         Args:
             stream_iterator: The underlying streaming result iterator
+            resume_watermark: Optional watermark from persistent state (LMDB) containing
+                              last known block ranges with hashes for cross-restart reorg detection
         """
         self.stream_iterator = stream_iterator
-        # Track the latest range for each network
         self.prev_ranges_by_network: Dict[str, BlockRange] = {}
         self.logger = logging.getLogger(__name__)
+
+        if resume_watermark:
+            for block_range in resume_watermark.ranges:
+                self.prev_ranges_by_network[block_range.network] = block_range
+                self.logger.debug(
+                    f'Initialized reorg detection for {block_range.network} '
+                    f'from block {block_range.end} hash {block_range.hash}'
+                )
 
     def __iter__(self) -> Iterator[ResponseBatch]:
         """Return iterator instance"""
@@ -89,9 +101,9 @@ class ReorgAwareStream:
         """
         Detect reorganizations by comparing current ranges with previous ranges.
 
-        A reorg is detected when:
-        - A range starts at or before the end of the previous range for the same network
-        - The range is different from the previous range
+        A reorg is detected when either:
+        1. Block number overlap: current range starts at or before previous range end
+        2. Hash mismatch: server's prev_hash doesn't match our stored hash (cross-restart detection)
 
         Args:
             current_ranges: Block ranges from the current batch
@@ -102,18 +114,39 @@ class ReorgAwareStream:
         invalidation_ranges = []
 
         for current_range in current_ranges:
-            # Get the previous range for this network
             prev_range = self.prev_ranges_by_network.get(current_range.network)
 
             if prev_range:
-                # Check if this indicates a reorg
+                is_reorg = False
+
+                # Detection 1: Block number overlap (original logic)
                 if current_range != prev_range and current_range.start <= prev_range.end:
-                    # Reorg detected - create invalidation range
-                    # Invalidate from the start of the current range to the max end
+                    is_reorg = True
+                    self.logger.info(
+                        f'Reorg detected via block overlap: {current_range.network} '
+                        f'current start {current_range.start} <= prev end {prev_range.end}'
+                    )
+
+                # Detection 2: Hash mismatch (cross-restart detection)
+                # Server sends prev_hash = hash of block before current range
+                # If it doesn't match our stored hash, chain has changed
+                elif (
+                    current_range.prev_hash is not None
+                    and prev_range.hash is not None
+                    and current_range.prev_hash != prev_range.hash
+                ):
+                    is_reorg = True
+                    self.logger.info(
+                        f'Reorg detected via hash mismatch: {current_range.network} '
+                        f'server prev_hash {current_range.prev_hash} != stored hash {prev_range.hash}'
+                    )
+
+                if is_reorg:
                     invalidation = BlockRange(
                         network=current_range.network,
                         start=current_range.start,
                         end=max(current_range.end, prev_range.end),
+                        hash=prev_range.hash,
                     )
                     invalidation_ranges.append(invalidation)
 

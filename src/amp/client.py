@@ -817,7 +817,7 @@ class Client:
 
             # Optionally wrap with reorg detection
             if with_reorg_detection:
-                stream_iterator = ReorgAwareStream(stream_iterator)
+                stream_iterator = ReorgAwareStream(stream_iterator, resume_watermark=resume_watermark)
                 self.logger.info('Reorg detection enabled for streaming query')
 
             # Start continuous loading with checkpoint support
