@@ -112,8 +112,8 @@ class TestKafkaLoaderIntegration:
         topic_name = 'test_reorg_topic'
 
         invalidation_ranges = [
-            BlockRange(network='ethereum', start=100, end=200),
-            BlockRange(network='polygon', start=500, end=600),
+            BlockRange(network='ethereum', start=100, end=200, hash='0xabc123'),
+            BlockRange(network='polygon', start=500, end=600, hash='0xdef456'),
         ]
 
         with loader:
@@ -138,6 +138,7 @@ class TestKafkaLoaderIntegration:
         assert msg1.value['network'] == 'ethereum'
         assert msg1.value['start_block'] == 100
         assert msg1.value['end_block'] == 200
+        assert msg1.value['last_valid_hash'] == '0xabc123'
 
         msg2 = messages[1]
         assert msg2.key == b'reorg:polygon'
@@ -145,6 +146,7 @@ class TestKafkaLoaderIntegration:
         assert msg2.value['network'] == 'polygon'
         assert msg2.value['start_block'] == 500
         assert msg2.value['end_block'] == 600
+        assert msg2.value['last_valid_hash'] == '0xdef456'
 
     def test_streaming_with_reorg(self, kafka_test_config):
         loader = KafkaLoader(kafka_test_config)
@@ -165,7 +167,7 @@ class TestKafkaLoaderIntegration:
         )
 
         reorg_response = ResponseBatch.reorg_batch(
-            invalidation_ranges=[BlockRange(network='ethereum', start=110, end=200)]
+            invalidation_ranges=[BlockRange(network='ethereum', start=110, end=200, hash='0xdef456')]
         )
 
         response3 = ResponseBatch.data_batch(
@@ -211,6 +213,7 @@ class TestKafkaLoaderIntegration:
         assert reorg_messages[0].value['network'] == 'ethereum'
         assert reorg_messages[0].value['start_block'] == 110
         assert reorg_messages[0].value['end_block'] == 200
+        assert reorg_messages[0].value['last_valid_hash'] == '0xdef456'
 
         data_ids = [msg.value['id'] for msg in data_messages]
         assert data_ids == [1, 2, 3, 4, 5, 6]
