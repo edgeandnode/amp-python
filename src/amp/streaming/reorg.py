@@ -107,6 +107,7 @@ class ReorgAwareStream:
                         network=current_range.network,
                         start=current_range.start,
                         end=max(current_range.end, prev_range.end),
+                        hash=prev_range.hash,
                     )
                     invalidation_ranges.append(invalidation)
 

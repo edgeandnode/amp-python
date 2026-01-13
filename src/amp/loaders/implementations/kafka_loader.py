@@ -151,6 +151,7 @@ class KafkaLoader(DataLoader[KafkaConfig]):
                     'network': invalidation_range.network,
                     'start_block': invalidation_range.start,
                     'end_block': invalidation_range.end,
+                    'last_valid_hash': invalidation_range.hash,
                 }
 
                 self._producer.send(
