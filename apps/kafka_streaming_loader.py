@@ -129,9 +129,12 @@ def main(
         ):
             if result.success:
                 batch_count += 1
-                if batch_count == 1 and result.metadata:
-                    logger.info(f'First batch: {result.metadata.get("block_ranges")}')
-                logger.info(f'Batch {batch_count}: {result.rows_loaded} rows in {result.duration:.2f}s')
+                block_info = ''
+                if result.metadata and result.metadata.get('block_ranges'):
+                    ranges = result.metadata['block_ranges']
+                    parts = [f'{r["network"]}:{r["start"]}-{r["end"]}' for r in ranges]
+                    block_info = f' [{", ".join(parts)}]'
+                logger.info(f'Batch {batch_count}: {result.rows_loaded} rows in {result.duration:.2f}s{block_info}')
             else:
                 logger.error(f'Batch error: {result.error}')
 
