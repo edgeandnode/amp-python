@@ -55,8 +55,12 @@ uv run python apps/kafka_streaming_loader.py \
 | `--amp-server URL` | `grpc://127.0.0.1:1602` | AMP server URL (use `grpc+tls://gateway.amp.staging.thegraph.com:443` for staging) |
 | `--kafka-brokers` | `localhost:9092` | Kafka broker addresses |
 | `--network NAME` | `anvil` | Network identifier (e.g., `ethereum-mainnet`, `anvil`) |
-| `--start-block N` | Latest block | Start streaming from this block |
+| `--start-block N` | Resume from state | Block number or `latest` to start from |
+| `--reorg-topic NAME` | Same as `--topic` | Separate topic for reorg messages |
 | `--label-csv PATH` | - | CSV file for data enrichment |
+| `--state-dir PATH` | `.amp_state` | Directory for LMDB state storage |
+| `--auth` | - | Enable auth using `~/.amp/cache` or `AMP_AUTH_TOKEN` env var |
+| `--auth-token TOKEN` | - | Explicit auth token |
 
 ## Message Format
 
@@ -81,13 +85,14 @@ On blockchain reorganizations, reorg events are sent:
 ```json
 {
   "_type": "reorg",
-  "network": "ethereum",
+  "network": "ethereum-mainnet",
   "start_block": 19000100,
-  "end_block": 19000110
+  "end_block": 19000110,
+  "last_valid_hash": "0xabc123..."
 }
 ```
 
-Consumers should invalidate data in the specified block range.
+Consumers should invalidate data in the specified block range. Use `--reorg-topic` to send these to a separate topic (useful for Snowflake Kafka connector which requires strict schema per topic).
 
 ## Examples
 
@@ -142,7 +147,7 @@ token_address,symbol,name,decimals
 
 Without the CSV file, `token_symbol`, `token_name`, and `token_decimals` will be `null` in the output.
 
-### Stream from Latest Blocks
+### Stream from Latest Block
 
 ```bash
 uv run python apps/kafka_streaming_loader.py \
@@ -151,7 +156,9 @@ uv run python apps/kafka_streaming_loader.py \
   --topic eth_live_logs \
   --query-file apps/queries/all_logs.sql \
   --raw-dataset 'edgeandnode/ethereum_mainnet' \
-  --network ethereum-mainnet
+  --network ethereum-mainnet \
+  --start-block latest \
+  --auth
 ```
 
 ### Local Development (Anvil)
@@ -183,18 +190,31 @@ uv run python apps/kafka_consumer.py anvil_logs localhost:9092 my-group
 
 ```bash
 # Build image
-docker build -f Dockerfile.kafka -t amp-kafka-loader .
+docker build -f Dockerfile.kafka -t amp-kafka .
 
-# Run loader
-docker run --rm \
-  --network host \
-  amp-kafka-loader \
-  --kafka-brokers localhost:9092 \
-  --topic my_topic \
-  --query-file apps/queries/my_query.sql \
-  --raw-dataset anvil \
-  --start-block 0
+# Run loader (with auth via env var)
+docker run -d \
+  --name amp-kafka-loader \
+  --network kafka-net \
+  -e AMP_AUTH_TOKEN \
+  -v $(pwd)/apps/queries:/data/queries \
+  -v $(pwd)/.amp_state:/data/state \
+  amp-kafka \
+  --amp-server 'grpc+tls://gateway.amp.staging.thegraph.com:443' \
+  --kafka-brokers kafka:9092 \
+  --topic erc20_transfers \
+  --query-file /data/queries/erc20_transfers_activity.sql \
+  --raw-dataset 'edgeandnode/ethereum_mainnet' \
+  --network ethereum-mainnet \
+  --state-dir /data/state \
+  --start-block latest \
+  --auth
+
+# Check logs
+docker logs -f amp-kafka-loader
 ```
+
+Note: Ensure your Kafka container is on the same Docker network (`kafka-net`) and advertises the correct listener (`kafka:9092`).
 
 ## Getting Help
 
