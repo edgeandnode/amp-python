@@ -84,6 +84,7 @@ def main(
     max_retries: int = 5,
     retry_delay: float = 1.0,
     kafka_config: dict = None,
+    reorg_topic: str = None,
 ):
     def connect():
         return Client(amp_server, auth=auth, auth_token=auth_token)
@@ -105,6 +106,8 @@ def main(
         'client_id': 'amp-kafka-loader',
         'state': {'enabled': True, 'storage': 'lmdb', 'data_dir': state_dir},
     }
+    if reorg_topic:
+        connection_config['reorg_topic'] = reorg_topic
     if kafka_config:
         connection_config.update(kafka_config)
     client.configure_connection('kafka', 'kafka', connection_config)
@@ -146,6 +149,7 @@ if __name__ == '__main__':
     parser.add_argument('--amp-server', default=os.getenv('AMP_SERVER_URL', 'grpc://127.0.0.1:1602'))
     parser.add_argument('--kafka-brokers', default='localhost:9092')
     parser.add_argument('--topic', required=True)
+    parser.add_argument('--reorg-topic', help='Separate topic for reorg messages (default: same as --topic)')
     parser.add_argument('--query-file', required=True)
     parser.add_argument(
         '--raw-dataset', required=True, help='Dataset name for the raw dataset of the chain (e.g., anvil, eth_firehose)'
@@ -200,6 +204,7 @@ if __name__ == '__main__':
             max_retries=args.max_retries,
             retry_delay=args.retry_delay,
             kafka_config=kafka_config or None,
+            reorg_topic=args.reorg_topic,
         )
     except KeyboardInterrupt:
         logger.info('Stopped by user')
