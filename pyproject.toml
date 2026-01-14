@@ -66,15 +66,20 @@ lmdb = [
     "lmdb>=1.4.0",
 ]
 
+kafka = [
+    "kafka-python>=2.2.15",
+]
+
 all_loaders = [
-    "psycopg2-binary>=2.9.0",       # PostgreSQL
-    "redis>=4.5.0",                 # Redis
-    "deltalake>=1.0.2",             # Delta Lake (consistent version)
+    "psycopg2-binary>=2.9.0", # PostgreSQL
+    "redis>=4.5.0", # Redis
+    "deltalake>=1.0.2", # Delta Lake (consistent version)
     "pyiceberg[sql-sqlite]>=0.10.0", # Apache Iceberg
     "pydantic>=2.0,<2.12",          # PyIceberg 0.10.0 compatibility
     "snowflake-connector-python>=4.0.0",  # Snowflake
     "snowpipe-streaming>=1.0.0",        # Snowpipe Streaming API
     "lmdb>=1.4.0",                  # LMDB
+    "kafka-python>=2.2.15",
 ]
 
 test = [

@@ -68,6 +68,7 @@ class DataLoader(ABC, Generic[TConfig]):
         state_config_dict = config.get('state', {})
         self.state_enabled = state_config_dict.get('enabled', True)
         self.state_storage = state_config_dict.get('storage', 'memory')
+        self.state_data_dir = state_config_dict.get('data_dir', '.amp_state')
         self.store_batch_id = state_config_dict.get('store_batch_id', True)
         self.store_full_metadata = state_config_dict.get('store_full_metadata', False)
 

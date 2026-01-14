@@ -49,13 +49,6 @@ class ReorgAwareStream:
             # Get next batch from underlying stream
             batch = next(self.stream_iterator)
 
-            # Note: ranges_complete flag is handled by CheckpointStore in load_stream_continuous
-            # Check if this batch contains only duplicate ranges
-            if self._is_duplicate_batch(batch.metadata.ranges):
-                self.logger.debug(f'Skipping duplicate batch with ranges: {batch.metadata.ranges}')
-                # Recursively call to get the next non-duplicate batch
-                return self.__next__()
-
             # Detect reorgs by comparing with previous ranges
             invalidation_ranges = self._detect_reorg(batch.metadata.ranges)
 
@@ -114,6 +107,7 @@ class ReorgAwareStream:
                         network=current_range.network,
                         start=current_range.start,
                         end=max(current_range.end, prev_range.end),
+                        hash=prev_range.hash,
                     )
                     invalidation_ranges.append(invalidation)
 
