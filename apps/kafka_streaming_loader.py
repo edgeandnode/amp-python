@@ -76,7 +76,7 @@ def main(
     query_file: str,
     raw_dataset: str,
     network: str,
-    start_block: int = None,
+    start_block: str = None,
     label_csv: str = None,
     state_dir: str = '.amp_state',
     auth: bool = False,
@@ -115,12 +115,17 @@ def main(
     with open(query_file) as f:
         query = f.read()
 
-    if start_block is not None:
-        resume_watermark = create_watermark(client, raw_dataset, network, start_block) if start_block > 0 else None
-        logger.info(f'Starting query from block {start_block}')
+    if start_block == 'latest':
+        block = get_latest_block(client, raw_dataset)
+        resume_watermark = create_watermark(client, raw_dataset, network, block)
+        logger.info(f'Starting from latest block {block}')
+    elif start_block is not None:
+        block = int(start_block)
+        resume_watermark = create_watermark(client, raw_dataset, network, block) if block > 0 else None
+        logger.info(f'Starting from block {block}')
     else:
         resume_watermark = None
-        logger.info('Resuming from LMDB state (or starting from latest if no state)')
+        logger.info('Resuming from LMDB state')
     logger.info(f'Streaming to Kafka: {kafka_brokers} -> {topic}')
 
     batch_count = 0
@@ -155,7 +160,7 @@ if __name__ == '__main__':
         '--raw-dataset', required=True, help='Dataset name for the raw dataset of the chain (e.g., anvil, eth_firehose)'
     )
     parser.add_argument('--network', default='anvil')
-    parser.add_argument('--start-block', type=int, help='Start from specific block (default: latest - 10)')
+    parser.add_argument('--start-block', type=str, help='Start from specific block number or "latest"')
     parser.add_argument('--label-csv', help='Optional CSV for label joining')
     parser.add_argument('--state-dir', default='.amp_state', help='Directory for LMDB state storage')
     parser.add_argument('--auth', action='store_true', help='Enable auth using ~/.amp/cache or AMP_AUTH_TOKEN env var')
