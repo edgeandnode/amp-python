@@ -148,6 +148,52 @@ class TestKafkaLoaderIntegration:
         assert msg2.value['end_block'] == 600
         assert msg2.value['last_valid_hash'] == '0xdef456'
 
+    def test_handle_reorg_separate_topic(self, kafka_test_config):
+        config_with_reorg_topic = {
+            **kafka_test_config,
+            'reorg_topic': 'test_reorg_events',
+        }
+        loader = KafkaLoader(config_with_reorg_topic)
+        data_topic = 'test_data_topic_separate'
+
+        batch = pa.RecordBatch.from_pydict({'id': [1, 2], 'value': [100, 200]})
+        invalidation_ranges = [
+            BlockRange(network='ethereum', start=100, end=200, hash='0xabc123'),
+        ]
+
+        with loader:
+            loader.load_batch(batch, data_topic)
+            loader._handle_reorg(invalidation_ranges, data_topic, 'test_connection')
+
+        data_consumer = KafkaConsumer(
+            data_topic,
+            bootstrap_servers=kafka_test_config['bootstrap_servers'],
+            auto_offset_reset='earliest',
+            consumer_timeout_ms=5000,
+            value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+        )
+        data_messages = list(data_consumer)
+        data_consumer.close()
+
+        assert len(data_messages) == 2
+        assert all(msg.value['_type'] == 'data' for msg in data_messages)
+
+        reorg_consumer = KafkaConsumer(
+            'test_reorg_events',
+            bootstrap_servers=kafka_test_config['bootstrap_servers'],
+            auto_offset_reset='earliest',
+            consumer_timeout_ms=5000,
+            value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+        )
+        reorg_messages = list(reorg_consumer)
+        reorg_consumer.close()
+
+        assert len(reorg_messages) == 1
+        assert reorg_messages[0].value['_type'] == 'reorg'
+        assert reorg_messages[0].value['network'] == 'ethereum'
+        assert reorg_messages[0].value['start_block'] == 100
+        assert reorg_messages[0].value['end_block'] == 200
+
     def test_streaming_with_reorg(self, kafka_test_config):
         loader = KafkaLoader(kafka_test_config)
         topic_name = 'test_streaming_topic'

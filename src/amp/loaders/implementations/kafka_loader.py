@@ -15,9 +15,10 @@ class KafkaConfig:
     bootstrap_servers: str
     client_id: str = 'amp-kafka-loader'
     key_field: Optional[str] = 'id'
+    reorg_topic: Optional[str] = None
 
 
-KAFKA_CONFIG_FIELDS = {'bootstrap_servers', 'client_id', 'key_field'}
+KAFKA_CONFIG_FIELDS = {'bootstrap_servers', 'client_id', 'key_field', 'reorg_topic'}
 RESERVED_CONFIG_FIELDS = {'resilience', 'state', 'checkpoint', 'idempotency'}
 
 
@@ -126,14 +127,14 @@ class KafkaLoader(DataLoader[KafkaConfig]):
 
     def _handle_reorg(self, invalidation_ranges: List[BlockRange], table_name: str, connection_name: str) -> None:
         """
-        Handle blockchain reorganization by sending reorg events to the same topic.
+        Handle blockchain reorganization by sending reorg events to Kafka.
 
         Reorg events are sent as special messages with _type='reorg' so consumers
         can detect and handle invalidated block ranges.
 
         Args:
             invalidation_ranges: List of block ranges to invalidate
-            table_name: The Kafka topic name to send reorg events to
+            table_name: The Kafka topic name (used if reorg_topic not configured)
             connection_name: Connection identifier (unused for Kafka, but required by base class)
         """
         if not invalidation_ranges:
@@ -142,6 +143,8 @@ class KafkaLoader(DataLoader[KafkaConfig]):
         if not self._producer:
             self.logger.warning('Producer not connected, skipping reorg handling')
             return
+
+        reorg_topic = self.config.reorg_topic or table_name
 
         self._producer.begin_transaction()
         try:
@@ -155,16 +158,16 @@ class KafkaLoader(DataLoader[KafkaConfig]):
                 }
 
                 self._producer.send(
-                    topic=table_name, key=f'reorg:{invalidation_range.network}'.encode('utf-8'), value=reorg_message
+                    topic=reorg_topic, key=f'reorg:{invalidation_range.network}'.encode('utf-8'), value=reorg_message
                 )
 
                 self.logger.info(
-                    f'Sent reorg event to {table_name}: '
+                    f'Sent reorg event to {reorg_topic}: '
                     f'{invalidation_range.network} blocks {invalidation_range.start}-{invalidation_range.end}'
                 )
 
             self._producer.commit_transaction()
-            self.logger.info(f'Committed {len(invalidation_ranges)} reorg events to {table_name}')
+            self.logger.info(f'Committed {len(invalidation_ranges)} reorg events to {reorg_topic}')
 
         except Exception as e:
             self._producer.abort_transaction()
