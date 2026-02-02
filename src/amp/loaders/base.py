@@ -11,6 +11,7 @@ from typing import Any, Dict, Generic, Iterator, List, Optional, Set, TypeVar
 
 import pyarrow as pa
 
+from ..metrics import get_metrics
 from ..streaming.resilience import (
     AdaptiveRateLimiter,
     BackPressureConfig,
@@ -148,6 +149,18 @@ class DataLoader(ABC, Generic[TConfig]):
         """Alias for disconnect() for backward compatibility"""
         self.disconnect()
 
+    def _record_connection_opened(self) -> None:
+        """Record that a connection was opened. Call this after establishing connection."""
+        loader_type = self.__class__.__name__.replace('Loader', '').lower()
+        metrics = get_metrics()
+        metrics.active_connections.labels(loader=loader_type, target='default').inc()
+
+    def _record_connection_closed(self) -> None:
+        """Record that a connection was closed. Call this after closing connection."""
+        loader_type = self.__class__.__name__.replace('Loader', '').lower()
+        metrics = get_metrics()
+        metrics.active_connections.labels(loader=loader_type, target='default').dec()
+
     @abstractmethod
     def _load_batch_impl(self, batch: pa.RecordBatch, table_name: str, **kwargs) -> int:
         """
@@ -227,6 +240,16 @@ class DataLoader(ABC, Generic[TConfig]):
                 f'Transient error loading batch (attempt {backoff.attempt}/{self.retry_config.max_retries}): '
                 f'{last_error}. Retrying in {delay:.1f}s...'
             )
+            # Record retry metric
+            loader_type = self.__class__.__name__.replace('Loader', '').lower()
+            metrics = get_metrics()
+            # Determine retry reason
+            reason = 'transient'
+            if '429' in last_error or 'rate limit' in last_error.lower():
+                reason = 'rate_limit'
+            elif 'timeout' in last_error.lower() or 'timed out' in last_error.lower():
+                reason = 'timeout'
+            metrics.retry_attempts.labels(loader=loader_type, operation='load_batch', reason=reason).inc()
             time.sleep(delay)
 
     def _try_load_batch(self, batch: pa.RecordBatch, table_name: str, **kwargs) -> LoadResult:
@@ -320,24 +343,39 @@ class DataLoader(ABC, Generic[TConfig]):
 
             duration = time.time() - start_time
 
+            # Record metrics for successful batch load
+            loader_type = self.__class__.__name__.replace('Loader', '').lower()
+            metrics = get_metrics()
+            metrics.records_processed.labels(loader=loader_type, table=table_name, connection=connection_name).inc(
+                rows_loaded
+            )
+            metrics.batch_sizes.labels(loader=loader_type, table=table_name).observe(rows_loaded)
+            metrics.processing_latency.labels(loader=loader_type, operation='load_batch').observe(duration)
+            if hasattr(batch, 'nbytes'):
+                metrics.bytes_processed.labels(loader=loader_type, table=table_name).inc(batch.nbytes)
+
             return LoadResult(
                 rows_loaded=rows_loaded,
                 duration=duration,
                 ops_per_second=round(rows_loaded / duration, 2) if duration > 0 else 0,
                 table_name=table_name,
-                loader_type=self.__class__.__name__.replace('Loader', '').lower(),
+                loader_type=loader_type,
                 success=True,
                 metadata=self._get_batch_metadata(batch, duration, **kwargs),
             )
 
         except Exception as e:
             self.logger.error(f'Failed to load batch: {str(e)}')
+            # Record error metrics
+            loader_type = self.__class__.__name__.replace('Loader', '').lower()
+            metrics = get_metrics()
+            metrics.errors.labels(loader=loader_type, error_type=type(e).__name__, table=table_name).inc()
             return LoadResult(
                 rows_loaded=0,
                 duration=time.time() - start_time,
                 ops_per_second=0,
                 table_name=table_name,
-                loader_type=self.__class__.__name__.replace('Loader', '').lower(),
+                loader_type=loader_type,
                 success=False,
                 error=str(e),
             )
@@ -575,8 +613,14 @@ class DataLoader(ABC, Generic[TConfig]):
 
             # Invalidate affected batches from state store
             if response.invalidation_ranges:
+                # Record reorg metrics
+                loader_type = self.__class__.__name__.replace('Loader', '').lower()
+                metrics = get_metrics()
+
                 # Log reorg details
                 for range_obj in response.invalidation_ranges:
+                    # Record reorg event per network
+                    metrics.reorg_events.labels(loader=loader_type, network=range_obj.network, table=table_name).inc()
                     self.logger.warning(
                         f'Reorg detected on {range_obj.network}: blocks {range_obj.start}-{range_obj.end} invalidated'
                     )
