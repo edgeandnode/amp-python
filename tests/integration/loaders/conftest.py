@@ -40,6 +40,7 @@ class LoaderTestConfig(ABC):
     supports_streaming: bool = True
     supports_multi_network: bool = True
     supports_null_values: bool = True
+    requires_existing_table: bool = True  # False for loaders that auto-create (DeltaLake, LMDB)
 
     @abstractmethod
     def get_row_count(self, loader: DataLoader, table_name: str) -> int:

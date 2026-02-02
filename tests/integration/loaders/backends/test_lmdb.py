@@ -29,6 +29,7 @@ class LMDBTestConfig(LoaderTestConfig):
     supports_streaming = True
     supports_multi_network = True
     supports_null_values = True
+    requires_existing_table = False  # LMDB auto-creates databases
 
     def get_row_count(self, loader: LMDBLoader, table_name: str) -> int:
         """Get row count from LMDB database"""

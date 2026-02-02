@@ -133,6 +133,9 @@ class BaseLoaderTests(LoaderTestBase):
     @pytest.mark.integration
     def test_error_handling(self, loader, small_test_data):
         """Test error handling scenarios"""
+        if not self.config.requires_existing_table:
+            pytest.skip('Loader auto-creates tables, cannot test missing table error')
+
         with loader:
             # Test loading to non-existent table without create_table
             result = loader.load_table(small_test_data, 'non_existent_table', create_table=False)
