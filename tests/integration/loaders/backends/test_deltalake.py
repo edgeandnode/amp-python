@@ -25,13 +25,22 @@ class DeltaLakeTestConfig(LoaderTestConfig):
     """DeltaLake-specific test configuration"""
 
     loader_class = DeltaLakeLoader
-    config_fixture_name = 'delta_basic_config'
 
     supports_overwrite = True
     supports_streaming = True
     supports_multi_network = True
     supports_null_values = True
     requires_existing_table = False  # DeltaLake auto-creates tables
+
+    def __init__(self, config_fixture_name='delta_basic_config'):
+        """
+        Initialize DeltaLake test config.
+
+        Args:
+            config_fixture_name: Name of the pytest fixture providing loader config
+                                 (default: 'delta_basic_config' for core tests)
+        """
+        self.config_fixture_name = config_fixture_name
 
     def get_row_count(self, loader: DeltaLakeLoader, table_name: str) -> int:
         """Get row count from DeltaLake table"""
@@ -83,7 +92,7 @@ class TestDeltaLakeCore(BaseLoaderTests):
 class TestDeltaLakeStreaming(BaseStreamingTests):
     """DeltaLake streaming tests (inherited from base)"""
 
-    config = DeltaLakeTestConfig()
+    config = DeltaLakeTestConfig('delta_streaming_config')  # Use non-partitioned config
 
 
 @pytest.mark.delta_lake

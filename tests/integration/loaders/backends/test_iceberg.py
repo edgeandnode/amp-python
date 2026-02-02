@@ -22,12 +22,21 @@ class IcebergTestConfig(LoaderTestConfig):
     """Iceberg-specific test configuration"""
 
     loader_class = IcebergLoader
-    config_fixture_name = 'iceberg_basic_config'
 
     supports_overwrite = True
     supports_streaming = True
     supports_multi_network = True
     supports_null_values = True
+
+    def __init__(self, config_fixture_name='iceberg_basic_config'):
+        """
+        Initialize Iceberg test config.
+
+        Args:
+            config_fixture_name: Name of the pytest fixture providing loader config
+                                 (default: 'iceberg_basic_config' for core tests)
+        """
+        self.config_fixture_name = config_fixture_name
 
     def get_row_count(self, loader: IcebergLoader, table_name: str) -> int:
         """Get row count from Iceberg table"""
@@ -78,7 +87,7 @@ class TestIcebergCore(BaseLoaderTests):
 class TestIcebergStreaming(BaseStreamingTests):
     """Iceberg streaming tests (inherited from base)"""
 
-    config = IcebergTestConfig()
+    config = IcebergTestConfig('iceberg_streaming_config')  # Use non-partitioned config
 
 
 @pytest.mark.iceberg

@@ -244,6 +244,20 @@ def delta_partitioned_config(delta_test_env):
 
 
 @pytest.fixture
+def delta_streaming_config(delta_test_env):
+    """Delta Lake configuration for streaming tests (no partitioning)"""
+    return {
+        'table_path': str(Path(delta_test_env) / 'streaming_table'),
+        'partition_by': [],  # No partitioning for streaming tests
+        'optimize_after_write': True,
+        'vacuum_after_write': False,
+        'schema_evolution': True,
+        'merge_schema': True,
+        'storage_options': {},
+    }
+
+
+@pytest.fixture
 def delta_temp_config(delta_test_env):
     """Temporary Delta Lake configuration with unique path"""
     unique_path = str(Path(delta_test_env) / f'temp_table_{datetime.now().strftime("%Y%m%d_%H%M%S_%f")}')
@@ -284,6 +298,24 @@ def iceberg_basic_config(iceberg_test_env):
         'create_table': True,
         'schema_evolution': True,
         'batch_size': 10000,
+    }
+
+
+@pytest.fixture
+def iceberg_streaming_config(iceberg_test_env):
+    """Iceberg configuration for streaming tests (no partitioning)"""
+    return {
+        'catalog_config': {
+            'type': 'sql',
+            'uri': f'sqlite:///{iceberg_test_env}/streaming_catalog.db',
+            'warehouse': f'file://{iceberg_test_env}/streaming_warehouse',
+        },
+        'namespace': 'test_data',
+        'create_namespace': True,
+        'create_table': True,
+        'schema_evolution': True,
+        'batch_size': 10000,
+        'partition_spec': [],  # No partitioning for streaming tests
     }
 
 
