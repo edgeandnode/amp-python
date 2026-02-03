@@ -474,7 +474,7 @@ class TestReorgDetection:
 
         assert len(invalidations) == 1
         assert invalidations[0].network == 'ethereum'
-        assert invalidations[0].start == 180
+        assert invalidations[0].start == 100  # prev_range.start
         assert invalidations[0].end == 280  # max(280, 200)
 
     def test_detect_reorg_multiple_networks(self):
@@ -504,12 +504,12 @@ class TestReorgDetection:
 
         # Check ethereum reorg
         eth_inv = next(inv for inv in invalidations if inv.network == 'ethereum')
-        assert eth_inv.start == 150
+        assert eth_inv.start == 100  # prev_range.start
         assert eth_inv.end == 250
 
         # Check polygon reorg
         poly_inv = next(inv for inv in invalidations if inv.network == 'polygon')
-        assert poly_inv.start == 140
+        assert poly_inv.start == 50  # prev_range.start
         assert poly_inv.end == 240
 
     def test_detect_reorg_same_range_no_reorg(self):
@@ -546,7 +546,7 @@ class TestReorgDetection:
         invalidations = stream._detect_reorg(current_ranges)
 
         assert len(invalidations) == 1
-        assert invalidations[0].start == 250
+        assert invalidations[0].start == 100  # prev_range.start
         assert invalidations[0].end == 300  # max(280, 300)
 
     def test_is_duplicate_batch_all_same(self):

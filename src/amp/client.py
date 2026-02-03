@@ -791,42 +791,62 @@ class Client:
                 self.logger.warning(f'Failed to load checkpoint, starting from beginning: {e}')
 
         try:
-            # Execute streaming query with Flight SQL
-            # Create a CommandStatementQuery message
-            command_query = FlightSql_pb2.CommandStatementQuery()
-            command_query.query = query
-
-            # Add resume watermark if provided
-            if resume_watermark:
-                # TODO: Add watermark to query metadata when Flight SQL supports it
-                self.logger.info(f'Resuming stream from watermark: {resume_watermark}')
-
-            # Wrap the CommandStatementQuery in an Any type
-            any_command = Any()
-            any_command.Pack(command_query)
-            cmd = any_command.SerializeToString()
-
-            self.logger.info('Establishing Flight SQL connection...')
-            flight_descriptor = flight.FlightDescriptor.for_command(cmd)
-            info = self.conn.get_flight_info(flight_descriptor)
-            reader = self.conn.do_get(info.endpoints[0].ticket)
-
-            # Create streaming iterator
-            stream_iterator = StreamingResultIterator(reader)
-            self.logger.info('Stream connection established, waiting for data...')
-
-            # Optionally wrap with reorg detection
-            if with_reorg_detection:
-                stream_iterator = ReorgAwareStream(stream_iterator, resume_watermark=resume_watermark)
-                self.logger.info('Reorg detection enabled for streaming query')
-
-            # Start continuous loading with checkpoint support
             with loader_instance:
-                self.logger.info(f'Starting continuous load to {destination}. Press Ctrl+C to stop.')
-                # Pass connection_name for checkpoint saving
-                yield from loader_instance.load_stream_continuous(
-                    stream_iterator, destination, connection_name=connection_name, **load_config.__dict__
-                )
+                while True:
+                    # Execute streaming query with Flight SQL
+                    # Create a CommandStatementQuery message
+                    command_query = FlightSql_pb2.CommandStatementQuery()
+                    command_query.query = query
+
+                    # Add resume watermark if provided
+                    if resume_watermark:
+                        # TODO: Add watermark to query metadata when Flight SQL supports it
+                        self.logger.info(f'Resuming stream from watermark: {resume_watermark}')
+
+                    # Wrap the CommandStatementQuery in an Any type
+                    any_command = Any()
+                    any_command.Pack(command_query)
+                    cmd = any_command.SerializeToString()
+
+                    self.logger.info('Establishing Flight SQL connection...')
+                    flight_descriptor = flight.FlightDescriptor.for_command(cmd)
+                    info = self.conn.get_flight_info(flight_descriptor)
+                    reader = self.conn.do_get(info.endpoints[0].ticket)
+
+                    # Create streaming iterator
+                    stream_iterator = StreamingResultIterator(reader)
+                    self.logger.info('Stream connection established, waiting for data...')
+
+                    # Optionally wrap with reorg detection
+                    if with_reorg_detection:
+                        stream_iterator = ReorgAwareStream(stream_iterator, resume_watermark=resume_watermark)
+                        self.logger.info('Reorg detection enabled for streaming query')
+
+                    # Start continuous loading with checkpoint support
+                    self.logger.info(f'Starting continuous load to {destination}. Press Ctrl+C to stop.')
+
+                    reorg_result = None
+                    # Pass connection_name for checkpoint saving
+                    for result in loader_instance.load_stream_continuous(
+                        stream_iterator, destination, connection_name=connection_name, **load_config.__dict__
+                    ):
+                        yield result
+                        # Break on reorg to restart stream
+                        if result.is_reorg:
+                            reorg_result = result
+                            break
+
+                    # Check if we need to restart due to reorg
+                    if reorg_result:
+                        # Close the old stream before restarting
+                        if hasattr(stream_iterator, 'close'):
+                            stream_iterator.close()
+                        self.logger.info('Reorg detected, restarting stream with new resume position...')
+                        resume_watermark = loader_instance.state_store.get_resume_position(connection_name, destination)
+                        continue
+
+                    # Normal exit - stream completed
+                    break
 
         except Exception as e:
             self.logger.error(f'Streaming query failed: {e}')

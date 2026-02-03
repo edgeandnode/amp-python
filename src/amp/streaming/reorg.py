@@ -75,19 +75,15 @@ class ReorgAwareStream:
             for range in batch.metadata.ranges:
                 self.prev_ranges_by_network[range.network] = range
 
-            # If we detected a reorg, yield the reorg notification first
+            # If we detected a reorg, return reorg batch
+            # Caller decides whether to stop/restart or continue
             if invalidation_ranges:
                 self.logger.info(f'Reorg detected with {len(invalidation_ranges)} invalidation ranges')
-                # Store the batch to yield after the reorg
-                self._pending_batch = batch
+                # Clear memory for affected networks so restart works correctly
+                for inv_range in invalidation_ranges:
+                    if inv_range.network in self.prev_ranges_by_network:
+                        del self.prev_ranges_by_network[inv_range.network]
                 return ResponseBatch.reorg_batch(invalidation_ranges)
-
-            # Check if we have a pending batch from a previous reorg detection
-            # REVIEW: I think we should remove this
-            if hasattr(self, '_pending_batch'):
-                pending = self._pending_batch
-                delattr(self, '_pending_batch')
-                return pending
 
             # Normal case - just return the data batch
             return batch
@@ -144,7 +140,7 @@ class ReorgAwareStream:
                 if is_reorg:
                     invalidation = BlockRange(
                         network=current_range.network,
-                        start=current_range.start,
+                        start=prev_range.start,
                         end=max(current_range.end, prev_range.end),
                         hash=prev_range.hash,
                     )
