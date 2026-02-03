@@ -347,7 +347,7 @@ class DataLoader(ABC, Generic[TConfig]):
         start_time = time.time()
         batch_size = kwargs.get('batch_size', getattr(self, 'batch_size', 10000))
 
-# Handle overwrite mode ONCE before processing batches
+        # Handle overwrite mode ONCE before processing batches
         mode = kwargs.get('mode', LoadMode.APPEND)
         if mode == LoadMode.OVERWRITE and hasattr(self, '_clear_table'):
             self._clear_table(table_name)

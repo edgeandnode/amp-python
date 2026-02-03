@@ -1,6 +1,5 @@
 # src/amp/loaders/implementations/iceberg_loader.py
 
-import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -643,7 +642,7 @@ class IcebergLoader(DataLoader[IcebergStorageConfig]):
 
             self.logger.info(
                 f"Blockchain reorg deleted {deleted_count} rows from Iceberg table '{table_name}' "
-                f"({len(all_affected_batch_ids)} batch IDs). "
+                f'({len(all_affected_batch_ids)} batch IDs). '
                 f'New snapshot created with {filtered_table.num_rows} remaining rows.'
             )
 

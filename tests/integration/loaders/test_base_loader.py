@@ -83,15 +83,17 @@ class BaseLoaderTests(LoaderTestBase):
 
             # Append additional data with DIFFERENT keys (6-10 instead of 1-5)
             # This avoids duplicate key conflicts in key-value stores (LMDB, Redis)
-            additional_data = pa.Table.from_pydict({
-                'id': [6, 7, 8, 9, 10],
-                'name': ['f', 'g', 'h', 'i', 'j'],
-                'value': [60.6, 70.7, 80.8, 90.9, 100.0],
-                'year': [2024, 2024, 2024, 2024, 2024],
-                'month': [1, 1, 1, 1, 1],
-                'day': [6, 7, 8, 9, 10],
-                'active': [False, True, False, True, False],
-            })
+            additional_data = pa.Table.from_pydict(
+                {
+                    'id': [6, 7, 8, 9, 10],
+                    'name': ['f', 'g', 'h', 'i', 'j'],
+                    'value': [60.6, 70.7, 80.8, 90.9, 100.0],
+                    'year': [2024, 2024, 2024, 2024, 2024],
+                    'month': [1, 1, 1, 1, 1],
+                    'day': [6, 7, 8, 9, 10],
+                    'active': [False, True, False, True, False],
+                }
+            )
             result = loader.load_table(additional_data, test_table_name, mode=LoadMode.APPEND)
             assert result.success == True
             assert result.rows_loaded == 5

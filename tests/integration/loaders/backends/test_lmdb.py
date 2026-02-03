@@ -303,15 +303,17 @@ class TestLMDBSpecific:
                 assert count == 5
 
             # Can append more (use different IDs to avoid key conflicts in key-value store)
-            additional_data = pa.Table.from_pydict({
-                'id': [6, 7, 8, 9, 10],
-                'name': ['f', 'g', 'h', 'i', 'j'],
-                'value': [60.6, 70.7, 80.8, 90.9, 100.0],
-                'year': [2024, 2024, 2024, 2024, 2024],
-                'month': [1, 1, 1, 1, 1],
-                'day': [6, 7, 8, 9, 10],
-                'active': [False, True, False, True, False],
-            })
+            additional_data = pa.Table.from_pydict(
+                {
+                    'id': [6, 7, 8, 9, 10],
+                    'name': ['f', 'g', 'h', 'i', 'j'],
+                    'value': [60.6, 70.7, 80.8, 90.9, 100.0],
+                    'year': [2024, 2024, 2024, 2024, 2024],
+                    'month': [1, 1, 1, 1, 1],
+                    'day': [6, 7, 8, 9, 10],
+                    'active': [False, True, False, True, False],
+                }
+            )
             result2 = loader2.load_table(additional_data, 'test_table', mode=LoadMode.APPEND)
             assert result2.success == True
 

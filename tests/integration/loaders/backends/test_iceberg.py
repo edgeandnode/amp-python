@@ -106,7 +106,7 @@ class TestIcebergSpecific:
             namespaces = loader._catalog.list_namespaces()
             assert any(ns == (loader.config.namespace,) for ns in namespaces)
 
-    @pytest.mark.skip(reason="Partitioning with list format not yet fully implemented")
+    @pytest.mark.skip(reason='Partitioning with list format not yet fully implemented')
     def test_partitioning(self, iceberg_basic_config, small_test_data):
         """Test Iceberg partitioning (partition spec)"""
 
