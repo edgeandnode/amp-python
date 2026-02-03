@@ -66,6 +66,10 @@ lmdb = [
     "lmdb>=1.4.0",
 ]
 
+metrics = [
+    "prometheus-client>=0.20.0",
+]
+
 all_loaders = [
     "psycopg2-binary>=2.9.0",       # PostgreSQL
     "redis>=4.5.0",                 # Redis
@@ -75,6 +79,7 @@ all_loaders = [
     "snowflake-connector-python>=4.0.0",  # Snowflake
     "snowpipe-streaming>=1.0.0",        # Snowpipe Streaming API
     "lmdb>=1.4.0",                  # LMDB
+    "prometheus-client>=0.20.0",    # Metrics
 ]
 
 test = [

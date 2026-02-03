@@ -60,3 +60,18 @@ data/
 # Build artifacts
 *.tar.gz
 *.zip
+
+# Mycelium coordination files (not part of project)
+# Remove these lines if you want to commit mycelium to the project
+mycelium.py
+scripts/forager/
+signals/
+substrate/
+audit/
+logs/
+map.yaml
+pyproject.toml
+CLAUDE.md
+AGENT-QUICKSTART.md
+docs/FORAGER-*.md
+*.vesicle
