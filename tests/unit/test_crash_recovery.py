@@ -98,12 +98,6 @@ class TestCrashRecovery:
         assert second_call[0][0][0].network == 'polygon'
         assert second_call[0][0][0].start == 2011
 
-    def test_rewind_with_table_name_none(self, mock_loader):
-        """Should return early when table_name=None (not yet implemented)"""
-        mock_loader._rewind_to_watermark(table_name=None, connection_name='test_conn')
-
-        mock_loader.state_store.get_resume_position.assert_not_called()
-
     def test_rewind_uses_default_connection_name(self, mock_loader):
         """Should use default connection name from loader class"""
         watermark = ResumeWatermark(ranges=[BlockRange(network='ethereum', start=1000, end=1010, hash='0xabc')])
