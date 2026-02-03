@@ -26,6 +26,16 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, Optional
 
 # Optional prometheus_client import
+# Custom histogram buckets for different pipeline phases
+# Fetch phase - network latency, can be slow for large queries
+FETCH_BUCKETS = (0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0)  # 100ms to 2min
+
+# Transform phase - CPU-bound, typically fast
+TRANSFORM_BUCKETS = (0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5)  # 0.1ms to 500ms
+
+# Write phase - I/O bound, varies by target
+WRITE_BUCKETS = (0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0)  # 1ms to 5s
+
 try:
     from prometheus_client import (
         REGISTRY,
@@ -277,6 +287,105 @@ class AmpMetrics:
             subsystem=ss,
         )
 
+        # Flight SQL metrics
+        self.flight_fetch_latency: Histogram = self._get_or_create_metric(
+            Histogram,
+            name='flight_fetch_latency_seconds',
+            documentation='Time spent in Flight SQL operations',
+            labelnames=['operation'],  # get_info, do_get, read_chunk
+            namespace=ns,
+            subsystem=ss,
+            buckets=FETCH_BUCKETS,
+        )
+
+        self.flight_bytes_received: Counter = self._get_or_create_metric(
+            Counter,
+            name='flight_bytes_received_total',
+            documentation='Total bytes received from Flight SQL',
+            labelnames=['query_type'],
+            namespace=ns,
+            subsystem=ss,
+        )
+
+        self.flight_batches_received: Counter = self._get_or_create_metric(
+            Counter,
+            name='flight_batches_received_total',
+            documentation='Total Arrow batches received from Flight SQL',
+            labelnames=['query_type'],
+            namespace=ns,
+            subsystem=ss,
+        )
+
+        # Streaming worker metrics
+        self.streaming_workers_active: Gauge = self._get_or_create_metric(
+            Gauge,
+            name='streaming_workers_active',
+            documentation='Number of currently active streaming workers',
+            labelnames=['executor_id'],
+            namespace=ns,
+            subsystem=ss,
+        )
+
+        self.streaming_workers_total: Gauge = self._get_or_create_metric(
+            Gauge,
+            name='streaming_workers_total',
+            documentation='Total number of streaming workers configured',
+            labelnames=['executor_id'],
+            namespace=ns,
+            subsystem=ss,
+        )
+
+        self.streaming_batch_wait: Histogram = self._get_or_create_metric(
+            Histogram,
+            name='streaming_batch_wait_seconds',
+            documentation='Time spent waiting for batches in streaming',
+            labelnames=['partition_id'],
+            namespace=ns,
+            subsystem=ss,
+            buckets=FETCH_BUCKETS,
+        )
+
+        self.streaming_worker_processing: Histogram = self._get_or_create_metric(
+            Histogram,
+            name='streaming_worker_processing_seconds',
+            documentation='Time spent processing batches in streaming workers',
+            labelnames=['partition_id'],
+            namespace=ns,
+            subsystem=ss,
+            buckets=TRANSFORM_BUCKETS,
+        )
+
+        # Phase-level latency (separate metrics with custom buckets per phase)
+        self.phase_latency_fetch: Histogram = self._get_or_create_metric(
+            Histogram,
+            name='phase_latency_fetch_seconds',
+            documentation='Time spent in fetch phase',
+            labelnames=['loader'],
+            namespace=ns,
+            subsystem=ss,
+            buckets=FETCH_BUCKETS,
+        )
+
+        self.phase_latency_transform: Histogram = self._get_or_create_metric(
+            Histogram,
+            name='phase_latency_transform_seconds',
+            documentation='Time spent in transform phase',
+            labelnames=['loader'],
+            namespace=ns,
+            subsystem=ss,
+            buckets=TRANSFORM_BUCKETS,
+        )
+
+        self.phase_latency_write: Histogram = self._get_or_create_metric(
+            Histogram,
+            name='phase_latency_write_seconds',
+            documentation='Time spent in write phase',
+            labelnames=['loader'],
+            namespace=ns,
+            subsystem=ss,
+            buckets=WRITE_BUCKETS,
+        )
+
     def _get_or_create_metric(self, metric_class: type, name: str, **kwargs) -> Any:
         """Get an existing metric from the registry or create a new one.
 
@@ -287,8 +396,12 @@ class AmpMetrics:
         ns = kwargs.get('namespace', '')
         ss = kwargs.get('subsystem', '')
 
-        # Build the full metric name as Prometheus does (without _total suffix)
-        full_name = '_'.join(filter(None, [ns, ss, name.replace('_total', '')]))
+        # Build the full metric name as Prometheus does
+        # Only strip _total suffix for Counter metrics (prometheus auto-adds it)
+        metric_name = name
+        if metric_class == Counter and name.endswith('_total'):
+            metric_name = name[:-6]  # Strip '_total' suffix
+        full_name = '_'.join(filter(None, [ns, ss, metric_name]))
 
         try:
             return metric_class(name=name, **kwargs)
@@ -313,6 +426,19 @@ class AmpMetrics:
         self.reorg_events = NullMetric()
         self.retry_attempts = NullMetric()
         self.build_info = NullMetric()
+        # Flight SQL metrics
+        self.flight_fetch_latency = NullMetric()
+        self.flight_bytes_received = NullMetric()
+        self.flight_batches_received = NullMetric()
+        # Streaming worker metrics
+        self.streaming_workers_active = NullMetric()
+        self.streaming_workers_total = NullMetric()
+        self.streaming_batch_wait = NullMetric()
+        self.streaming_worker_processing = NullMetric()
+        # Phase-level latency
+        self.phase_latency_fetch = NullMetric()
+        self.phase_latency_transform = NullMetric()
+        self.phase_latency_write = NullMetric()
 
     @contextmanager
     def track_operation(
@@ -386,6 +512,19 @@ class AmpMetrics:
                     'reorg_events',
                     'retry_attempts',
                     'build_info',
+                    # Flight SQL metrics
+                    'flight_fetch_latency',
+                    'flight_bytes_received',
+                    'flight_batches_received',
+                    # Streaming worker metrics
+                    'streaming_workers_active',
+                    'streaming_workers_total',
+                    'streaming_batch_wait',
+                    'streaming_worker_processing',
+                    # Phase latency metrics
+                    'phase_latency_fetch',
+                    'phase_latency_transform',
+                    'phase_latency_write',
                 ]
                 for metric_name in metrics_to_unregister:
                     metric = getattr(cls._instance, metric_name, None)

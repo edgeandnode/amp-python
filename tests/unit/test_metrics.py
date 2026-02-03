@@ -187,6 +187,69 @@ class TestAmpMetricsWithPrometheus:
         metrics.processing_latency.labels(loader='test', operation='load').observe(0.5)
         metrics.batch_sizes.labels(loader='test', table='users').observe(1000)
 
+    @pytest.mark.skipif(not is_prometheus_available(), reason='prometheus_client not installed')
+    def test_flight_sql_metrics_initialized(self):
+        """Test that Flight SQL metrics are properly initialized."""
+        metrics = get_metrics()
+
+        # All Flight SQL metrics should be present
+        assert hasattr(metrics, 'flight_fetch_latency')
+        assert hasattr(metrics, 'flight_bytes_received')
+        assert hasattr(metrics, 'flight_batches_received')
+
+    @pytest.mark.skipif(not is_prometheus_available(), reason='prometheus_client not installed')
+    def test_flight_sql_metrics_operations(self):
+        """Test Flight SQL metric operations."""
+        metrics = get_metrics()
+
+        # Should not raise
+        metrics.flight_fetch_latency.labels(operation='get_info').observe(0.1)
+        metrics.flight_fetch_latency.labels(operation='do_get').observe(0.5)
+        metrics.flight_bytes_received.labels(query_type='sql').inc(1024)
+        metrics.flight_batches_received.labels(query_type='sql').inc()
+
+    @pytest.mark.skipif(not is_prometheus_available(), reason='prometheus_client not installed')
+    def test_streaming_worker_metrics_initialized(self):
+        """Test that streaming worker metrics are properly initialized."""
+        metrics = get_metrics()
+
+        # All streaming worker metrics should be present
+        assert hasattr(metrics, 'streaming_workers_active')
+        assert hasattr(metrics, 'streaming_workers_total')
+        assert hasattr(metrics, 'streaming_batch_wait')
+        assert hasattr(metrics, 'streaming_worker_processing')
+
+    @pytest.mark.skipif(not is_prometheus_available(), reason='prometheus_client not installed')
+    def test_streaming_worker_metrics_operations(self):
+        """Test streaming worker metric operations."""
+        metrics = get_metrics()
+
+        # Should not raise
+        metrics.streaming_workers_active.labels(executor_id='test-123').set(4)
+        metrics.streaming_workers_total.labels(executor_id='test-123').set(8)
+        metrics.streaming_batch_wait.labels(partition_id='0').observe(0.05)
+        metrics.streaming_worker_processing.labels(partition_id='0').observe(0.01)
+
+    @pytest.mark.skipif(not is_prometheus_available(), reason='prometheus_client not installed')
+    def test_phase_latency_metrics_initialized(self):
+        """Test that phase latency metrics are properly initialized."""
+        metrics = get_metrics()
+
+        # All phase latency metrics should be present
+        assert hasattr(metrics, 'phase_latency_fetch')
+        assert hasattr(metrics, 'phase_latency_transform')
+        assert hasattr(metrics, 'phase_latency_write')
+
+    @pytest.mark.skipif(not is_prometheus_available(), reason='prometheus_client not installed')
+    def test_phase_latency_metrics_operations(self):
+        """Test phase latency metric operations."""
+        metrics = get_metrics()
+
+        # Should not raise
+        metrics.phase_latency_fetch.labels(loader='postgresql').observe(0.5)
+        metrics.phase_latency_transform.labels(loader='postgresql').observe(0.01)
+        metrics.phase_latency_write.labels(loader='postgresql').observe(0.1)
+
 
 @pytest.mark.unit
 class TestAmpMetricsDisabled:
@@ -209,6 +272,37 @@ class TestAmpMetricsDisabled:
         assert isinstance(metrics.records_processed, NullMetric)
         assert isinstance(metrics.processing_latency, NullMetric)
         assert isinstance(metrics.errors, NullMetric)
+
+    def test_disabled_flight_sql_metrics_use_null_metric(self):
+        """Test that disabled Flight SQL metrics use NullMetric."""
+        config = MetricsConfig(enabled=False)
+        metrics = get_metrics(config)
+
+        # Flight SQL metrics should be NullMetric instances
+        assert isinstance(metrics.flight_fetch_latency, NullMetric)
+        assert isinstance(metrics.flight_bytes_received, NullMetric)
+        assert isinstance(metrics.flight_batches_received, NullMetric)
+
+    def test_disabled_streaming_worker_metrics_use_null_metric(self):
+        """Test that disabled streaming worker metrics use NullMetric."""
+        config = MetricsConfig(enabled=False)
+        metrics = get_metrics(config)
+
+        # Streaming worker metrics should be NullMetric instances
+        assert isinstance(metrics.streaming_workers_active, NullMetric)
+        assert isinstance(metrics.streaming_workers_total, NullMetric)
+        assert isinstance(metrics.streaming_batch_wait, NullMetric)
+        assert isinstance(metrics.streaming_worker_processing, NullMetric)
+
+    def test_disabled_phase_latency_metrics_use_null_metric(self):
+        """Test that disabled phase latency metrics use NullMetric."""
+        config = MetricsConfig(enabled=False)
+        metrics = get_metrics(config)
+
+        # Phase latency metrics should be NullMetric instances
+        assert isinstance(metrics.phase_latency_fetch, NullMetric)
+        assert isinstance(metrics.phase_latency_transform, NullMetric)
+        assert isinstance(metrics.phase_latency_write, NullMetric)
 
     def test_disabled_metrics_operations_succeed(self):
         """Test that operations on disabled metrics succeed silently."""

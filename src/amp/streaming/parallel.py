@@ -18,6 +18,7 @@ from threading import Lock
 from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional
 
 from ..loaders.types import LoadResult
+from ..metrics import get_metrics
 from .resilience import BackPressureConfig, RetryConfig
 from .types import ResumeWatermark
 
@@ -747,17 +748,28 @@ class ParallelStreamExecutor:
             # Don't fail the entire job - let workers try to create the table
 
         # 3. Submit worker tasks
+        metrics = get_metrics()
+        executor_id = str(id(self))
+
+        # Track total configured workers
+        metrics.streaming_workers_total.labels(executor_id=executor_id).set(self.config.num_workers)
+
         futures = {}
         for partition in partitions:
+            submission_time = time.time()
             future = self.executor.submit(
-                self._execute_partition, user_query, partition, destination, connection_name, load_config
+                self._execute_partition, user_query, partition, destination, connection_name, load_config, submission_time
             )
-            futures[future] = partition
+            futures[future] = (partition, submission_time)
+
+        # Track active workers (initially all partitions are submitted)
+        active_workers = len(futures)
+        metrics.streaming_workers_active.labels(executor_id=executor_id).set(active_workers)
 
         # 4. Stream results as they complete
         try:
             for future in as_completed(futures):
-                partition = futures[future]
+                partition, _submission_time = futures[future]
                 try:
                     result = future.result()
                     self._update_stats(result, success=True)
@@ -782,9 +794,15 @@ class ParallelStreamExecutor:
                         error=str(e),
                         metadata={'partition_id': partition.partition_id, 'partition_metadata': partition.metadata},
                     )
+                finally:
+                    # Update active worker count after each completion
+                    active_workers -= 1
+                    metrics.streaming_workers_active.labels(executor_id=executor_id).set(active_workers)
         finally:
             self.executor.shutdown(wait=True)
             self._log_final_stats()
+            # Reset worker metrics when executor shuts down
+            metrics.streaming_workers_active.labels(executor_id=executor_id).set(0)
 
         # 5. If in hybrid mode, transition to continuous streaming for live blocks
         if continue_streaming:
@@ -842,6 +860,7 @@ class ParallelStreamExecutor:
         destination: str,
         connection_name: str,
         load_config: Dict[str, Any],
+        submission_time: Optional[float] = None,
     ) -> LoadResult:
         """
         Execute a single partition in a worker thread.

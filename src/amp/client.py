@@ -12,6 +12,7 @@ from .config.connection_manager import ConnectionManager
 from .config.label_manager import LabelManager
 from .loaders.registry import create_loader, get_available_loaders
 from .loaders.types import LabelJoinConfig, LoadConfig, LoadMode, LoadResult
+from .metrics import get_metrics
 from .streaming import (
     ParallelConfig,
     ParallelStreamExecutor,
@@ -522,6 +523,8 @@ class Client:
     # Existing methods for backward compatibility
     def get_sql(self, query, read_all=False):
         """Execute SQL query and return Arrow data"""
+        metrics = get_metrics()
+
         # Create a CommandStatementQuery message
         command_query = FlightSql_pb2.CommandStatementQuery()
         command_query.query = query
@@ -532,19 +535,29 @@ class Client:
         cmd = any_command.SerializeToString()
 
         flight_descriptor = flight.FlightDescriptor.for_command(cmd)
-        info = self.conn.get_flight_info(flight_descriptor)
-        reader = self.conn.do_get(info.endpoints[0].ticket)
+
+        # Time get_flight_info
+        with metrics.flight_fetch_latency.labels(operation='get_info').time():
+            info = self.conn.get_flight_info(flight_descriptor)
+
+        # Time do_get
+        with metrics.flight_fetch_latency.labels(operation='do_get').time():
+            reader = self.conn.do_get(info.endpoints[0].ticket)
 
         if read_all:
             return reader.read_all()
         else:
-            return self._batch_generator(reader)
+            return self._batch_generator(reader, metrics)
 
-    def _batch_generator(self, reader):
+    def _batch_generator(self, reader, metrics=None):
         """Generate batches from Flight reader"""
+        if metrics is None:
+            metrics = get_metrics()
         while True:
             try:
                 chunk = reader.read_chunk()
+                metrics.flight_batches_received.labels(query_type='sql').inc()
+                metrics.flight_bytes_received.labels(query_type='sql').inc(chunk.data.nbytes)
                 yield chunk.data
             except StopIteration:
                 break

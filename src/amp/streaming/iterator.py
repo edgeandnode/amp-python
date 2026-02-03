@@ -10,6 +10,7 @@ from typing import Iterator, Optional, Tuple
 import pyarrow as pa
 from pyarrow import flight
 
+from ..metrics import get_metrics
 from .types import BatchMetadata, ResponseBatch
 
 
@@ -99,9 +100,13 @@ class StreamingResultIterator:
         Returns:
             Tuple of (batch, metadata) or (None, None) if stream is exhausted
         """
+        metrics = get_metrics()
+
         try:
-            # PyArrow's FlightStreamReader provides batches via iteration
-            chunk = next(self.flight_reader)
+            # Phase: fetch (time spent waiting for next batch from Flight)
+            with metrics.phase_latency_fetch.labels(loader='flight').time():
+                # PyArrow's FlightStreamReader provides batches via iteration
+                chunk = next(self.flight_reader)
 
             # Extract and parse metadata if available
             metadata = BatchMetadata(ranges=[])

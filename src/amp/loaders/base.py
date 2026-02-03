@@ -278,40 +278,46 @@ class DataLoader(ABC, Generic[TConfig]):
             if mode not in self.SUPPORTED_MODES:
                 raise ValueError(f'Unsupported mode {mode}. Supported modes: {self.SUPPORTED_MODES}')
 
-            # Apply label joining if requested
-            label_config = kwargs.pop('label_config', None)
-            if label_config:
-                # Perform the join
-                batch = self._join_with_labels(
-                    batch, label_config.label_name, label_config.label_key_column, label_config.stream_key_column
-                )
-                self.logger.debug(
-                    f'Joined batch with label {label_config.label_name}: {batch.num_rows} rows after join '
-                    f'(columns: {", ".join(batch.schema.names)})'
-                )
+            # Get metrics and loader name for phase timing (needed early for transform phase)
+            metrics = get_metrics()
+            loader_type = self.__class__.__name__.replace('Loader', '').lower()
 
-                # Skip empty batches after label join (all rows filtered out)
-                if batch.num_rows == 0:
-                    self.logger.info(f'Skipping batch: 0 rows after label join with {label_config.label_name}')
-                    return LoadResult(
-                        rows_loaded=0,
-                        duration=time.time() - start_time,
-                        ops_per_second=0,
-                        table_name=table_name,
-                        loader_type=self.__class__.__name__.replace('Loader', '').lower(),
-                        success=True,
-                        metadata={'skipped_empty_batch': True, 'label_join_filtered': True},
+            # Phase: transform (label joining and metadata column addition)
+            with metrics.phase_latency_transform.labels(loader=loader_type).time():
+                # Apply label joining if requested
+                label_config = kwargs.pop('label_config', None)
+                if label_config:
+                    # Perform the join
+                    batch = self._join_with_labels(
+                        batch, label_config.label_name, label_config.label_key_column, label_config.stream_key_column
+                    )
+                    self.logger.debug(
+                        f'Joined batch with label {label_config.label_name}: {batch.num_rows} rows after join '
+                        f'(columns: {", ".join(batch.schema.names)})'
                     )
 
-            # Add metadata columns if block_ranges provided (enables reorg handling for non-streaming loads)
-            block_ranges = kwargs.pop('block_ranges', None)
-            connection_name = kwargs.pop('connection_name', 'default')
-            if block_ranges:
-                batch = self._add_metadata_columns(batch, block_ranges)
-                self.logger.debug(
-                    f'Added metadata columns for {len(block_ranges)} block ranges '
-                    f'(columns: {", ".join(batch.schema.names)})'
-                )
+                    # Skip empty batches after label join (all rows filtered out)
+                    if batch.num_rows == 0:
+                        self.logger.info(f'Skipping batch: 0 rows after label join with {label_config.label_name}')
+                        return LoadResult(
+                            rows_loaded=0,
+                            duration=time.time() - start_time,
+                            ops_per_second=0,
+                            table_name=table_name,
+                            loader_type=loader_type,
+                            success=True,
+                            metadata={'skipped_empty_batch': True, 'label_join_filtered': True},
+                        )
+
+                # Add metadata columns if block_ranges provided (enables reorg handling for non-streaming loads)
+                block_ranges = kwargs.pop('block_ranges', None)
+                connection_name = kwargs.pop('connection_name', 'default')
+                if block_ranges:
+                    batch = self._add_metadata_columns(batch, block_ranges)
+                    self.logger.debug(
+                        f'Added metadata columns for {len(block_ranges)} block ranges '
+                        f'(columns: {", ".join(batch.schema.names)})'
+                    )
 
             # Handle table creation (use joined schema if applicable)
             if kwargs.get('create_table', True) and table_name not in self._created_tables:
@@ -329,8 +335,9 @@ class DataLoader(ABC, Generic[TConfig]):
             if mode == LoadMode.OVERWRITE and not kwargs.get('_already_cleared') and hasattr(self, '_clear_table'):
                 self._clear_table(table_name)
 
-            # Perform the actual load
-            rows_loaded = self._load_batch_impl(batch, table_name, **kwargs)
+            # Perform the actual load (phase: write)
+            with metrics.phase_latency_write.labels(loader=loader_type).time():
+                rows_loaded = self._load_batch_impl(batch, table_name, **kwargs)
 
             # Track batch in state store if block_ranges were provided
             if block_ranges and self.state_enabled:
@@ -343,9 +350,7 @@ class DataLoader(ABC, Generic[TConfig]):
 
             duration = time.time() - start_time
 
-            # Record metrics for successful batch load
-            loader_type = self.__class__.__name__.replace('Loader', '').lower()
-            metrics = get_metrics()
+            # Record metrics for successful batch load (metrics and loader_type already extracted above)
             metrics.records_processed.labels(loader=loader_type, table=table_name, connection=connection_name).inc(
                 rows_loaded
             )
