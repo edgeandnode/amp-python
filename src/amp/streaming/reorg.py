@@ -176,12 +176,15 @@ class ReorgAwareStream:
         # All ranges are exact duplicates
         return True
 
+    def close(self) -> None:
+        """Close the underlying stream"""
+        self.stream_iterator.close()
+
     def __enter__(self) -> 'ReorgAwareStream':
         """Context manager entry"""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Context manager exit"""
-        # Delegate to underlying stream
         if hasattr(self.stream_iterator, 'close'):
             self.stream_iterator.close()

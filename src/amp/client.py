@@ -838,9 +838,7 @@ class Client:
 
                     # Check if we need to restart due to reorg
                     if reorg_result:
-                        # Close the old stream before restarting
-                        if hasattr(stream_iterator, 'close'):
-                            stream_iterator.close()
+                        stream_iterator.close()
                         self.logger.info('Reorg detected, restarting stream with new resume position...')
                         resume_watermark = loader_instance.state_store.get_resume_position(connection_name, destination)
                         continue
