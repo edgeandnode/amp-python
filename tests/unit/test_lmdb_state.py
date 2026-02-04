@@ -47,7 +47,7 @@ class TestLMDBStreamStateStore:
 
     def test_is_processed_empty_list(self, lmdb_store):
         result = lmdb_store.is_processed('conn1', 'table1', [])
-        assert result is True
+        assert result is False
 
     def test_multiple_batches_all_must_be_processed(self, lmdb_store):
         batch_id1 = BatchIdentifier('ethereum', 100, 200, '0xabc')
@@ -106,7 +106,6 @@ class TestLMDBStreamStateStore:
         assert watermark.ranges[0].network == 'ethereum'
         assert watermark.ranges[0].end == 400
         assert watermark.ranges[0].hash == '0x123'
-        assert watermark.ranges[0].prev_hash == '0xparent3'
 
     def test_get_resume_position_multiple_networks(self, lmdb_store):
         eth_batch = BatchIdentifier('ethereum', 100, 200, '0xabc', '0xeth_parent')
@@ -285,7 +284,6 @@ class TestLMDBStreamStateStore:
         watermark = lmdb_store.get_resume_position('conn1', 'table1')
         assert watermark.ranges[0].end == 800
         assert watermark.ranges[0].hash == '0x9'
-        assert watermark.ranges[0].prev_hash == '0xp9'
 
 
 class TestIntegrationScenarios:

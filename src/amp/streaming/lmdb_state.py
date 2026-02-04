@@ -18,7 +18,6 @@ from .types import BlockRange, ResumeWatermark
 
 
 class LMDBStreamStateStore(StreamStateStore):
-    env: lmdb.Environment
     """
     Generic LMDB-based state store for tracking processed batches.
 
@@ -39,8 +38,10 @@ class LMDBStreamStateStore(StreamStateStore):
 
     Metadata database layout:
     - Key: {connection_name}|{table_name}|{network}
-    - Value: JSON with {end_block, end_hash, start_parent_hash} (max processed block)
+    - Value: JSON with {end_block, end_hash} (max processed block for resume)
     """
+
+    env: lmdb.Environment
 
     def __init__(
         self,
@@ -95,12 +96,11 @@ class LMDBStreamStateStore(StreamStateStore):
         }
         return json.dumps(batch_value_dict).encode('utf-8')
 
-    def _serialize_metadata(self, end_block: int, end_hash: str, start_parent_hash: str) -> bytes:
+    def _serialize_metadata(self, end_block: int, end_hash: str) -> bytes:
         """Serialize metadata to JSON bytes."""
         meta_value_dict = {
             'end_block': end_block,
             'end_hash': end_hash,
-            'start_parent_hash': start_parent_hash,
         }
         return json.dumps(meta_value_dict).encode('utf-8')
 
@@ -121,7 +121,7 @@ class LMDBStreamStateStore(StreamStateStore):
             True only if ALL batches are already processed
         """
         if not batch_ids:
-            return True
+            return False
 
         with self.env.begin(db=self.batches_db) as txn:
             for batch_id in batch_ids:
@@ -161,7 +161,7 @@ class LMDBStreamStateStore(StreamStateStore):
                         should_update = True
 
                 if should_update:
-                    meta_value = self._serialize_metadata(batch.end_block, batch.end_hash, batch.start_parent_hash)
+                    meta_value = self._serialize_metadata(batch.end_block, batch.end_hash)
                     txn.put(meta_key, meta_value, db=self.metadata_db)
 
         self.logger.debug(f'Marked {len(batch_ids)} batches as processed in {table_name}')
@@ -205,13 +205,15 @@ class LMDBStreamStateStore(StreamStateStore):
                     _, _, network = self._parse_key(key)
                     meta_data = self._deserialize_batch(value)
 
+                    # BlockRange here represents a resume watermark (open-ended), not a processed range.
+                    # start=end=end_block means "resume streaming from this block onwards".
+                    # See ReorgAwareStream for how this watermark is used for crash recovery.
                     ranges.append(
                         BlockRange(
                             network=network,
                             start=meta_data['end_block'],
                             end=meta_data['end_block'],
                             hash=meta_data.get('end_hash'),
-                            prev_hash=meta_data.get('start_parent_hash'),
                         )
                     )
 
@@ -298,9 +300,7 @@ class LMDBStreamStateStore(StreamStateStore):
                 if remaining_batches:
                     remaining_batches.sort(key=lambda b: b['end_block'])
                     max_batch = remaining_batches[-1]
-                    meta_value = self._serialize_metadata(
-                        max_batch['end_block'], max_batch.get('end_hash'), max_batch.get('start_parent_hash')
-                    )
+                    meta_value = self._serialize_metadata(max_batch['end_block'], max_batch.get('end_hash'))
                     txn.put(meta_key, meta_value, db=self.metadata_db)
                 else:
                     txn.delete(meta_key, db=self.metadata_db)
