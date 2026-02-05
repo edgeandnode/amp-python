@@ -1,5 +1,6 @@
 # Streaming module for continuous data loading
 from .iterator import StreamingResultIterator
+from .lmdb_state import LMDBStreamStateStore
 from .parallel import (
     BlockRangePartitionStrategy,
     ParallelConfig,
@@ -35,6 +36,7 @@ __all__ = [
     'StreamStateStore',
     'InMemoryStreamStateStore',
     'NullStreamStateStore',
+    'LMDBStreamStateStore',
     'BatchIdentifier',
     'ProcessedBatch',
 ]
