@@ -1,0 +1,136 @@
+name: Performance Benchmarks
+
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  # Allow manual triggering for testing
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    # Run on merged PRs or manual trigger
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        enable-cache: true
+        cache-dependency-glob: "**/pyproject.toml"
+
+    - name: Set up Python 3.12
+      run: uv python install 3.12
+
+    - name: Install all dependencies
+      run: uv sync --group all_loaders --group test --group dev
+
+    - name: Run performance benchmarks
+      env:
+        USE_TESTCONTAINERS: "true"
+        TESTCONTAINERS_RYUK_DISABLED: "true"
+        PERF_ENV: "github-actions"
+      run: |
+        uv run pytest tests/performance/ -v -m "performance" \
+          --tb=short \
+          -k "not snowflake" \
+          2>&1 | tee benchmark_output.txt
+
+        # Copy benchmark results for the comment
+        if [ -f performance_benchmarks.json ]; then
+          cp performance_benchmarks.json benchmark_results.json
+        else
+          echo '{}' > benchmark_results.json
+        fi
+
+    - name: Write results to job summary
+      run: |
+        echo "## Performance Benchmark Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Git Commit:** \`${GITHUB_SHA::8}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Environment:** GitHub Actions" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Raw Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+        cat benchmark_results.json >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+    - name: Post benchmark results to PR
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+
+          // Read benchmark results
+          let benchmarkData = {};
+          try {
+            benchmarkData = JSON.parse(fs.readFileSync('benchmark_results.json', 'utf8'));
+          } catch (e) {
+            console.log('No benchmark results file found');
+          }
+
+          // Read test output for summary
+          let testOutput = '';
+          try {
+            testOutput = fs.readFileSync('benchmark_output.txt', 'utf8');
+          } catch (e) {
+            console.log('No test output file found');
+          }
+
+          // Extract summary from pytest output
+          const summaryMatch = testOutput.match(/=+ ([\d\w\s,]+) in [\d.]+s =+/);
+          const summary = summaryMatch ? summaryMatch[1] : 'Unknown';
+
+          // Format benchmark results as a table
+          let resultsTable = '';
+          const entries = Object.entries(benchmarkData);
+
+          if (entries.length > 0) {
+            resultsTable = '| Loader | Test | Throughput (rows/sec) | Memory (MB) | Duration (s) | Dataset Size |\n';
+            resultsTable += '|--------|------|----------------------|-------------|--------------|-------------|\n';
+
+            for (const [key, data] of entries) {
+              resultsTable += `| ${data.loader_type} | ${data.test_name} | ${data.throughput_rows_per_sec?.toFixed(0) || 'N/A'} | ${data.memory_mb?.toFixed(2) || 'N/A'} | ${data.duration_seconds?.toFixed(2) || 'N/A'} | ${data.dataset_size?.toLocaleString() || 'N/A'} |\n`;
+            }
+          } else {
+            resultsTable = '_No benchmark data recorded_';
+          }
+
+          // Create comment body using array join to avoid YAML parsing issues
+          const body = [
+            '## Performance Benchmark Results',
+            '',
+            `**Test Summary:** ${summary}`,
+            `**Git Commit:** \`${context.sha.substring(0, 8)}\``,
+            '**Environment:** GitHub Actions',
+            '',
+            '### Results',
+            '',
+            resultsTable,
+            '',
+            '<details>',
+            '<summary>Raw JSON Results</summary>',
+            '',
+            '```json',
+            JSON.stringify(benchmarkData, null, 2),
+            '```',
+            '',
+            '</details>'
+          ].join('\n');
+
+          // Post comment to PR
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.payload.pull_request.number,
+            body: body
+          });
