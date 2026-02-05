@@ -555,7 +555,7 @@ class RedisLoader(DataLoader[RedisConfig]):
                     self.logger.info(f'Deleted {keys_deleted} existing keys')
 
             else:
-                # For collection-based structures, delete the main key
+                # For collection-based structures, use table_name:structure format
                 collection_key = f'{table_name}:{self.data_structure.value}'
                 if self.redis_client.exists(collection_key):
                     self.redis_client.delete(collection_key)

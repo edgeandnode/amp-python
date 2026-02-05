@@ -218,18 +218,20 @@ class LMDBLoader(DataLoader[LMDBConfig]):
         try:
             db = self._get_or_create_db(self.config.database_name)
 
-            # Clear all entries by iterating through and deleting
-            with self.env.begin(write=True, db=db) as txn:
+            # Collect all keys in a read transaction first
+            with self.env.begin(db=db) as txn:
                 cursor = txn.cursor()
-                # Delete all key-value pairs
-                if cursor.first():
-                    while True:
-                        if not cursor.delete():
-                            break
-                        if not cursor.next():
-                            break
+                keys_to_delete = list(cursor.iternext(values=False))
 
-                self.logger.info(f"Cleared all data for table '{table_name}'")
+            # Delete all keys in a write transaction
+            if keys_to_delete:
+                with self.env.begin(write=True, db=db) as txn:
+                    for key in keys_to_delete:
+                        txn.delete(key)
+
+                self.logger.info(f"Cleared {len(keys_to_delete)} entries from LMDB for table '{table_name}'")
+            else:
+                self.logger.info(f"No data to clear for table '{table_name}'")
         except Exception as e:
             self.logger.error(f'Error in _clear_data: {e}')
             raise

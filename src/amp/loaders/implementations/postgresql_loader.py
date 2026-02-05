@@ -187,6 +187,10 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
 
     def _clear_table(self, table_name: str) -> None:
         """Clear table for overwrite mode"""
+        # Check if table exists first
+        if not self.table_exists(table_name):
+            return  # Nothing to clear if table doesn't exist
+
         conn = self.pool.getconn()
         try:
             with conn.cursor() as cur:
