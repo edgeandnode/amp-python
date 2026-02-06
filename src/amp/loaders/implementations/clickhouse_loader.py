@@ -114,7 +114,6 @@ class ClickHouseLoader(DataLoader[ClickHouseConfig]):
             self.logger.info(f'Found {len(tables.result_rows)} tables in database')
 
             self._is_connected = True
-            self._record_connection_opened()
 
         except ImportError as err:
             raise ImportError(
@@ -126,13 +125,10 @@ class ClickHouseLoader(DataLoader[ClickHouseConfig]):
 
     def disconnect(self) -> None:
         """Close ClickHouse connection"""
-        was_connected = self._is_connected
         if self._client:
             self._client.close()
             self._client = None
         self._is_connected = False
-        if was_connected:
-            self._record_connection_closed()
         self.logger.info('Disconnected from ClickHouse')
 
     def _load_batch_impl(self, batch: pa.RecordBatch, table_name: str, **kwargs) -> int:
