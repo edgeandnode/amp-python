@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from amp.utils.manifest_inspector import describe_manifest, print_schema
 
@@ -199,7 +199,7 @@ class RegistryDatasetsClient:
         response = self._registry._request('GET', path)
         return response.json()
 
-    def describe(self, namespace: str, name: str, version: str = 'latest') -> Dict[str, list[Dict[str, str | bool]]]:
+    def describe(self, namespace: str, name: str, version: str = 'latest') -> Dict[str, List[Dict[str, Union[str, bool]]]]:
         """Get a structured summary of tables and columns in a dataset.
 
         Returns a dictionary mapping table names to lists of column information,

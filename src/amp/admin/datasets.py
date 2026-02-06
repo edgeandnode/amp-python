@@ -4,7 +4,7 @@ This module provides the DatasetsClient class for managing datasets,
 including registration, deployment, versioning, and manifest operations.
 """
 
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
 from amp.utils.manifest_inspector import describe_manifest, print_schema
 
@@ -200,7 +200,7 @@ class DatasetsClient:
         response = self._admin._request('GET', path)
         return response.json()
 
-    def describe(self, namespace: str, name: str, revision: str = 'latest') -> Dict[str, list[Dict[str, str | bool]]]:
+    def describe(self, namespace: str, name: str, revision: str = 'latest') -> Dict[str, List[Dict[str, Union[str, bool]]]]:
         """Get a structured summary of tables and columns in a dataset.
 
         Returns a dictionary mapping table names to lists of column information,
