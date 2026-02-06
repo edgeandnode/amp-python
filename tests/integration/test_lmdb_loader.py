@@ -408,12 +408,21 @@ class TestLMDBLoaderIntegration:
         batch2 = pa.RecordBatch.from_pydict({'id': [2], 'block_num': [155]})
         batch3 = pa.RecordBatch.from_pydict({'id': [3], 'block_num': [205]})
 
+        # Create empty batch for watermarks
+        empty = pa.RecordBatch.from_pydict({'id': [], 'block_num': []})
+
         # Create response batches with hashes
         response1 = ResponseBatch.data_batch(
             data=batch1,
             metadata=BatchMetadata(
                 ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc')],
                 ranges_complete=True,  # Mark as complete so it gets tracked in state store
+            ),
+        )
+        watermark1 = ResponseBatch.data_batch(
+            data=empty,
+            metadata=BatchMetadata(
+                ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc')], ranges_complete=True
             ),
         )
         response2 = ResponseBatch.data_batch(
@@ -423,6 +432,12 @@ class TestLMDBLoaderIntegration:
                 ranges_complete=True,  # Mark as complete so it gets tracked in state store
             ),
         )
+        watermark2 = ResponseBatch.data_batch(
+            data=empty,
+            metadata=BatchMetadata(
+                ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef')], ranges_complete=True
+            ),
+        )
         response3 = ResponseBatch.data_batch(
             data=batch3,
             metadata=BatchMetadata(
@@ -430,11 +445,17 @@ class TestLMDBLoaderIntegration:
                 ranges_complete=True,  # Mark as complete so it gets tracked in state store
             ),
         )
+        watermark3 = ResponseBatch.data_batch(
+            data=empty,
+            metadata=BatchMetadata(
+                ranges=[BlockRange(network='ethereum', start=200, end=210, hash='0x123')], ranges_complete=True
+            ),
+        )
 
-        # Load via streaming API
-        stream = [response1, response2, response3]
+        # Load via streaming API with watermarks (following server protocol)
+        stream = [response1, watermark1, response2, watermark2, response3, watermark3]
         results = list(loader.load_stream_continuous(iter(stream), 'test_reorg_single'))
-        assert len(results) == 3
+        assert len(results) == 6
         assert all(r.success for r in results)
 
         # Verify all data exists
@@ -474,12 +495,21 @@ class TestLMDBLoaderIntegration:
         batch3 = pa.RecordBatch.from_pydict({'id': [3], 'network': ['ethereum']})
         batch4 = pa.RecordBatch.from_pydict({'id': [4], 'network': ['polygon']})
 
-        # Create response batches with network-specific ranges
+        # Create empty batch for watermarks
+        empty = pa.RecordBatch.from_pydict({'id': [], 'network': []})
+
+        # Create response batches with network-specific ranges and watermarks
         response1 = ResponseBatch.data_batch(
             data=batch1,
             metadata=BatchMetadata(
                 ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xaaa')],
                 ranges_complete=True,  # Mark as complete so it gets tracked in state store
+            ),
+        )
+        watermark1 = ResponseBatch.data_batch(
+            data=empty,
+            metadata=BatchMetadata(
+                ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xaaa')], ranges_complete=True
             ),
         )
         response2 = ResponseBatch.data_batch(
@@ -489,11 +519,23 @@ class TestLMDBLoaderIntegration:
                 ranges_complete=True,  # Mark as complete so it gets tracked in state store
             ),
         )
+        watermark2 = ResponseBatch.data_batch(
+            data=empty,
+            metadata=BatchMetadata(
+                ranges=[BlockRange(network='polygon', start=100, end=110, hash='0xbbb')], ranges_complete=True
+            ),
+        )
         response3 = ResponseBatch.data_batch(
             data=batch3,
             metadata=BatchMetadata(
                 ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xccc')],
                 ranges_complete=True,  # Mark as complete so it gets tracked in state store
+            ),
+        )
+        watermark3 = ResponseBatch.data_batch(
+            data=empty,
+            metadata=BatchMetadata(
+                ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xccc')], ranges_complete=True
             ),
         )
         response4 = ResponseBatch.data_batch(
@@ -503,11 +545,17 @@ class TestLMDBLoaderIntegration:
                 ranges_complete=True,  # Mark as complete so it gets tracked in state store
             ),
         )
+        watermark4 = ResponseBatch.data_batch(
+            data=empty,
+            metadata=BatchMetadata(
+                ranges=[BlockRange(network='polygon', start=150, end=160, hash='0xddd')], ranges_complete=True
+            ),
+        )
 
-        # Load via streaming API
-        stream = [response1, response2, response3, response4]
+        # Load via streaming API with watermarks (following server protocol)
+        stream = [response1, watermark1, response2, watermark2, response3, watermark3, response4, watermark4]
         results = list(loader.load_stream_continuous(iter(stream), 'test_reorg_multi'))
-        assert len(results) == 4
+        assert len(results) == 8
         assert all(r.success for r in results)
 
         # Reorg only ethereum from block 150
@@ -540,6 +588,9 @@ class TestLMDBLoaderIntegration:
         batch2 = pa.RecordBatch.from_pydict({'id': [2]})
         batch3 = pa.RecordBatch.from_pydict({'id': [3]})
 
+        # Create empty batch for watermarks
+        empty = pa.RecordBatch.from_pydict({'id': []})
+
         # Batch 1: 90-110 (ends before reorg start of 150)
         # Batch 2: 140-160 (overlaps with reorg)
         # Batch 3: 170-190 (after reorg, but should be deleted as 170 >= 150)
@@ -550,11 +601,23 @@ class TestLMDBLoaderIntegration:
                 ranges_complete=True,  # Mark as complete so it gets tracked in state store
             ),
         )
+        watermark1 = ResponseBatch.data_batch(
+            data=empty,
+            metadata=BatchMetadata(
+                ranges=[BlockRange(network='ethereum', start=90, end=110, hash='0xaaa')], ranges_complete=True
+            ),
+        )
         response2 = ResponseBatch.data_batch(
             data=batch2,
             metadata=BatchMetadata(
                 ranges=[BlockRange(network='ethereum', start=140, end=160, hash='0xbbb')],
                 ranges_complete=True,  # Mark as complete so it gets tracked in state store
+            ),
+        )
+        watermark2 = ResponseBatch.data_batch(
+            data=empty,
+            metadata=BatchMetadata(
+                ranges=[BlockRange(network='ethereum', start=140, end=160, hash='0xbbb')], ranges_complete=True
             ),
         )
         response3 = ResponseBatch.data_batch(
@@ -564,11 +627,17 @@ class TestLMDBLoaderIntegration:
                 ranges_complete=True,  # Mark as complete so it gets tracked in state store
             ),
         )
+        watermark3 = ResponseBatch.data_batch(
+            data=empty,
+            metadata=BatchMetadata(
+                ranges=[BlockRange(network='ethereum', start=170, end=190, hash='0xccc')], ranges_complete=True
+            ),
+        )
 
-        # Load via streaming API
-        stream = [response1, response2, response3]
+        # Load via streaming API with watermarks (following server protocol)
+        stream = [response1, watermark1, response2, watermark2, response3, watermark3]
         results = list(loader.load_stream_continuous(iter(stream), 'test_reorg_overlap'))
-        assert len(results) == 3
+        assert len(results) == 6
         assert all(r.success for r in results)
 
         # Reorg from block 150 - should delete batches 2 and 3
@@ -604,12 +673,21 @@ class TestLMDBLoaderIntegration:
 
         data2 = pa.RecordBatch.from_pydict({'id': [3, 4], 'value': [300, 400]})
 
+        # Create empty batch for watermarks
+        empty = pa.RecordBatch.from_pydict({'id': [], 'value': []})
+
         # Create response batches using factory methods (with hashes for proper state management)
         response1 = ResponseBatch.data_batch(
             data=data1,
             metadata=BatchMetadata(
                 ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc123')],
                 ranges_complete=True,  # Mark as complete so it gets tracked in state store
+            ),
+        )
+        watermark1 = ResponseBatch.data_batch(
+            data=empty,
+            metadata=BatchMetadata(
+                ranges=[BlockRange(network='ethereum', start=100, end=110, hash='0xabc123')], ranges_complete=True
             ),
         )
 
@@ -620,24 +698,34 @@ class TestLMDBLoaderIntegration:
                 ranges_complete=True,  # Mark as complete so it gets tracked in state store
             ),
         )
+        watermark2 = ResponseBatch.data_batch(
+            data=empty,
+            metadata=BatchMetadata(
+                ranges=[BlockRange(network='ethereum', start=150, end=160, hash='0xdef456')], ranges_complete=True
+            ),
+        )
 
         # Simulate reorg event using factory method
         reorg_response = ResponseBatch.reorg_batch(
             invalidation_ranges=[BlockRange(network='ethereum', start=150, end=200)]
         )
 
-        # Process streaming data
-        stream = [response1, response2, reorg_response]
+        # Process streaming data with watermarks (following server protocol)
+        stream = [response1, watermark1, response2, watermark2, reorg_response]
         results = list(loader.load_stream_continuous(iter(stream), 'test_streaming_reorg'))
 
-        # Verify results
-        assert len(results) == 3
+        # Verify results: 2 data batches + 2 watermarks + 1 reorg = 5 results
+        assert len(results) == 5
         assert results[0].success
         assert results[0].rows_loaded == 2
         assert results[1].success
-        assert results[1].rows_loaded == 2
+        assert results[1].rows_loaded == 0  # Watermark
         assert results[2].success
-        assert results[2].is_reorg
+        assert results[2].rows_loaded == 2
+        assert results[3].success
+        assert results[3].rows_loaded == 0  # Watermark
+        assert results[4].success
+        assert results[4].is_reorg
 
         # Verify reorg deleted the second batch
         with loader.env.begin() as txn:

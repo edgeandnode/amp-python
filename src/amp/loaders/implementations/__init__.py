@@ -21,7 +21,7 @@ except ImportError:
 
 try:
     from .iceberg_loader import IcebergLoader
-except ImportError:
+except Exception:
     IcebergLoader = None
 
 try:
@@ -34,11 +34,10 @@ try:
 except ImportError:
     LMDBLoader = None
 
-# Add any other loaders here
-# try:
-#     from .snowflake_loader import SnowflakeLoader
-# except ImportError:
-#     SnowflakeLoader = None
+try:
+    from .kafka_loader import KafkaLoader
+except ImportError:
+    KafkaLoader = None
 
 __all__ = []
 
@@ -55,3 +54,5 @@ if SnowflakeLoader:
     __all__.append('SnowflakeLoader')
 if LMDBLoader:
     __all__.append('LMDBLoader')
+if KafkaLoader:
+    __all__.append('KafkaLoader')
