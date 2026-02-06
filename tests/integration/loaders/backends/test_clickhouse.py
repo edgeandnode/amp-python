@@ -25,7 +25,7 @@ class ClickHouseTestConfig(LoaderTestConfig):
     loader_class = ClickHouseLoader
     config_fixture_name = 'clickhouse_test_config'
 
-    supports_overwrite = True
+    supports_overwrite = False
     supports_streaming = True
     supports_multi_network = True
     supports_null_values = True
