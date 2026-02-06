@@ -34,6 +34,11 @@ try:
 except ImportError:
     LMDBLoader = None
 
+try:
+    from .clickhouse_loader import ClickHouseLoader
+except ImportError:
+    ClickHouseLoader = None
+
 # Add any other loaders here
 # try:
 #     from .snowflake_loader import SnowflakeLoader
@@ -55,3 +60,5 @@ if SnowflakeLoader:
     __all__.append('SnowflakeLoader')
 if LMDBLoader:
     __all__.append('LMDBLoader')
+if ClickHouseLoader:
+    __all__.append('ClickHouseLoader')
