@@ -203,6 +203,16 @@ def redis_test_config(request):
         return request.getfixturevalue('redis_config')
 
 
+@pytest.fixture
+def redis_streaming_config(redis_test_config):
+    """Redis config for streaming tests with blockchain data (uses tx_hash instead of id)"""
+    return {
+        **redis_test_config,
+        'key_pattern': '{table}:{tx_hash}',  # Use tx_hash from blockchain data
+        'data_structure': 'hash',
+    }
+
+
 @pytest.fixture(scope='session')
 def delta_test_env():
     """Create Delta Lake test environment for the session"""
@@ -216,10 +226,12 @@ def delta_test_env():
 
 
 @pytest.fixture
-def delta_basic_config(delta_test_env):
+def delta_basic_config(delta_test_env, request):
     """Basic Delta Lake configuration for testing"""
+    # Create unique table path for each test to avoid data accumulation
+    unique_suffix = f'{request.node.name}_{id(request)}'
     return {
-        'table_path': str(Path(delta_test_env) / 'basic_table'),
+        'table_path': str(Path(delta_test_env) / f'basic_table_{unique_suffix}'),
         'partition_by': ['year', 'month'],
         'optimize_after_write': True,
         'vacuum_after_write': False,
@@ -230,13 +242,29 @@ def delta_basic_config(delta_test_env):
 
 
 @pytest.fixture
-def delta_partitioned_config(delta_test_env):
+def delta_partitioned_config(delta_test_env, request):
     """Partitioned Delta Lake configuration for testing"""
+    unique_suffix = f'{request.node.name}_{id(request)}'
     return {
-        'table_path': str(Path(delta_test_env) / 'partitioned_table'),
+        'table_path': str(Path(delta_test_env) / f'partitioned_table_{unique_suffix}'),
         'partition_by': ['year', 'month', 'day'],
         'optimize_after_write': True,
         'vacuum_after_write': True,
+        'schema_evolution': True,
+        'merge_schema': True,
+        'storage_options': {},
+    }
+
+
+@pytest.fixture
+def delta_streaming_config(delta_test_env, request):
+    """Delta Lake configuration for streaming tests (no partitioning)"""
+    unique_suffix = f'{request.node.name}_{id(request)}'
+    return {
+        'table_path': str(Path(delta_test_env) / f'streaming_table_{unique_suffix}'),
+        'partition_by': [],  # No partitioning for streaming tests
+        'optimize_after_write': True,
+        'vacuum_after_write': False,
         'schema_evolution': True,
         'merge_schema': True,
         'storage_options': {},
@@ -284,6 +312,24 @@ def iceberg_basic_config(iceberg_test_env):
         'create_table': True,
         'schema_evolution': True,
         'batch_size': 10000,
+    }
+
+
+@pytest.fixture
+def iceberg_streaming_config(iceberg_test_env):
+    """Iceberg configuration for streaming tests (no partitioning)"""
+    return {
+        'catalog_config': {
+            'type': 'sql',
+            'uri': f'sqlite:///{iceberg_test_env}/streaming_catalog.db',
+            'warehouse': f'file://{iceberg_test_env}/streaming_warehouse',
+        },
+        'namespace': 'test_data',
+        'create_namespace': True,
+        'create_table': True,
+        'schema_evolution': True,
+        'batch_size': 10000,
+        'partition_spec': [],  # No partitioning for streaming tests
     }
 
 

@@ -303,8 +303,8 @@ class DataLoader(ABC, Generic[TConfig]):
                         f'Please create any tables needed before running the loader. '
                     )
 
-            # Handle overwrite mode
-            if mode == LoadMode.OVERWRITE and hasattr(self, '_clear_table'):
+            # Handle overwrite mode (only if not already cleared by load_table)
+            if mode == LoadMode.OVERWRITE and not kwargs.get('_already_cleared') and hasattr(self, '_clear_table'):
                 self._clear_table(table_name)
 
             # Perform the actual load
@@ -348,6 +348,14 @@ class DataLoader(ABC, Generic[TConfig]):
         start_time = time.time()
         batch_size = kwargs.get('batch_size', getattr(self, 'batch_size', 10000))
 
+        # Handle overwrite mode ONCE before processing batches
+        mode = kwargs.get('mode', LoadMode.APPEND)
+        if mode == LoadMode.OVERWRITE and hasattr(self, '_clear_table'):
+            self._clear_table(table_name)
+            # Prevent subsequent batch loads from clearing again
+            kwargs = kwargs.copy()
+            kwargs['_already_cleared'] = True
+
         rows_loaded = 0
         batch_count = 0
         errors = []
@@ -375,7 +383,7 @@ class DataLoader(ABC, Generic[TConfig]):
                 loader_type=self.__class__.__name__.replace('Loader', '').lower(),
                 success=len(errors) == 0,
                 error='; '.join(errors[:3]) if errors else None,
-                metadata=self._get_table_metadata(table, duration, batch_count, **kwargs),
+                metadata=self._get_table_metadata(table, duration, batch_count, table_name=table_name, **kwargs),
             )
 
         except Exception as e:
