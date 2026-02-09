@@ -242,10 +242,11 @@ def delta_basic_config(delta_test_env, request):
 
 
 @pytest.fixture
-def delta_partitioned_config(delta_test_env):
+def delta_partitioned_config(delta_test_env, request):
     """Partitioned Delta Lake configuration for testing"""
+    unique_suffix = f'{request.node.name}_{id(request)}'
     return {
-        'table_path': str(Path(delta_test_env) / 'partitioned_table'),
+        'table_path': str(Path(delta_test_env) / f'partitioned_table_{unique_suffix}'),
         'partition_by': ['year', 'month', 'day'],
         'optimize_after_write': True,
         'vacuum_after_write': True,
@@ -256,10 +257,11 @@ def delta_partitioned_config(delta_test_env):
 
 
 @pytest.fixture
-def delta_streaming_config(delta_test_env):
+def delta_streaming_config(delta_test_env, request):
     """Delta Lake configuration for streaming tests (no partitioning)"""
+    unique_suffix = f'{request.node.name}_{id(request)}'
     return {
-        'table_path': str(Path(delta_test_env) / 'streaming_table'),
+        'table_path': str(Path(delta_test_env) / f'streaming_table_{unique_suffix}'),
         'partition_by': [],  # No partitioning for streaming tests
         'optimize_after_write': True,
         'vacuum_after_write': False,
