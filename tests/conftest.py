@@ -32,6 +32,7 @@ if 'DOCKER_HOST' not in os.environ:
 # Import testcontainers conditionally
 if USE_TESTCONTAINERS:
     try:
+        from testcontainers.kafka import KafkaContainer
         from testcontainers.postgres import PostgresContainer
         from testcontainers.redis import RedisContainer
 
@@ -211,6 +212,51 @@ def redis_streaming_config(redis_test_config):
         'key_pattern': '{table}:{tx_hash}',  # Use tx_hash from blockchain data
         'data_structure': 'hash',
     }
+
+
+@pytest.fixture(scope='session')
+def kafka_container():
+    """Kafka container for integration tests"""
+    if not TESTCONTAINERS_AVAILABLE:
+        pytest.skip('Testcontainers not available')
+
+    # Configure Kafka for transactions in single-broker setup
+    # These settings are required for transactional producers to work
+    container = KafkaContainer(image='confluentinc/cp-kafka:7.6.0')
+    container.with_env('KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR', '1')
+    container.with_env('KAFKA_TRANSACTION_STATE_LOG_MIN_ISR', '1')
+    container.with_env('KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR', '1')
+    container.start()
+
+    time.sleep(10)
+
+    yield container
+
+    container.stop()
+
+
+@pytest.fixture(scope='session')
+def kafka_config():
+    """Kafka configuration from environment or defaults"""
+    return {
+        'bootstrap_servers': os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092'),
+        'client_id': 'amp-test-client',
+    }
+
+
+@pytest.fixture(scope='session')
+def kafka_test_config(request):
+    """Kafka configuration from testcontainer or environment"""
+    if TESTCONTAINERS_AVAILABLE and USE_TESTCONTAINERS:
+        kafka_container = request.getfixturevalue('kafka_container')
+        bootstrap_servers = kafka_container.get_bootstrap_server()
+
+        return {
+            'bootstrap_servers': bootstrap_servers,
+            'client_id': 'amp-test-client',
+        }
+    else:
+        return request.getfixturevalue('kafka_config')
 
 
 @pytest.fixture(scope='session')
@@ -456,6 +502,7 @@ def pytest_configure(config):
     config.addinivalue_line('markers', 'performance: Performance and benchmark tests')
     config.addinivalue_line('markers', 'postgresql: Tests requiring PostgreSQL')
     config.addinivalue_line('markers', 'redis: Tests requiring Redis')
+    config.addinivalue_line('markers', 'kafka: Tests requiring Apache Kafka')
     config.addinivalue_line('markers', 'delta_lake: Tests requiring Delta Lake')
     config.addinivalue_line('markers', 'iceberg: Tests requiring Apache Iceberg')
     config.addinivalue_line('markers', 'snowflake: Tests requiring Snowflake')
