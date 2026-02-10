@@ -188,11 +188,42 @@ uv run python apps/kafka_consumer.py anvil_logs localhost:9092 my-group
 
 ## Docker Usage
 
-```bash
-# Build image
-docker build -f Dockerfile.kafka -t amp-kafka .
+### Build the loader image
 
-# Run loader (with auth via env var)
+```bash
+docker build -f Dockerfile.kafka -t amp-kafka .
+```
+
+### Quick demo: local Kafka with Docker
+
+This section runs a single-broker Kafka in Docker for quick testing. For production, point `--kafka-brokers` at your real Kafka cluster and skip this section.
+
+Start a single-broker Kafka using `confluentinc/cp-kafka`:
+
+```bash
+docker network create kafka-net
+
+docker run -d --name kafka --network kafka-net -p 9092:9092 \
+  -e KAFKA_NODE_ID=1 \
+  -e KAFKA_PROCESS_ROLES=broker,controller \
+  -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093 \
+  -e KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9092 \
+  -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:29092,EXTERNAL://localhost:9092 \
+  -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT \
+  -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+  -e KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1 \
+  -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 \
+  -e CLUSTER_ID=MkU3OEVBNTcwNTJENDM2Qk \
+  confluentinc/cp-kafka:latest
+```
+
+This configures two listeners:
+- `kafka:29092` — for containers on the `kafka-net` network (use this from the loader)
+- `localhost:9092` — for host access (use this from `uv run` or the consumer script)
+
+### Run the loader
+
+```bash
 docker run -d \
   --name amp-kafka-loader \
   --network kafka-net \
@@ -201,7 +232,7 @@ docker run -d \
   -v $(pwd)/.amp_state:/data/state \
   amp-kafka \
   --amp-server 'grpc+tls://gateway.amp.staging.thegraph.com:443' \
-  --kafka-brokers kafka:9092 \
+  --kafka-brokers kafka:29092 \
   --topic erc20_transfers \
   --query-file /data/queries/erc20_transfers_activity.sql \
   --raw-dataset 'edgeandnode/ethereum_mainnet' \
@@ -214,7 +245,11 @@ docker run -d \
 docker logs -f amp-kafka-loader
 ```
 
-Note: Ensure your Kafka container is on the same Docker network (`kafka-net`) and advertises the correct listener (`kafka:9092`).
+### Consume messages from host
+
+```bash
+uv run python apps/kafka_consumer.py erc20_transfers localhost:9092
+```
 
 ## Getting Help
 

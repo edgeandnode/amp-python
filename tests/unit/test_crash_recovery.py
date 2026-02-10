@@ -8,7 +8,6 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.amp.loaders.base import LoadResult
 from src.amp.streaming.types import BlockRange, ResumeWatermark
 from tests.fixtures.mock_clients import MockDataLoader
 

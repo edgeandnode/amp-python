@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any, Dict, List, Optional
 
 import pyarrow as pa
@@ -18,7 +18,7 @@ class KafkaConfig:
     reorg_topic: Optional[str] = None
 
 
-KAFKA_CONFIG_FIELDS = {'bootstrap_servers', 'client_id', 'key_field', 'reorg_topic'}
+KAFKA_CONFIG_FIELDS = {f.name for f in fields(KafkaConfig)}
 RESERVED_CONFIG_FIELDS = {'resilience', 'state', 'checkpoint', 'idempotency'}
 
 
@@ -40,11 +40,11 @@ class KafkaLoader(DataLoader[KafkaConfig]):
     def connect(self) -> None:
         try:
             producer_config = {
+                **self._extra_producer_config,
                 'bootstrap_servers': self.config.bootstrap_servers,
                 'client_id': self.config.client_id,
                 'value_serializer': lambda x: json.dumps(x, default=str).encode('utf-8'),
                 'transactional_id': f'{self.config.client_id}-txn',
-                **self._extra_producer_config,
             }
             if self._extra_producer_config:
                 self.logger.info(f'Extra Kafka config: {list(self._extra_producer_config.keys())}')
@@ -67,6 +67,9 @@ class KafkaLoader(DataLoader[KafkaConfig]):
             self._is_connected = True
 
         except Exception as e:
+            if self._producer:
+                self._producer.close()
+                self._producer = None
             self.logger.error(f'Failed to connect to Kafka: {e}')
             raise
 
@@ -135,7 +138,7 @@ class KafkaLoader(DataLoader[KafkaConfig]):
         Args:
             invalidation_ranges: List of block ranges to invalidate
             table_name: The Kafka topic name (used if reorg_topic not configured)
-            connection_name: Connection identifier (unused for Kafka, but required by base class)
+            connection_name: Connection identifier (required by base class interface)
         """
         if not invalidation_ranges:
             return

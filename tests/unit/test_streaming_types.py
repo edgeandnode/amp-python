@@ -369,29 +369,7 @@ class TestResumeWatermark:
         assert data['ethereum']['number'] == 200
         assert data['ethereum']['hash'] == '0xabc123'
 
-    # TODO: ResumeWatermark.from_json appears to be unused. Remove?
-    def test_from_json_full_data(self):
-        """Test deserializing watermark with all fields"""
-        json_str = json.dumps(
-            {
-                'ranges': [
-                    {'network': 'ethereum', 'start': 100, 'end': 200},
-                    {'network': 'polygon', 'start': 50, 'end': 150},
-                ],
-                'timestamp': '2024-01-01T00:00:00Z',
-                'sequence': 42,
-            }
-        )
-
-        watermark = ResumeWatermark.from_json(json_str)
-
-        assert len(watermark.ranges) == 2
-        assert watermark.ranges[0].network == 'ethereum'
-        assert watermark.timestamp == '2024-01-01T00:00:00Z'
-        assert watermark.sequence == 42
-
-    def test_round_trip_serialization(self):
-        """Test that to_json produces server format (not reversible via from_json)"""
+    def test_to_json_server_format(self):
         watermark = ResumeWatermark(
             ranges=[
                 BlockRange(network='ethereum', start=100, end=200, hash='0xabc123'),

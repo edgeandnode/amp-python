@@ -180,11 +180,3 @@ class ResumeWatermark:
 
             data[r.network] = {'number': r.end, 'hash': r.hash}
         return json.dumps(data)
-
-    # TODO: ResumeWatermark.from_json appears to be unused. Remove?
-    @classmethod
-    def from_json(cls, json_str: str) -> 'ResumeWatermark':
-        """Deserialize from JSON string"""
-        data = json.loads(json_str)
-        ranges = [BlockRange.from_dict(r) for r in data['ranges']]
-        return cls(ranges=ranges, timestamp=data.get('timestamp'), sequence=data.get('sequence'))
