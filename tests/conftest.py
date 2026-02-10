@@ -29,18 +29,30 @@ if 'DOCKER_HOST' not in os.environ:
     if colima_socket.exists():
         os.environ['DOCKER_HOST'] = f'unix://{colima_socket}'
 
-# Import testcontainers conditionally
+# Import testcontainers conditionally (each container imported independently
+# so missing driver packages don't block other containers)
+TESTCONTAINERS_AVAILABLE = False
+PostgresContainer = None
+RedisContainer = None
+ClickHouseContainer = None
+
 if USE_TESTCONTAINERS:
     try:
         from testcontainers.postgres import PostgresContainer
-        from testcontainers.redis import RedisContainer
-
-        TESTCONTAINERS_AVAILABLE = True
     except ImportError:
-        TESTCONTAINERS_AVAILABLE = False
+        pass
+    try:
+        from testcontainers.redis import RedisContainer
+    except ImportError:
+        pass
+    try:
+        from testcontainers.clickhouse import ClickHouseContainer
+    except ImportError:
+        pass
+
+    TESTCONTAINERS_AVAILABLE = any(c is not None for c in [PostgresContainer, RedisContainer, ClickHouseContainer])
+    if not TESTCONTAINERS_AVAILABLE:
         logging.warning('Testcontainers not available. Falling back to manual configuration.')
-else:
-    TESTCONTAINERS_AVAILABLE = False
 
 
 # Shared configuration fixtures
@@ -69,6 +81,19 @@ def redis_config():
         'max_connections': 10,
         'batch_size': 100,
         'pipeline_size': 500,
+    }
+
+
+@pytest.fixture(scope='session')
+def clickhouse_config():
+    """ClickHouse configuration from environment or defaults"""
+    return {
+        'host': os.getenv('CLICKHOUSE_HOST', 'localhost'),
+        'port': int(os.getenv('CLICKHOUSE_PORT', '8123')),
+        'database': os.getenv('CLICKHOUSE_DB', 'default'),
+        'username': os.getenv('CLICKHOUSE_USER', 'default'),
+        'password': os.getenv('CLICKHOUSE_PASSWORD', ''),
+        'batch_size': 100000,
     }
 
 
@@ -123,8 +148,8 @@ def test_config():
 @pytest.fixture(scope='session')
 def postgres_container():
     """PostgreSQL container for integration tests"""
-    if not TESTCONTAINERS_AVAILABLE:
-        pytest.skip('Testcontainers not available')
+    if PostgresContainer is None:
+        pytest.skip('Testcontainers for PostgreSQL not available')
 
     import time
 
@@ -147,8 +172,8 @@ def postgres_container():
 @pytest.fixture(scope='session')
 def redis_container():
     """Redis container for integration tests"""
-    if not TESTCONTAINERS_AVAILABLE:
-        pytest.skip('Testcontainers not available')
+    if RedisContainer is None:
+        pytest.skip('Testcontainers for Redis not available')
 
     from testcontainers.core.waiting_utils import wait_for_logs
 
@@ -164,9 +189,23 @@ def redis_container():
 
 
 @pytest.fixture(scope='session')
+def clickhouse_container():
+    """ClickHouse container for integration tests"""
+    if ClickHouseContainer is None:
+        pytest.skip('Testcontainers for ClickHouse not available')
+
+    container = ClickHouseContainer(image='clickhouse/clickhouse-server:24-alpine')
+    container.start()
+
+    yield container
+
+    container.stop()
+
+
+@pytest.fixture(scope='session')
 def postgresql_test_config(request):
     """PostgreSQL configuration from testcontainer or environment"""
-    if TESTCONTAINERS_AVAILABLE and USE_TESTCONTAINERS:
+    if PostgresContainer is not None:
         # Get the postgres_container fixture
         postgres_container = request.getfixturevalue('postgres_container')
         return {
@@ -186,7 +225,7 @@ def postgresql_test_config(request):
 @pytest.fixture(scope='session')
 def redis_test_config(request):
     """Redis configuration from testcontainer or environment"""
-    if TESTCONTAINERS_AVAILABLE and USE_TESTCONTAINERS:
+    if RedisContainer is not None:
         # Get the redis_container fixture
         redis_container = request.getfixturevalue('redis_container')
         return {
@@ -201,6 +240,25 @@ def redis_test_config(request):
     else:
         # Fall back to manual config from environment
         return request.getfixturevalue('redis_config')
+
+
+@pytest.fixture(scope='session')
+def clickhouse_test_config(request):
+    """ClickHouse configuration from testcontainer or environment"""
+    if ClickHouseContainer is not None:
+        # Get the clickhouse_container fixture
+        clickhouse_container = request.getfixturevalue('clickhouse_container')
+        return {
+            'host': clickhouse_container.get_container_host_ip(),
+            'port': clickhouse_container.get_exposed_port(8123),
+            'database': clickhouse_container.dbname,
+            'username': clickhouse_container.username,
+            'password': clickhouse_container.password,
+            'batch_size': 100000,
+        }
+    else:
+        # Fall back to manual config from environment
+        return request.getfixturevalue('clickhouse_config')
 
 
 @pytest.fixture
@@ -456,6 +514,7 @@ def pytest_configure(config):
     config.addinivalue_line('markers', 'performance: Performance and benchmark tests')
     config.addinivalue_line('markers', 'postgresql: Tests requiring PostgreSQL')
     config.addinivalue_line('markers', 'redis: Tests requiring Redis')
+    config.addinivalue_line('markers', 'clickhouse: Tests requiring ClickHouse')
     config.addinivalue_line('markers', 'delta_lake: Tests requiring Delta Lake')
     config.addinivalue_line('markers', 'iceberg: Tests requiring Apache Iceberg')
     config.addinivalue_line('markers', 'snowflake: Tests requiring Snowflake')
