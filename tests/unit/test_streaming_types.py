@@ -474,7 +474,7 @@ class TestReorgDetection:
 
         assert len(invalidations) == 1
         assert invalidations[0].network == 'ethereum'
-        assert invalidations[0].start == 180
+        assert invalidations[0].start == 100  # prev_range.start
         assert invalidations[0].end == 280  # max(280, 200)
 
     def test_detect_reorg_multiple_networks(self):
@@ -504,12 +504,12 @@ class TestReorgDetection:
 
         # Check ethereum reorg
         eth_inv = next(inv for inv in invalidations if inv.network == 'ethereum')
-        assert eth_inv.start == 150
+        assert eth_inv.start == 100  # prev_range.start
         assert eth_inv.end == 250
 
         # Check polygon reorg
         poly_inv = next(inv for inv in invalidations if inv.network == 'polygon')
-        assert poly_inv.start == 140
+        assert poly_inv.start == 50  # prev_range.start
         assert poly_inv.end == 240
 
     def test_detect_reorg_same_range_no_reorg(self):
@@ -546,7 +546,7 @@ class TestReorgDetection:
         invalidations = stream._detect_reorg(current_ranges)
 
         assert len(invalidations) == 1
-        assert invalidations[0].start == 250
+        assert invalidations[0].start == 100  # prev_range.start
         assert invalidations[0].end == 300  # max(280, 300)
 
     def test_is_duplicate_batch_all_same(self):
@@ -619,3 +619,105 @@ class TestReorgDetection:
         stream = ReorgAwareStream(MockIterator())
 
         assert stream._is_duplicate_batch([]) == False
+
+    def test_init_from_resume_watermark(self):
+        """Test initialization from resume watermark for cross-restart reorg detection"""
+
+        class MockIterator:
+            pass
+
+        watermark = ResumeWatermark(
+            ranges=[
+                BlockRange(network='ethereum', start=100, end=200, hash='0xabc123'),
+                BlockRange(network='polygon', start=50, end=150, hash='0xdef456'),
+            ]
+        )
+
+        stream = ReorgAwareStream(MockIterator(), resume_watermark=watermark)
+
+        assert 'ethereum' in stream.prev_ranges_by_network
+        assert 'polygon' in stream.prev_ranges_by_network
+        assert stream.prev_ranges_by_network['ethereum'].hash == '0xabc123'
+        assert stream.prev_ranges_by_network['polygon'].hash == '0xdef456'
+
+    def test_detect_reorg_hash_mismatch(self):
+        """Test reorg detection via hash mismatch (cross-restart detection)"""
+
+        class MockIterator:
+            pass
+
+        stream = ReorgAwareStream(MockIterator())
+
+        stream.prev_ranges_by_network = {
+            'ethereum': BlockRange(network='ethereum', start=100, end=200, hash='0xoriginal'),
+        }
+
+        current_ranges = [
+            BlockRange(network='ethereum', start=201, end=300, prev_hash='0xdifferent'),
+        ]
+
+        invalidations = stream._detect_reorg(current_ranges)
+
+        assert len(invalidations) == 1
+        assert invalidations[0].network == 'ethereum'
+        assert invalidations[0].hash == '0xoriginal'
+
+    def test_detect_reorg_hash_match_no_reorg(self):
+        """Test no reorg when hashes match across restart"""
+
+        class MockIterator:
+            pass
+
+        stream = ReorgAwareStream(MockIterator())
+
+        stream.prev_ranges_by_network = {
+            'ethereum': BlockRange(network='ethereum', start=100, end=200, hash='0xsame'),
+        }
+
+        current_ranges = [
+            BlockRange(network='ethereum', start=201, end=300, prev_hash='0xsame'),
+        ]
+
+        invalidations = stream._detect_reorg(current_ranges)
+
+        assert len(invalidations) == 0
+
+    def test_detect_reorg_hash_mismatch_with_none_prev_hash(self):
+        """Test no reorg detection when server prev_hash is None (genesis block)"""
+
+        class MockIterator:
+            pass
+
+        stream = ReorgAwareStream(MockIterator())
+
+        stream.prev_ranges_by_network = {
+            'ethereum': BlockRange(network='ethereum', start=0, end=0, hash='0xgenesis'),
+        }
+
+        current_ranges = [
+            BlockRange(network='ethereum', start=1, end=100, prev_hash=None),
+        ]
+
+        invalidations = stream._detect_reorg(current_ranges)
+
+        assert len(invalidations) == 0
+
+    def test_detect_reorg_hash_mismatch_with_none_stored_hash(self):
+        """Test no reorg detection when stored hash is None"""
+
+        class MockIterator:
+            pass
+
+        stream = ReorgAwareStream(MockIterator())
+
+        stream.prev_ranges_by_network = {
+            'ethereum': BlockRange(network='ethereum', start=100, end=200, hash=None),
+        }
+
+        current_ranges = [
+            BlockRange(network='ethereum', start=201, end=300, prev_hash='0xsome_hash'),
+        ]
+
+        invalidations = stream._detect_reorg(current_ranges)
+
+        assert len(invalidations) == 0
