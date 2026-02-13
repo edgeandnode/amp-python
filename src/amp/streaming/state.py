@@ -9,7 +9,7 @@ import hashlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 from amp.streaming.types import BlockRange, ResumeWatermark
 
@@ -235,7 +235,7 @@ class InMemoryStreamStateStore(StreamStateStore):
 
     def _get_key(
         self, connection_name: str, table_name: str, network: Optional[str] = None
-    ) -> Tuple[str, str, str] | List[Tuple[str, str, str]]:
+    ) -> Union[Tuple[str, str, str], List[Tuple[str, str, str]]]:
         """Get storage key(s) for the given parameters."""
         if network:
             return (connection_name, table_name, network)

@@ -4,10 +4,10 @@ This module provides functions to parse and display dataset schemas
 from manifest files in a human-readable format.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, List, Union
 
 
-def describe_manifest(manifest: dict) -> Dict[str, list[Dict[str, str | bool]]]:
+def describe_manifest(manifest: dict) -> Dict[str, List[Dict[str, Union[str, bool]]]]:
     """Extract structured schema information from a manifest.
 
     Args:
