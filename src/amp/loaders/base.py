@@ -840,8 +840,21 @@ class DataLoader(ABC, Generic[TConfig]):
         for range_obj in resume_pos.ranges:
             from_block = range_obj.end + 1
 
+            # Check if there are actually uncommitted batches beyond the watermark
+            uncommitted = self.state_store.invalidate_from_block(
+                connection_name, table_name, range_obj.network, from_block
+            )
+
+            if not uncommitted:
+                self.logger.debug(
+                    f'No uncommitted batches for {range_obj.network} beyond block {from_block}, '
+                    f'skipping crash recovery cleanup'
+                )
+                continue
+
             self.logger.info(
-                f'Crash recovery: Cleaning up {table_name} data for {range_obj.network} from block {from_block} onwards'
+                f'Crash recovery: Cleaning up {len(uncommitted)} uncommitted batches '
+                f'for {range_obj.network} from block {from_block} onwards in {table_name}'
             )
 
             invalidation_ranges = [
@@ -859,19 +872,12 @@ class DataLoader(ABC, Generic[TConfig]):
                 self.logger.info(f'Crash recovery completed for {range_obj.network} in {table_name}')
 
             except NotImplementedError:
-                invalidated = self.state_store.invalidate_from_block(
-                    connection_name, table_name, range_obj.network, from_block
+                self.logger.warning(
+                    f'Crash recovery: Cleared {len(uncommitted)} batches from state '
+                    f'for {range_obj.network} but cannot delete data from {table_name}. '
+                    f'{self.__class__.__name__} does not support data deletion. '
+                    f'Duplicates may occur on resume.'
                 )
-
-                if invalidated:
-                    self.logger.warning(
-                        f'Crash recovery: Cleared {len(invalidated)} batches from state '
-                        f'for {range_obj.network} but cannot delete data from {table_name}. '
-                        f'{self.__class__.__name__} does not support data deletion. '
-                        f'Duplicates may occur on resume.'
-                    )
-                else:
-                    self.logger.debug(f'No uncommitted batches found for {range_obj.network}')
 
     def _add_metadata_columns(self, data: pa.RecordBatch, block_ranges: List[BlockRange]) -> pa.RecordBatch:
         """

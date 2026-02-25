@@ -25,7 +25,7 @@ RESERVED_CONFIG_FIELDS = {'resilience', 'state', 'checkpoint', 'idempotency'}
 class KafkaLoader(DataLoader[KafkaConfig]):
     SUPPORTED_MODES = {LoadMode.APPEND}
     REQUIRES_SCHEMA_MATCH = False
-    SUPPORTS_TRANSACTIONS = True
+    SUPPORTS_TRANSACTIONS = False
 
     def __init__(self, config: Dict[str, Any], label_manager=None) -> None:
         self._extra_producer_config = {
@@ -33,6 +33,14 @@ class KafkaLoader(DataLoader[KafkaConfig]):
         }
         super().__init__(config, label_manager)
         self._producer = None
+
+        # Replace in-memory state store with LMDB if configured (before connect, consistent with other loaders)
+        if self.state_enabled and self.state_storage == 'lmdb':
+            self.state_store = LMDBStreamStateStore(
+                connection_name=self.config.client_id,
+                data_dir=self.state_data_dir,
+            )
+            self.logger.info(f'Initialized LMDB state store at {self.state_store.data_dir}')
 
     def _get_required_config_fields(self) -> list[str]:
         return ['bootstrap_servers']
@@ -57,13 +65,6 @@ class KafkaLoader(DataLoader[KafkaConfig]):
             self.logger.info(f'Connected to Kafka at {self.config.bootstrap_servers}')
             self.logger.info(f'Client ID: {self.config.client_id}')
 
-            if self.state_enabled and self.state_storage == 'lmdb':
-                self.state_store = LMDBStreamStateStore(
-                    connection_name=self.config.client_id,
-                    data_dir=self.state_data_dir,
-                )
-                self.logger.info(f'Initialized LMDB state store at {self.state_store.data_dir}')
-
             self._is_connected = True
 
         except Exception as e:
@@ -84,9 +85,27 @@ class KafkaLoader(DataLoader[KafkaConfig]):
         self._is_connected = False
         self.logger.info('Disconnected from Kafka')
 
+    def health_check(self) -> Dict[str, Any]:
+        """Check Kafka broker connectivity."""
+        base = {
+            'healthy': False,
+            'loader_type': 'kafka',
+            'bootstrap_servers': self.config.bootstrap_servers,
+            'client_id': self.config.client_id,
+        }
+        if not self._is_connected or not self._producer:
+            base['error'] = 'Not connected'
+            return base
+        try:
+            healthy = hasattr(self._producer, '_sender') and self._producer._sender.is_alive()
+            base['healthy'] = healthy
+            return base
+        except Exception as e:
+            base['error'] = str(e)
+            return base
+
     def _create_table_from_schema(self, schema: pa.Schema, table_name: str) -> None:
         self.logger.info(f'Kafka topic {table_name} will be auto-created on first message send')
-        pass
 
     def _load_batch_impl(self, batch: pa.RecordBatch, table_name: str, **kwargs) -> int:
         if not self._producer:
@@ -108,6 +127,7 @@ class KafkaLoader(DataLoader[KafkaConfig]):
 
                 self._producer.send(topic=table_name, key=key, value=row)
 
+            self._producer.flush()
             self._producer.commit_transaction()
             self.logger.debug(f'Committed transaction with {num_rows} messages to topic {table_name}')
 
@@ -169,6 +189,7 @@ class KafkaLoader(DataLoader[KafkaConfig]):
                     f'{invalidation_range.network} blocks {invalidation_range.start}-{invalidation_range.end}'
                 )
 
+            self._producer.flush()
             self._producer.commit_transaction()
             self.logger.info(f'Committed {len(invalidation_ranges)} reorg events to {reorg_topic}')
 
