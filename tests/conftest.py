@@ -228,7 +228,9 @@ def kafka_container():
     container.with_env('KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR', '1')
     container.start()
 
-    time.sleep(10)
+    # KafkaContainer.start() already waits for "[KafkaServer id=N] started" log.
+    # Brief additional wait for transaction coordinator to be fully ready.
+    time.sleep(5)
 
     yield container
 

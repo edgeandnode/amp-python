@@ -27,6 +27,18 @@ class TestKafkaLoaderIntegration:
         assert loader._is_connected == False
         assert loader._producer is None
 
+    def test_health_check(self, kafka_test_config):
+        loader = KafkaLoader(kafka_test_config)
+
+        health = loader.health_check()
+        assert health['healthy'] == False
+        assert 'error' in health
+
+        with loader:
+            health = loader.health_check()
+            assert health['healthy'] == True
+            assert health['bootstrap_servers'] == kafka_test_config['bootstrap_servers']
+
     def test_context_manager(self, kafka_test_config):
         loader = KafkaLoader(kafka_test_config)
 
