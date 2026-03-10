@@ -461,6 +461,7 @@ def pytest_configure(config):
     config.addinivalue_line('markers', 'snowflake: Tests requiring Snowflake')
     config.addinivalue_line('markers', 'lmdb: Tests requiring LMDB')
     config.addinivalue_line('markers', 'slow: Slow tests (> 30 seconds)')
+    config.addinivalue_line('markers', 'e2e: End-to-end tests (require anvil, ampd, Docker)')
 
 
 # Utility fixtures for mocking
