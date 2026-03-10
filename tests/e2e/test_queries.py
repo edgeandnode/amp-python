@@ -53,3 +53,10 @@ def test_query_with_where_clause(e2e_client):
 def test_query_with_aggregation(e2e_client):
     table = e2e_client.sql('SELECT COUNT(*) AS cnt FROM anvil.blocks').to_arrow()
     assert table.column('cnt').to_pylist()[0] == 11
+
+
+@pytest.mark.e2e
+def test_isolated_server(amp_test_server):
+    """Verify function-scoped stack works on its own ports."""
+    table = amp_test_server.client.sql('SELECT COUNT(*) AS cnt FROM anvil.blocks').to_arrow()
+    assert table.column('cnt').to_pylist()[0] == 11

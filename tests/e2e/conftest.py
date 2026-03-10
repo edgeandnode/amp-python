@@ -1,8 +1,9 @@
-"""E2E test fixtures: session-scoped ampd + Anvil infrastructure."""
+"""E2E test fixtures: session-scoped and function-scoped ampd + Anvil infrastructure."""
 
 import logging
 import shutil
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -27,73 +28,98 @@ def _skip_if_missing_deps():
         pytest.skip(f'Missing binaries: {", ".join(missing)}')
 
 
-@pytest.fixture(scope='session')
-def e2e_temp_dir():
-    _skip_if_missing_deps()
-    d = tempfile.mkdtemp(prefix='amp_e2e_')
-    yield Path(d)
-    shutil.rmtree(d, ignore_errors=True)
+@dataclass
+class AmpTestServer:
+    """An ampd + Anvil stack with a connected client."""
+
+    client: object
+    anvil_url: str
+    admin_url: str
+    ports: dict
 
 
-@pytest.fixture(scope='session')
-def e2e_ports():
-    return {
+def _setup_amp_stack(num_blocks: int = 10):
+    """Spin up anvil + ampd + register + deploy.
+
+    Returns (AmpTestServer, cleanup_fn).
+    """
+    from amp.client import Client
+
+    temp_dir = Path(tempfile.mkdtemp(prefix='amp_e2e_'))
+    log_dir = temp_dir / 'logs'
+    ports = {
         'admin': get_free_port(),
         'flight': get_free_port(),
         'jsonl': get_free_port(),
     }
 
+    anvil_proc, anvil_url = spawn_anvil(log_dir)
+    mine_blocks(anvil_url, num_blocks)
 
-@pytest.fixture(scope='session')
-def e2e_anvil(e2e_temp_dir):
-    log_dir = e2e_temp_dir / 'logs'
-    proc, url = spawn_anvil(log_dir)
-    mine_blocks(url, 10)
-    yield proc, url
-    proc.terminate()
-
-
-@pytest.fixture(scope='session')
-def e2e_ampd_config(e2e_temp_dir, e2e_anvil, e2e_ports):
-    _, anvil_url = e2e_anvil
     config_path = generate_ampd_config(
-        e2e_temp_dir,
-        e2e_ports['admin'],
-        e2e_ports['flight'],
-        e2e_ports['jsonl'],
+        temp_dir,
+        ports['admin'],
+        ports['flight'],
+        ports['jsonl'],
     )
-    provider_path = generate_provider_toml(e2e_temp_dir, anvil_url)
-    manifest_path = copy_anvil_manifest(e2e_temp_dir)
-    return config_path, provider_path, manifest_path
+    generate_provider_toml(temp_dir, anvil_url)
+    manifest_path = copy_anvil_manifest(temp_dir)
 
+    ampd_proc = spawn_ampd(config_path, log_dir)
+    wait_for_ampd_ready(ports['admin'])
 
-@pytest.fixture(scope='session')
-def e2e_ampd(e2e_temp_dir, e2e_ampd_config, e2e_ports):
-    config_path, _, _ = e2e_ampd_config
-    log_dir = e2e_temp_dir / 'logs'
-    proc = spawn_ampd(config_path, log_dir)
-    wait_for_ampd_ready(e2e_ports['admin'])
-    yield proc
-    proc.terminate()
-
-
-@pytest.fixture(scope='session')
-def e2e_dataset(e2e_ampd, e2e_ampd_config, e2e_ports):
-    _, provider_path, manifest_path = e2e_ampd_config
-    admin_url = f'http://127.0.0.1:{e2e_ports["admin"]}'
-
+    admin_url = f'http://127.0.0.1:{ports["admin"]}'
     manager = DatasetManager(admin_url)
     try:
-        manager.register_provider('anvil', provider_path)
+        manager.register_provider('anvil', temp_dir / 'provider_sources' / 'anvil.toml')
         manager.register_dataset('_', 'anvil', manifest_path, '0.0.1')
         manager.deploy_dataset('_', 'anvil', '0.0.1')
-        wait_for_data_ready(e2e_ports['flight'])
+        wait_for_data_ready(ports['flight'])
     finally:
         manager.close()
 
+    server = AmpTestServer(
+        client=Client(query_url=f'grpc://127.0.0.1:{ports["flight"]}'),
+        anvil_url=anvil_url,
+        admin_url=admin_url,
+        ports=ports,
+    )
+
+    def cleanup():
+        ampd_proc.terminate()
+        anvil_proc.terminate()
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    return server, cleanup
+
+
+# ---------------------------------------------------------------------------
+# Session-scoped fixtures
+# ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope='session')
-def e2e_client(e2e_dataset, e2e_ports):
-    from amp.client import Client
+def e2e_server():
+    _skip_if_missing_deps()
+    server, cleanup = _setup_amp_stack()
+    yield server
+    cleanup()
 
-    return Client(query_url=f'grpc://127.0.0.1:{e2e_ports["flight"]}')
+
+@pytest.fixture(scope='session')
+def e2e_client(e2e_server):
+    return e2e_server.client
+
+
+# ---------------------------------------------------------------------------
+# Function-scoped fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def amp_test_server():
+    """Isolated ampd + Anvil stack for a single test."""
+    _skip_if_missing_deps()
+    server, cleanup = _setup_amp_stack()
+    yield server
+    cleanup()
