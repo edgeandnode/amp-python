@@ -9,7 +9,6 @@ FIXTURES_DIR = Path(__file__).parent.parent / 'fixtures'
 
 def generate_ampd_config(
     config_dir: Path,
-    pg_url: str,
     admin_port: int,
     flight_port: int,
     jsonl_port: int,
@@ -21,8 +20,6 @@ def generate_ampd_config(
     for subdir in ('data', 'manifests', 'providers', 'provider_sources'):
         (config_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-    pg_url = pg_url.replace('postgresql+psycopg2://', 'postgresql://')
-
     template = (FIXTURES_DIR / 'config.toml.template').read_text()
     config = template.format(
         manifests_dir=config_dir / 'manifests',
@@ -31,7 +28,6 @@ def generate_ampd_config(
         admin_port=admin_port,
         flight_port=flight_port,
         jsonl_port=jsonl_port,
-        pg_url=pg_url,
     )
 
     config_path = config_dir / 'config.toml'

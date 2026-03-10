@@ -30,7 +30,7 @@ class TestBlocksQuery:
 class TestTransactionsQuery:
     def test_query_transactions(self, e2e_client):
         table = e2e_client.sql('SELECT * FROM anvil.transactions LIMIT 5').to_arrow()
-        expected_cols = {'block_num', 'hash', 'from', 'to', 'value', 'gas_used'}
+        expected_cols = {'block_num', 'tx_hash', 'from', 'to', 'value', 'gas_used'}
         assert expected_cols.issubset(set(table.column_names))
 
 

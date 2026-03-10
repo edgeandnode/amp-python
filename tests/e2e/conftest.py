@@ -1,7 +1,6 @@
 """E2E test fixtures: session-scoped ampd + Anvil infrastructure."""
 
 import logging
-import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -23,13 +22,14 @@ logger = logging.getLogger(__name__)
 
 
 def _skip_if_missing_deps():
-    missing = [b for b in ('anvil', 'ampd') if not shutil.which(b)]
+    missing = [b for b in ('anvil', 'ampd', 'initdb', 'postgres') if not shutil.which(b)]
     if missing:
         pytest.skip(f'Missing binaries: {", ".join(missing)}')
 
 
 @pytest.fixture(scope='session')
 def e2e_temp_dir():
+    _skip_if_missing_deps()
     d = tempfile.mkdtemp(prefix='amp_e2e_')
     yield Path(d)
     shutil.rmtree(d, ignore_errors=True)
@@ -45,24 +45,6 @@ def e2e_ports():
 
 
 @pytest.fixture(scope='session')
-def e2e_postgres_url():
-    _skip_if_missing_deps()
-
-    if 'DOCKER_HOST' not in os.environ:
-        colima_socket = Path.home() / '.colima' / 'default' / 'docker.sock'
-        if colima_socket.exists():
-            os.environ['DOCKER_HOST'] = f'unix://{colima_socket}'
-
-    if 'TESTCONTAINERS_RYUK_DISABLED' not in os.environ:
-        os.environ['TESTCONTAINERS_RYUK_DISABLED'] = 'true'
-
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer('postgres:16') as pg:
-        yield pg.get_connection_url()
-
-
-@pytest.fixture(scope='session')
 def e2e_anvil(e2e_temp_dir):
     log_dir = e2e_temp_dir / 'logs'
     proc, url = spawn_anvil(log_dir)
@@ -72,11 +54,10 @@ def e2e_anvil(e2e_temp_dir):
 
 
 @pytest.fixture(scope='session')
-def e2e_ampd_config(e2e_temp_dir, e2e_postgres_url, e2e_anvil, e2e_ports):
+def e2e_ampd_config(e2e_temp_dir, e2e_anvil, e2e_ports):
     _, anvil_url = e2e_anvil
     config_path = generate_ampd_config(
         e2e_temp_dir,
-        e2e_postgres_url,
         e2e_ports['admin'],
         e2e_ports['flight'],
         e2e_ports['jsonl'],
