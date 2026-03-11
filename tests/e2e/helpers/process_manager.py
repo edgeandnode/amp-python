@@ -106,6 +106,28 @@ def mine_blocks(anvil_url: str, count: int) -> None:
             resp.raise_for_status()
 
 
+def evm_snapshot(anvil_url: str) -> str:
+    """Take a snapshot of the current anvil state. Returns snapshot ID."""
+    with httpx.Client() as client:
+        resp = client.post(
+            anvil_url,
+            json={'jsonrpc': '2.0', 'method': 'evm_snapshot', 'params': [], 'id': 1},
+        )
+        resp.raise_for_status()
+        return resp.json()['result']
+
+
+def evm_revert(anvil_url: str, snapshot_id: str) -> None:
+    """Revert anvil to a previous snapshot."""
+    with httpx.Client() as client:
+        resp = client.post(
+            anvil_url,
+            json={'jsonrpc': '2.0', 'method': 'evm_revert', 'params': [snapshot_id], 'id': 1},
+        )
+        resp.raise_for_status()
+        assert resp.json()['result'] is True, 'evm_revert failed'
+
+
 def spawn_ampd(config_path: Path, log_dir: Path) -> ManagedProcess:
     """Spawn ampd dev with the given config file."""
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -143,17 +165,22 @@ def wait_for_ampd_ready(admin_port: int, timeout: int = 60) -> None:
 
 def wait_for_data_ready(flight_port: int, timeout: int = 60) -> None:
     """Poll Flight SQL until data is queryable."""
+    wait_for_block(flight_port, 0, timeout=timeout)
+
+
+def wait_for_block(flight_port: int, block_num: int, timeout: int = 60) -> None:
+    """Poll Flight SQL until a specific block number is available."""
     from amp.client import Client
 
     start = time.monotonic()
     while time.monotonic() - start < timeout:
         try:
             client = Client(query_url=f'grpc://127.0.0.1:{flight_port}')
-            table = client.sql('SELECT block_num FROM anvil.blocks LIMIT 1').to_arrow()
+            table = client.sql(f'SELECT block_num FROM anvil.blocks WHERE block_num = {block_num}').to_arrow()
             if len(table) > 0:
-                logger.info(f'Data ready after {time.monotonic() - start:.1f}s')
+                logger.info(f'Block {block_num} available after {time.monotonic() - start:.1f}s')
                 return
         except Exception:
             pass
-        time.sleep(2)
-    raise TimeoutError(f'Flight SQL data not queryable after {timeout}s')
+        time.sleep(1)
+    raise TimeoutError(f'Block {block_num} not available after {timeout}s')

@@ -38,7 +38,7 @@ class AmpTestServer:
     ports: dict
 
 
-def _setup_amp_stack(num_blocks: int = 10):
+def _setup_amp_stack(num_blocks: int = 10, end_block: str = 'latest'):
     """Spin up anvil + ampd + register + deploy.
 
     Returns (AmpTestServer, cleanup_fn).
@@ -74,7 +74,7 @@ def _setup_amp_stack(num_blocks: int = 10):
         try:
             manager.register_provider('anvil', temp_dir / 'provider_sources' / 'anvil.toml')
             manager.register_dataset('_', 'anvil', manifest_path, '0.0.1')
-            manager.deploy_dataset('_', 'anvil', '0.0.1')
+            manager.deploy_dataset('_', 'anvil', '0.0.1', end_block=end_block)
             wait_for_data_ready(ports['flight'])
         finally:
             manager.close()
