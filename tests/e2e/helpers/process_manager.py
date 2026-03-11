@@ -113,9 +113,10 @@ def spawn_ampd(config_path: Path, log_dir: Path) -> ManagedProcess:
     stdout_f = open(log_dir / 'ampd_stdout.log', 'w')
     stderr_f = open(log_dir / 'ampd_stderr.log', 'w')
 
+    amp_dir = config_path.parent / '.amp'
     process = subprocess.Popen(
         ['ampd', 'dev'],
-        env={**os.environ, 'AMP_CONFIG': str(config_path)},
+        env={**os.environ, 'AMP_CONFIG': str(config_path), 'AMP_DIR': str(amp_dir)},
         stdout=stdout_f,
         stderr=stderr_f,
     )
