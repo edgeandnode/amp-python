@@ -1,6 +1,5 @@
 """Config file generation for ampd E2E tests."""
 
-import json
 import shutil
 from pathlib import Path
 
@@ -59,9 +58,3 @@ def copy_anvil_manifest(config_dir: Path) -> Path:
     dest = config_dir / 'manifests' / 'anvil.json'
     shutil.copy(FIXTURES_DIR / 'anvil.json', dest)
     return dest
-
-
-def load_anvil_manifest() -> dict:
-    """Load the anvil.json manifest as a dict."""
-    with open(FIXTURES_DIR / 'anvil.json') as f:
-        return json.load(f)

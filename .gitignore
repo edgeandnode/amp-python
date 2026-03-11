@@ -2,6 +2,8 @@
 .env
 .test.env
 *.env
+.amp
+.amp_state
 
 # Kubernetes secrets (NEVER commit these!)
 k8s/secret.yaml
