@@ -46,6 +46,8 @@ def _setup_amp_stack(num_blocks: int = 10, end_block: str = 'latest'):
     from amp.client import Client
 
     temp_dir = Path(tempfile.mkdtemp(prefix='amp_e2e_'))
+    anvil_proc = None
+    ampd_proc = None
     try:
         log_dir = temp_dir / 'logs'
         ports = {
@@ -79,6 +81,10 @@ def _setup_amp_stack(num_blocks: int = 10, end_block: str = 'latest'):
         finally:
             manager.close()
     except Exception:
+        if ampd_proc:
+            ampd_proc.terminate()
+        if anvil_proc:
+            anvil_proc.terminate()
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise
 
@@ -97,17 +103,22 @@ def _setup_amp_stack(num_blocks: int = 10, end_block: str = 'latest'):
     return server, cleanup
 
 
+def _amp_fixture(**stack_kwargs):
+    """Yield an AmpTestServer, handling skip-check and cleanup."""
+    _skip_if_missing_deps()
+    server, cleanup = _setup_amp_stack(**stack_kwargs)
+    yield server
+    cleanup()
+
+
 # ---------------------------------------------------------------------------
-# Session-scoped fixtures
+# Session-scoped fixtures (read-only query tests)
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope='session')
 def e2e_server():
-    _skip_if_missing_deps()
-    server, cleanup = _setup_amp_stack()
-    yield server
-    cleanup()
+    yield from _amp_fixture()
 
 
 @pytest.fixture(scope='session')
@@ -115,15 +126,20 @@ def e2e_client(e2e_server):
     return e2e_server.client
 
 
+@pytest.fixture(scope='session')
+def continuous_server():
+    """Session-scoped ampd + Anvil with continuous deploy."""
+    yield from _amp_fixture(end_block=None)
+
+
 # ---------------------------------------------------------------------------
-# Function-scoped fixture
+# Function-scoped fixtures (tests that mutate chain state)
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
 def amp_test_server():
     """Isolated ampd + Anvil stack for a single test."""
-    _skip_if_missing_deps()
-    server, cleanup = _setup_amp_stack()
-    yield server
-    cleanup()
+    yield from _amp_fixture()
+
+

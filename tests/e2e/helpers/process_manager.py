@@ -172,10 +172,10 @@ def wait_for_block(flight_port: int, block_num: int, timeout: int = 60) -> None:
     """Poll Flight SQL until a specific block number is available."""
     from amp.client import Client
 
+    client = Client(query_url=f'grpc://127.0.0.1:{flight_port}')
     start = time.monotonic()
     while time.monotonic() - start < timeout:
         try:
-            client = Client(query_url=f'grpc://127.0.0.1:{flight_port}')
             table = client.sql(f'SELECT block_num FROM anvil.blocks WHERE block_num = {block_num}').to_arrow()
             if len(table) > 0:
                 logger.info(f'Block {block_num} available after {time.monotonic() - start:.1f}s')

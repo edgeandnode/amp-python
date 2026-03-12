@@ -1,19 +1,15 @@
-"""E2E streaming and continuous ingestion tests against real ampd + Anvil."""
+"""E2E streaming, continuous ingestion, and reorg detection tests."""
+
+import time
 
 import pytest
 
-from .helpers.process_manager import mine_blocks, wait_for_block
-
-
-@pytest.fixture()
-def continuous_server():
-    """Isolated ampd + Anvil stack with continuous deploy."""
-    from .conftest import _setup_amp_stack, _skip_if_missing_deps
-
-    _skip_if_missing_deps()
-    server, cleanup = _setup_amp_stack(num_blocks=10, end_block=None)
-    yield server
-    cleanup()
+from .helpers.process_manager import (
+    evm_revert,
+    evm_snapshot,
+    mine_blocks,
+    wait_for_block,
+)
 
 
 @pytest.mark.e2e
@@ -76,3 +72,57 @@ def test_streaming_metadata_parsing(continuous_server):
         assert r.start >= 0
         assert r.end >= r.start
         assert r.hash is not None, 'Server should send block hashes'
+
+
+@pytest.fixture()
+def reorg_server():
+    """Isolated ampd + Anvil stack for reorg testing."""
+    from .conftest import _amp_fixture
+
+    yield from _amp_fixture(end_block=None)
+
+
+@pytest.mark.e2e
+def test_reorg_detection(reorg_server):
+    """Verify ampd detects a reorg when new blocks break the hash chain."""
+    anvil_url = reorg_server.anvil_url
+    flight_port = reorg_server.ports['flight']
+    client = reorg_server.client
+
+    # Snapshot at block 10
+    snapshot_id = evm_snapshot(anvil_url)
+
+    # Mine blocks 11-15, wait for ingestion
+    mine_blocks(anvil_url, 5)
+    wait_for_block(flight_port, 15)
+
+    # Capture pre-reorg hashes
+    pre_reorg = client.sql(
+        'SELECT block_num, hash FROM anvil.blocks WHERE block_num >= 11 ORDER BY block_num'
+    ).to_arrow()
+    assert len(pre_reorg) == 5
+    pre_hashes = pre_reorg.column('hash').to_pylist()
+
+    # Revert to snapshot and mine past the old tip so the worker
+    # writes new blocks whose prev_hash won't match the stored hash,
+    # triggering fork detection and re-materialization.
+    evm_revert(anvil_url, snapshot_id)
+    mine_blocks(anvil_url, 10)  # blocks 11-20, different hashes
+
+    # Wait for ampd to detect reorg and re-ingest
+    timeout = 30
+    start = time.monotonic()
+    while time.monotonic() - start < timeout:
+        post_reorg = client.sql(
+            'SELECT block_num, hash FROM anvil.blocks WHERE block_num >= 11 AND block_num <= 15 ORDER BY block_num'
+        ).to_arrow()
+        if len(post_reorg) == 5:
+            post_hashes = post_reorg.column('hash').to_pylist()
+            if post_hashes != pre_hashes:
+                break
+        time.sleep(1)
+    else:
+        pytest.fail(f'ampd did not detect reorg within {timeout}s')
+
+    assert pre_reorg.column('block_num').to_pylist() == post_reorg.column('block_num').to_pylist()
+    assert post_hashes != pre_hashes
