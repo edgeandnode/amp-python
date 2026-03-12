@@ -47,8 +47,10 @@ jobs:
 
     - name: Install amp tools
       run: |
-        curl --proto '=https' --tlsv1.2 -sSf https://ampup.sh/install | sh
-        echo "$HOME/.amp/bin" >> "$GITHUB_PATH"
+        gh release download --repo edgeandnode/amp --pattern 'ampd-linux-x86_64' --output /usr/local/bin/ampd
+        chmod +x /usr/local/bin/ampd
+      env:
+        GH_TOKEN: ${{ github.token }}
 
     - name: Verify tools
       run: |
