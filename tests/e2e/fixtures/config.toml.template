@@ -1,0 +1,7 @@
+manifests_dir = "{manifests_dir}"
+providers_dir = "{providers_dir}"
+data_dir = "{data_dir}"
+max_mem_mb = 2000
+admin_api_addr = "127.0.0.1:{admin_port}"
+flight_addr = "127.0.0.1:{flight_port}"
+jsonl_addr = "127.0.0.1:{jsonl_port}"

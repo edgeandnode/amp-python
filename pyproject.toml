@@ -123,6 +123,7 @@ markers = [
     "iceberg: Tests requiring Apache Iceberg",
     "snowflake: Tests requiring Snowflake",
     "cloud: Tests requiring cloud storage access",
+    "e2e: End-to-end tests (require anvil, ampd, Docker)",
 ]
 
 [tool.ruff]

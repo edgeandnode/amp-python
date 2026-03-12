@@ -54,6 +54,11 @@ test-performance:
 	@echo "🏇 Running performance tests..."
 	$(PYTHON) pytest tests/performance/ -m "performance" -v --log-cli-level=ERROR
 
+# E2E tests (require anvil, ampd, Docker)
+test-e2e:
+	@echo "Running E2E tests..."
+	$(PYTHON) pytest tests/e2e/ -m "e2e" -v --log-cli-level=INFO -x
+
 # Code quality (using your ruff config)
 lint:
 	@echo "🔍 Linting code..."
@@ -133,6 +138,7 @@ help:
 	@echo "  make test-redis               - Run Redis tests"
 	@echo "  make test-snowflake           - Run Snowflake tests"
 	@echo "  make test-performance         - Run performance tests"
+	@echo "  make test-e2e                 - Run E2E tests (require anvil, ampd, Docker)"
 	@echo "  make lint                     - Lint code with ruff"
 	@echo "  make format                   - Format code with ruff"
 	@echo "  make test-setup               - Start test databases"
