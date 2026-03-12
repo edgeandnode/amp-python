@@ -25,10 +25,10 @@ from .helpers.process_manager import (
 logger = logging.getLogger(__name__)
 
 
-def _skip_if_missing_deps():
+def _check_deps():
     missing = [b for b in ('anvil', 'ampd', 'initdb', 'postgres') if not shutil.which(b)]
     if missing:
-        pytest.skip(f'Missing binaries: {", ".join(missing)}')
+        pytest.fail(f'Missing binaries: {", ".join(missing)}')
 
 
 @dataclass
@@ -113,7 +113,7 @@ def _setup_amp_stack(num_blocks: int = 10, end_block: str | None = 'latest'):
 
 def _amp_fixture(**stack_kwargs):
     """Yield an AmpTestServer, handling skip-check and cleanup."""
-    _skip_if_missing_deps()
+    _check_deps()
     server, cleanup = _setup_amp_stack(**stack_kwargs)
     yield server
     cleanup()
