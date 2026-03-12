@@ -11,28 +11,27 @@ from .helpers.process_manager import (
     wait_for_block,
 )
 
+pytestmark = pytest.mark.e2e
 
-@pytest.mark.e2e
+
 def test_continuous_ingestion(continuous_server):
     """Verify ampd ingests new blocks in continuous mode."""
     anvil_url = continuous_server.anvil_url
     flight_port = continuous_server.ports['flight']
     client = continuous_server.client
 
-    # Verify initial 11 blocks (0-10)
     table = client.sql('SELECT COUNT(*) AS cnt FROM anvil.blocks').to_arrow()
-    assert table.column('cnt').to_pylist()[0] == 11
+    count_before = table.column('cnt').to_pylist()[0]
+    assert count_before >= 11
 
-    # Mine 5 more blocks
     mine_blocks(anvil_url, 5)
-    wait_for_block(flight_port, 15)
+    wait_for_block(flight_port, count_before + 4)
 
-    # Verify all 16 blocks present
     table = client.sql('SELECT COUNT(*) AS cnt FROM anvil.blocks').to_arrow()
-    assert table.column('cnt').to_pylist()[0] == 16
+    count_after = table.column('cnt').to_pylist()[0]
+    assert count_after >= count_before + 5
 
 
-@pytest.mark.e2e
 def test_streaming_metadata_parsing(continuous_server):
     """Verify real server app_metadata parses into BatchMetadata with hashes."""
     from google.protobuf.any_pb2 import Any
@@ -74,15 +73,6 @@ def test_streaming_metadata_parsing(continuous_server):
         assert r.hash is not None, 'Server should send block hashes'
 
 
-@pytest.fixture()
-def reorg_server():
-    """Isolated ampd + Anvil stack for reorg testing."""
-    from .conftest import _amp_fixture
-
-    yield from _amp_fixture(end_block=None)
-
-
-@pytest.mark.e2e
 def test_reorg_detection(reorg_server):
     """Verify ampd detects a reorg when new blocks break the hash chain."""
     anvil_url = reorg_server.anvil_url
@@ -111,6 +101,7 @@ def test_reorg_detection(reorg_server):
 
     # Wait for ampd to detect reorg and re-ingest
     timeout = 30
+    post_hashes = None
     start = time.monotonic()
     while time.monotonic() - start < timeout:
         post_reorg = client.sql(

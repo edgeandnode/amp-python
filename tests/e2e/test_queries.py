@@ -3,8 +3,9 @@
 import pyarrow as pa
 import pytest
 
+pytestmark = pytest.mark.e2e
 
-@pytest.mark.e2e
+
 def test_query_blocks(e2e_client):
     table = e2e_client.sql('SELECT block_num, hash FROM anvil.blocks ORDER BY block_num').to_arrow()
 
@@ -14,7 +15,6 @@ def test_query_blocks(e2e_client):
     assert all(h is not None for h in table.column('hash').to_pylist())
 
 
-@pytest.mark.e2e
 def test_blocks_schema(e2e_client):
     table = e2e_client.sql('SELECT * FROM anvil.blocks LIMIT 1').to_arrow()
     schema = table.schema
@@ -27,21 +27,18 @@ def test_blocks_schema(e2e_client):
     assert hasattr(schema.field('timestamp').type, 'tz')
 
 
-@pytest.mark.e2e
 def test_query_transactions(e2e_client):
     table = e2e_client.sql('SELECT * FROM anvil.transactions LIMIT 5').to_arrow()
     expected_cols = {'block_num', 'tx_hash', 'from', 'to', 'value', 'gas_used'}
     assert expected_cols.issubset(set(table.column_names))
 
 
-@pytest.mark.e2e
 def test_query_logs(e2e_client):
     table = e2e_client.sql('SELECT * FROM anvil.logs LIMIT 5').to_arrow()
     expected_cols = {'block_num', 'log_index', 'address', 'data'}
     assert expected_cols.issubset(set(table.column_names))
 
 
-@pytest.mark.e2e
 def test_query_with_where_clause(e2e_client):
     table = e2e_client.sql('SELECT block_num FROM anvil.blocks WHERE block_num > 5 ORDER BY block_num').to_arrow()
 
@@ -49,13 +46,11 @@ def test_query_with_where_clause(e2e_client):
     assert table.column('block_num').to_pylist() == [6, 7, 8, 9, 10]
 
 
-@pytest.mark.e2e
 def test_query_with_aggregation(e2e_client):
     table = e2e_client.sql('SELECT COUNT(*) AS cnt FROM anvil.blocks').to_arrow()
     assert table.column('cnt').to_pylist()[0] == 11
 
 
-@pytest.mark.e2e
 def test_isolated_server(amp_test_server):
     """Verify function-scoped stack works on its own ports."""
     table = amp_test_server.client.sql('SELECT COUNT(*) AS cnt FROM anvil.blocks').to_arrow()

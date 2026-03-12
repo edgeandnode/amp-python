@@ -1,4 +1,5 @@
 {
+  "$comment": "Generated with: ampctl manifest generate --kind evm-rpc --network anvil --start-block 0",
   "kind": "evm-rpc",
   "network": "anvil",
   "start_block": 0,

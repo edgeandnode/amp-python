@@ -29,7 +29,7 @@ class DatasetManager:
         self._admin.datasets.register(namespace, name, tag, manifest)
         logger.info(f'Registered dataset {namespace}/{name}@{tag}')
 
-    def deploy_dataset(self, namespace: str, name: str, version: str, end_block: str = 'latest') -> None:
+    def deploy_dataset(self, namespace: str, name: str, version: str, end_block: str | None = 'latest') -> None:
         self._admin.datasets.deploy(namespace, name, version, end_block=end_block)
         logger.info(f'Deployed {namespace}/{name}@{version}')
 

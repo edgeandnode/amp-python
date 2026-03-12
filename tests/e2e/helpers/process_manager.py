@@ -96,14 +96,13 @@ def _wait_for_jsonrpc(url: str, timeout: int = 30) -> None:
 
 
 def mine_blocks(anvil_url: str, count: int) -> None:
-    """Mine blocks on an Anvil instance via JSON-RPC evm_mine."""
+    """Mine blocks on an Anvil instance via JSON-RPC anvil_mine."""
     with httpx.Client() as client:
-        for _ in range(count):
-            resp = client.post(
-                anvil_url,
-                json={'jsonrpc': '2.0', 'method': 'evm_mine', 'params': [], 'id': 1},
-            )
-            resp.raise_for_status()
+        resp = client.post(
+            anvil_url,
+            json={'jsonrpc': '2.0', 'method': 'anvil_mine', 'params': [count, 0], 'id': 1},
+        )
+        resp.raise_for_status()
 
 
 def evm_snapshot(anvil_url: str) -> str:

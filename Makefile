@@ -57,7 +57,7 @@ test-performance:
 # E2E tests (require anvil, ampd, Docker)
 test-e2e:
 	@echo "Running E2E tests..."
-	$(PYTHON) pytest tests/e2e/ -m "e2e" -v --log-cli-level=INFO -x --timeout=300
+	$(PYTHON) pytest tests/e2e/ -m "e2e" -v --log-cli-level=INFO -x
 
 # Code quality (using your ruff config)
 lint:

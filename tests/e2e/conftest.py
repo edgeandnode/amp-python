@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from amp.client import Client
+
 from .helpers.config import copy_anvil_manifest, generate_ampd_config, generate_provider_toml
 from .helpers.dataset_manager import DatasetManager
 from .helpers.process_manager import (
@@ -32,19 +34,17 @@ def _skip_if_missing_deps():
 class AmpTestServer:
     """An ampd + Anvil stack with a connected client."""
 
-    client: object
+    client: Client
     anvil_url: str
     admin_url: str
     ports: dict
 
 
-def _setup_amp_stack(num_blocks: int = 10, end_block: str = 'latest'):
+def _setup_amp_stack(num_blocks: int = 10, end_block: str | None = 'latest'):
     """Spin up anvil + ampd + register + deploy.
 
     Returns (AmpTestServer, cleanup_fn).
     """
-    from amp.client import Client
-
     temp_dir = Path(tempfile.mkdtemp(prefix='amp_e2e_'))
     anvil_proc = None
     ampd_proc = None
@@ -143,3 +143,7 @@ def amp_test_server():
     yield from _amp_fixture()
 
 
+@pytest.fixture()
+def reorg_server():
+    """Isolated ampd + Anvil stack for reorg testing."""
+    yield from _amp_fixture(end_block=None)
