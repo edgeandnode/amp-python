@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import re
 from typing import Any, Dict, List, Optional, Union
 
 import pyarrow as pa
@@ -485,6 +486,10 @@ class PostgreSQLLoader(DataLoader[PostgreSQLConfig]):
         conn = self.pool.getconn()
         try:
             with conn.cursor() as cur:
+                # Validate table_name to prevent SQL injection
+                if not re.match(r'^[a-zA-Z0-9_]+$', str(table_name)):
+                    raise ValueError("Invalid input")
+                
                 # Build list of unique IDs to delete
                 unique_batch_ids = list(set(bid.unique_id for bid in all_affected_batch_ids))
 
