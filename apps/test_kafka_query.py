@@ -13,7 +13,7 @@ from amp.client import Client
 from amp.loaders.types import LabelJoinConfig
 
 # Connect to Amp server
-server_url = os.getenv('AMP_SERVER_URL', 'grpc://34.27.238.174:80')
+server_url = os.getenv('AMP_SERVER_URL', 'grpc://127.0.0.1:1602')
 print(f'Connecting to {server_url}...')
 client = Client(server_url)
 print('✅ Connected!')

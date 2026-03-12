@@ -48,6 +48,7 @@ class TestCrashRecovery:
         """Should call _handle_reorg with correct invalidation ranges"""
         watermark = ResumeWatermark(ranges=[BlockRange(network='ethereum', start=1000, end=1010, hash='0xabc')])
         mock_loader.state_store.get_resume_position = Mock(return_value=watermark)
+        mock_loader.state_store.invalidate_from_block = Mock(return_value=['batch1'])
         mock_loader._handle_reorg = Mock()
 
         mock_loader._rewind_to_watermark('test_table', 'test_conn')
@@ -61,12 +62,23 @@ class TestCrashRecovery:
         assert call_args[0][1] == 'test_table'
         assert call_args[0][2] == 'test_conn'
 
+    def test_rewind_skips_reorg_when_no_uncommitted_batches(self, mock_loader):
+        """Should skip _handle_reorg when there are no uncommitted batches (e.g., clean restart)"""
+        watermark = ResumeWatermark(ranges=[BlockRange(network='ethereum', start=1000, end=1010, hash='0xabc')])
+        mock_loader.state_store.get_resume_position = Mock(return_value=watermark)
+        mock_loader.state_store.invalidate_from_block = Mock(return_value=[])
+        mock_loader._handle_reorg = Mock()
+
+        mock_loader._rewind_to_watermark('test_table', 'test_conn')
+
+        mock_loader._handle_reorg.assert_not_called()
+
     def test_rewind_handles_not_implemented(self, mock_loader):
         """Should gracefully handle loaders without _handle_reorg"""
         watermark = ResumeWatermark(ranges=[BlockRange(network='ethereum', start=1000, end=1010, hash='0xabc')])
         mock_loader.state_store.get_resume_position = Mock(return_value=watermark)
         mock_loader._handle_reorg = Mock(side_effect=NotImplementedError())
-        mock_loader.state_store.invalidate_from_block = Mock(return_value=[])
+        mock_loader.state_store.invalidate_from_block = Mock(return_value=['batch1'])
 
         mock_loader._rewind_to_watermark('test_table', 'test_conn')
 
@@ -83,6 +95,7 @@ class TestCrashRecovery:
             ]
         )
         mock_loader.state_store.get_resume_position = Mock(return_value=watermark)
+        mock_loader.state_store.invalidate_from_block = Mock(return_value=['batch1'])
         mock_loader._handle_reorg = Mock()
 
         mock_loader._rewind_to_watermark('test_table', 'test_conn')
@@ -101,6 +114,7 @@ class TestCrashRecovery:
         """Should use default connection name from loader class"""
         watermark = ResumeWatermark(ranges=[BlockRange(network='ethereum', start=1000, end=1010, hash='0xabc')])
         mock_loader.state_store.get_resume_position = Mock(return_value=watermark)
+        mock_loader.state_store.invalidate_from_block = Mock(return_value=['batch1'])
         mock_loader._handle_reorg = Mock()
 
         mock_loader._rewind_to_watermark('test_table', connection_name=None)
