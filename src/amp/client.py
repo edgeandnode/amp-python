@@ -769,26 +769,23 @@ class Client:
 
         self.logger.info(f'Starting streaming query to {loader_type}:{destination}')
 
-        # Create loader instance early to access checkpoint store
+        # Create loader instance early to access state store
         loader_instance = create_loader(loader_type, loader_config, label_manager=self.label_manager)
 
-        # Load checkpoint and create resume watermark if enabled (default: enabled)
+        # Load resume position from state store if enabled (default: enabled)
         if resume_watermark is None and kwargs.get('resume', True):
             try:
-                checkpoint = loader_instance.checkpoint_store.load(connection_name, destination)
+                loader_instance.connect()
+                resume_watermark = loader_instance.state_store.get_resume_position(
+                    connection_name, destination, detect_gaps=False
+                )
 
-                if checkpoint:
-                    resume_watermark = checkpoint.to_resume_watermark()
-                    checkpoint_type = 'reorg checkpoint' if checkpoint.is_reorg else 'checkpoint'
-                    self.logger.info(
-                        f'Resuming from {checkpoint_type}: {len(checkpoint.ranges)} ranges, '
-                        f'timestamp {checkpoint.timestamp}'
-                    )
-                    if checkpoint.is_reorg:
-                        resume_points = ', '.join(f'{r.network}:{r.start}' for r in checkpoint.ranges)
-                        self.logger.info(f'Reorg resume points: {resume_points}')
+                if resume_watermark:
+                    self.logger.info(f'Resuming from state store: {len(resume_watermark.ranges)} ranges')
+                    resume_points = ', '.join(f'{r.network}:{r.end}' for r in resume_watermark.ranges)
+                    self.logger.info(f'Resume points (max processed blocks): {resume_points}')
             except Exception as e:
-                self.logger.warning(f'Failed to load checkpoint, starting from beginning: {e}')
+                self.logger.warning(f'Failed to load resume position, starting from beginning: {e}')
 
         try:
             # Execute streaming query with Flight SQL
@@ -796,20 +793,22 @@ class Client:
             command_query = FlightSql_pb2.CommandStatementQuery()
             command_query.query = query
 
-            # Add resume watermark if provided
-            if resume_watermark:
-                # TODO: Add watermark to query metadata when Flight SQL supports it
-                self.logger.info(f'Resuming stream from watermark: {resume_watermark}')
-
             # Wrap the CommandStatementQuery in an Any type
             any_command = Any()
             any_command.Pack(command_query)
             cmd = any_command.SerializeToString()
 
+            # Prepare Flight call options with headers
+            call_options = None
+            if resume_watermark:
+                watermark_json = resume_watermark.to_json()
+                self.logger.info(f'Resuming stream from watermark: {watermark_json}')
+                call_options = flight.FlightCallOptions(headers=[(b'amp-resume', watermark_json.encode('utf-8'))])
+
             self.logger.info('Establishing Flight SQL connection...')
             flight_descriptor = flight.FlightDescriptor.for_command(cmd)
-            info = self.conn.get_flight_info(flight_descriptor)
-            reader = self.conn.do_get(info.endpoints[0].ticket)
+            info = self.conn.get_flight_info(flight_descriptor, options=call_options)
+            reader = self.conn.do_get(info.endpoints[0].ticket, options=call_options)
 
             # Create streaming iterator
             stream_iterator = StreamingResultIterator(reader)

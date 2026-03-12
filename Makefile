@@ -44,6 +44,10 @@ test-lmdb:
 	@echo "⚡ Running LMDB tests..."
 	$(PYTHON) pytest tests/ -m "lmdb" -v --log-cli-level=ERROR
 
+test-kafka:
+	@echo "Running Kafka tests..."
+	$(PYTHON) pytest tests/ -m "kafka" -v --log-cli-level=ERROR
+
 # Parallel streaming integration tests
 test-parallel-streaming:
 	@echo "⚡ Running parallel streaming integration tests..."
@@ -132,6 +136,7 @@ help:
 	@echo "  make test-postgresql          - Run PostgreSQL tests"
 	@echo "  make test-redis               - Run Redis tests"
 	@echo "  make test-snowflake           - Run Snowflake tests"
+	@echo "  make test-kafka               - Run Kafka tests"
 	@echo "  make test-performance         - Run performance tests"
 	@echo "  make lint                     - Lint code with ruff"
 	@echo "  make format                   - Format code with ruff"

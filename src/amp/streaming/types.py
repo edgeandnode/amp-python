@@ -164,21 +164,19 @@ class ResumeWatermark:
     """Watermark for resuming streaming queries"""
 
     ranges: List[BlockRange]
+    # TODO: timestamp and sequence are unused. Remove?
     timestamp: Optional[str] = None
     sequence: Optional[int] = None
 
     def to_json(self) -> str:
-        """Serialize to JSON string for HTTP headers"""
-        data = {'ranges': [r.to_dict() for r in self.ranges]}
-        if self.timestamp:
-            data['timestamp'] = self.timestamp
-        if self.sequence is not None:
-            data['sequence'] = self.sequence
-        return json.dumps(data)
+        """Serialize to JSON string for HTTP headers.
 
-    @classmethod
-    def from_json(cls, json_str: str) -> 'ResumeWatermark':
-        """Deserialize from JSON string"""
-        data = json.loads(json_str)
-        ranges = [BlockRange.from_dict(r) for r in data['ranges']]
-        return cls(ranges=ranges, timestamp=data.get('timestamp'), sequence=data.get('sequence'))
+        Server expects format: {"network_name": {"number": block_num, "hash": "0x..."}, ...}
+        """
+        data = {}
+        for r in self.ranges:
+            if r.hash is None:
+                raise ValueError(f"BlockRange for network '{r.network}' must have a hash for watermark")
+
+            data[r.network] = {'number': r.end, 'hash': r.hash}
+        return json.dumps(data)
