@@ -40,6 +40,10 @@ test-snowflake:
 	@echo "❄️ Running Snowflake tests..."
 	$(PYTHON) pytest tests/ -m "snowflake" -v --log-cli-level=ERROR
 
+test-clickhouse:
+	@echo "🏠 Running ClickHouse tests..."
+	$(PYTHON) pytest tests/ -m "clickhouse" -v --log-cli-level=ERROR
+
 test-lmdb:
 	@echo "⚡ Running LMDB tests..."
 	$(PYTHON) pytest tests/ -m "lmdb" -v --log-cli-level=ERROR
@@ -131,6 +135,7 @@ help:
 	@echo "  make test-all                 - Run all tests with coverage"
 	@echo "  make test-postgresql          - Run PostgreSQL tests"
 	@echo "  make test-redis               - Run Redis tests"
+	@echo "  make test-clickhouse          - Run ClickHouse tests"
 	@echo "  make test-snowflake           - Run Snowflake tests"
 	@echo "  make test-performance         - Run performance tests"
 	@echo "  make lint                     - Lint code with ruff"

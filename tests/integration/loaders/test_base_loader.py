@@ -57,7 +57,7 @@ class BaseLoaderTests(LoaderTestBase):
             batches = medium_test_table.to_batches(max_chunksize=250)
 
             for i, batch in enumerate(batches):
-                mode = LoadMode.OVERWRITE if i == 0 else LoadMode.APPEND
+                mode = LoadMode.OVERWRITE if i == 0 and self.config.supports_overwrite else LoadMode.APPEND
                 result = loader.load_batch(batch, test_table_name, mode=mode)
 
                 assert result.success == True
