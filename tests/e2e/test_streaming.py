@@ -79,16 +79,21 @@ def test_reorg_detection(reorg_server):
     flight_port = reorg_server.ports['flight']
     client = reorg_server.client
 
-    # Snapshot at block 10
+    # Find current chain tip
+    tip = client.sql('SELECT MAX(block_num) AS tip FROM anvil.blocks').to_arrow()
+    tip_block = tip.column('tip').to_pylist()[0]
+
     snapshot_id = evm_snapshot(anvil_url)
 
-    # Mine blocks 11-15, wait for ingestion
+    # Mine 5 blocks past the tip, wait for ingestion
     mine_blocks(anvil_url, 5)
-    wait_for_block(flight_port, 15)
+    first_new = tip_block + 1
+    last_new = tip_block + 5
+    wait_for_block(flight_port, last_new)
 
     # Capture pre-reorg hashes
     pre_reorg = client.sql(
-        'SELECT block_num, hash FROM anvil.blocks WHERE block_num >= 11 ORDER BY block_num'
+        f'SELECT block_num, hash FROM anvil.blocks WHERE block_num >= {first_new} ORDER BY block_num'
     ).to_arrow()
     assert len(pre_reorg) == 5
     pre_hashes = pre_reorg.column('hash').to_pylist()
@@ -97,7 +102,7 @@ def test_reorg_detection(reorg_server):
     # writes new blocks whose prev_hash won't match the stored hash,
     # triggering fork detection and re-materialization.
     evm_revert(anvil_url, snapshot_id)
-    mine_blocks(anvil_url, 10)  # blocks 11-20, different hashes
+    mine_blocks(anvil_url, 10)
 
     # Wait for ampd to detect reorg and re-ingest
     timeout = 30
@@ -105,7 +110,8 @@ def test_reorg_detection(reorg_server):
     start = time.monotonic()
     while time.monotonic() - start < timeout:
         post_reorg = client.sql(
-            'SELECT block_num, hash FROM anvil.blocks WHERE block_num >= 11 AND block_num <= 15 ORDER BY block_num'
+            f'SELECT block_num, hash FROM anvil.blocks '
+            f'WHERE block_num >= {first_new} AND block_num <= {last_new} ORDER BY block_num'
         ).to_arrow()
         if len(post_reorg) == 5:
             post_hashes = post_reorg.column('hash').to_pylist()

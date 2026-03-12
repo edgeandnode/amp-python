@@ -15,6 +15,7 @@ from .helpers.dataset_manager import DatasetManager
 from .helpers.process_manager import (
     get_free_port,
     mine_blocks,
+    send_eth,
     spawn_ampd,
     spawn_anvil,
     wait_for_ampd_ready,
@@ -57,6 +58,13 @@ def _setup_amp_stack(num_blocks: int = 10, end_block: str | None = 'latest'):
         }
 
         anvil_proc, anvil_url = spawn_anvil(log_dir)
+        # Send a transaction so transactions table has data
+        send_eth(
+            anvil_url,
+            from_addr='0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
+            to_addr='0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
+            value_wei=10**18,
+        )
         mine_blocks(anvil_url, num_blocks)
 
         config_path = generate_ampd_config(

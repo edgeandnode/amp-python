@@ -105,6 +105,22 @@ def mine_blocks(anvil_url: str, count: int) -> None:
         resp.raise_for_status()
 
 
+def send_eth(anvil_url: str, from_addr: str, to_addr: str, value_wei: int) -> str:
+    """Send an ETH transfer on Anvil. Returns the transaction hash."""
+    with httpx.Client() as client:
+        resp = client.post(
+            anvil_url,
+            json={
+                'jsonrpc': '2.0',
+                'method': 'eth_sendTransaction',
+                'params': [{'from': from_addr, 'to': to_addr, 'value': hex(value_wei)}],
+                'id': 1,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()['result']
+
+
 def evm_snapshot(anvil_url: str) -> str:
     """Take a snapshot of the current anvil state. Returns snapshot ID."""
     with httpx.Client() as client:
